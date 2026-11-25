@@ -234,7 +234,31 @@ async fn sample_conflicts_have_verified_quotes_on_both_sides() {
         assert_eq!(finding.evidence.len(), 2);
         assert_ne!(finding.evidence[0].quote, finding.evidence[1].quote);
         match &finding.detector {
-            Detector::Rule(rule) => rules.push(rule.as_str()),
+            Detector::Rule(rule) => {
+                rules.push(rule.as_str());
+                if rule == "acceptance_period_mismatch" {
+                    assert_eq!(finding.scope, review::Scope::Set);
+                    assert_eq!(finding.criterion, review::Criterion::Consistent);
+                    let mut lines: Vec<_> = finding
+                        .evidence
+                        .iter()
+                        .map(|e| e.location.start_line)
+                        .collect();
+                    lines.sort_unstable();
+                    assert_eq!(lines, [38, 64]);
+                    let golden = review::load_golden_file(
+                        &Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../eval/requirements.golden.json"),
+                    )
+                    .unwrap();
+                    let score = review::evaluate_document(
+                        &golden,
+                        &ctx.requirements,
+                        std::slice::from_ref(finding),
+                    );
+                    assert_eq!(score.matched[0].defect_id, "D-02");
+                }
+            }
             Detector::Llm(_) => {
                 assert!(finding.evidence[0].quote.starts_with("Ф-3."));
                 assert!(finding.evidence[1].quote.starts_with("Ф-4."));

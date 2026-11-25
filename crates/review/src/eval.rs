@@ -82,6 +82,16 @@ pub struct DocumentEval {
     pub recall: f64,
     pub matched: Vec<MatchedDefect>,
     pub missed: Vec<GoldenDefect>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub near_matches: Vec<NearMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NearMatch {
+    pub defect_id: String,
+    pub finding_id: String,
+    pub criterion: Criterion,
+    pub location: SourceSpan,
 }
 
 pub fn discover_golden_files(path: &Path) -> Result<Vec<PathBuf>, EvalError> {
@@ -322,6 +332,7 @@ pub fn evaluate_document(
 
     let mut matched = Vec::new();
     let mut missed = Vec::new();
+    let mut near_matches = Vec::new();
     for (defect_idx, defect) in golden.defects.iter().enumerate() {
         if let Some(finding_idx) = defect_match[defect_idx] {
             matched.push(MatchedDefect {
@@ -330,6 +341,17 @@ pub fn evaluate_document(
             });
         } else {
             missed.push(defect.clone());
+            near_matches.extend(findings.iter().filter_map(|finding| {
+                if !finding.verified || criterion_matches(finding, defect) {
+                    return None;
+                }
+                Some(NearMatch {
+                    defect_id: defect.id.clone(),
+                    finding_id: finding.id.clone(),
+                    criterion: finding.criterion,
+                    location: matching_location(finding, defect, requirements)?,
+                })
+            }));
         }
     }
 
@@ -359,6 +381,7 @@ pub fn evaluate_document(
         recall,
         matched,
         missed,
+        near_matches,
     }
 }
 
@@ -401,19 +424,26 @@ fn finding_matches_defect(
     defect: &GoldenDefect,
     requirements: &[Requirement],
 ) -> bool {
-    let criterion_matches = finding.all_criteria().iter().any(|&criterion| {
-        criterion == defect.criterion || defect.acceptable_criteria.contains(&criterion)
-    });
-    if !criterion_matches {
-        return false;
-    }
+    criterion_matches(finding, defect) && matching_location(finding, defect, requirements).is_some()
+}
 
-    if finding
+fn criterion_matches(finding: &Finding, defect: &GoldenDefect) -> bool {
+    finding.all_criteria().iter().any(|&criterion| {
+        criterion == defect.criterion || defect.acceptable_criteria.contains(&criterion)
+    })
+}
+
+fn matching_location(
+    finding: &Finding,
+    defect: &GoldenDefect,
+    requirements: &[Requirement],
+) -> Option<SourceSpan> {
+    if let Some(evidence) = finding
         .evidence
         .iter()
-        .any(|evidence| span_matches_defect(evidence.location, defect))
+        .find(|evidence| span_matches_defect(evidence.location, defect))
     {
-        return true;
+        return Some(evidence.location);
     }
 
     if let Scope::Requirement(req_id) = &finding.scope
@@ -430,11 +460,11 @@ fn finding_matches_defect(
                         .is_some_and(|source_id| equals_ignore_case(token, source_id))
             });
         if id_matches || span_matches_defect(requirement.location, defect) {
-            return true;
+            return Some(requirement.location);
         }
     }
 
-    false
+    None
 }
 
 fn defect_requirement_tokens(requirement: &str) -> Vec<&str> {
@@ -500,6 +530,27 @@ pub fn format_eval_report(results: &[DocumentEval]) -> String {
                     location,
                     defect.description
                 );
+                for candidate in item
+                    .near_matches
+                    .iter()
+                    .filter(|m| m.defect_id == defect.id)
+                {
+                    let span = candidate.location;
+                    let page = span
+                        .page
+                        .map_or_else(String::new, |p| format!("страница {p}, "));
+                    let lines = if span.start_line == span.end_line {
+                        format!("строка {}", span.start_line)
+                    } else {
+                        format!("строки {}–{}", span.start_line, span.end_line)
+                    };
+                    let _ = writeln!(
+                        out,
+                        "      рядом: {} [{}] {page}{lines} — не засчитано: другой критерий",
+                        candidate.finding_id,
+                        candidate.criterion.russian_name()
+                    );
+                }
             }
         }
     }
@@ -531,6 +582,9 @@ pub fn format_eval_report(results: &[DocumentEval]) -> String {
         );
     }
 
+    if !results.is_empty() {
+        out.push_str("\nPrecision — нижняя оценка: находки вне эталона снижают метрику, даже если описывают реальные дефекты.\n");
+    }
     out
 }
 
@@ -682,6 +736,54 @@ mod tests {
         assert!(formatted.contains("Найдено дефектов: 2/3"));
         assert!(formatted.contains("precision: 50.0%"));
         assert!(formatted.contains("D-02"));
+    }
+
+    #[test]
+    fn reports_wrong_criteria_at_matching_lines_or_requirements_without_changing_scores() {
+        let golden = LoadedGolden {
+            golden_path: "test.golden.json".into(),
+            document_path: "doc.md".into(),
+            title: "Тест".into(),
+            defects: vec![GoldenDefect {
+                id: "D-02".into(),
+                requirement: "Ф-2".into(),
+                criterion: Criterion::Consistent,
+                acceptable_criteria: vec![],
+                severity: Severity::High,
+                page: Some(1),
+                lines: vec![38, 64],
+                description: "Противоречие".into(),
+            }],
+        };
+        let requirements = [sample_requirement("R-001", Some("Ф-2"), 40, Some(1))];
+        let findings = [
+            sample_finding("by-line", Scope::Set, Criterion::Correct, 64, Some(1), true),
+            sample_finding(
+                "by-id",
+                Scope::Requirement("R-001".into()),
+                Criterion::Appropriate,
+                40,
+                Some(1),
+                true,
+            ),
+            sample_finding(
+                "other-page",
+                Scope::Set,
+                Criterion::Correct,
+                64,
+                Some(2),
+                true,
+            ),
+        ];
+        let result = evaluate_document(&golden, &requirements, &findings);
+        assert_eq!(result.true_positives, 0);
+        assert_eq!(result.near_matches.len(), 2);
+        let report = format_eval_report(&[result]);
+        assert!(report.contains(
+            "рядом: by-line [Корректность] страница 1, строка 64 — не засчитано: другой критерий"
+        ));
+        assert!(report.contains("рядом: by-id"));
+        assert!(!report.contains("other-page"));
     }
 
     #[test]
