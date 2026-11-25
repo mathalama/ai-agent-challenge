@@ -96,7 +96,7 @@ impl LlmProvider for ReviewProvider {
             findings.push(Finding {
                 id: "F-1".into(),
                 scope: Scope::Set,
-                criterion: Criterion::Consistent,
+                criterion: Criterion::Appropriate,
                 additional_criteria: Vec::new(),
                 severity,
                 evidence: vec![Evidence {
@@ -263,10 +263,10 @@ impl Check for LanguageCheck {
 
     async fn run(&self, _ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
         let evidence = vec![Evidence {
-            quote: "Первое требование".into(),
+            quote: "Второе требование".into(),
             location: SourceSpan {
-                start_line: 3,
-                end_line: 3,
+                start_line: 4,
+                end_line: 4,
                 page: None,
             },
         }];
@@ -382,6 +382,28 @@ impl LlmProvider for LanguageAndPromptProvider {
                     }],
                     "explanation": "Не описана реакция на ошибку ввода.",
                     "suggestion": "Указать код ошибки HTTP 400 и текст сообщения."
+                },
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "verifiable",
+                    "severity": "high",
+                    "evidence": [{
+                        "quote": "Первое требование",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Не описан сценарий 보안-тестирования.",
+                    "suggestion": null
+                },
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "ranked",
+                    "severity": "high",
+                    "evidence": [{
+                        "quote": "Первое требование",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Не определены параметры σ и Δ.",
+                    "suggestion": "Указать значения для 安全."
                 }
             ]),
             "clarify" => serde_json::json!([
@@ -426,11 +448,11 @@ impl LlmProvider for LanguageAndPromptProvider {
 }
 
 #[tokio::test]
-async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_context() {
+async fn validates_finding_and_question_languages_and_attaches_domain_context() {
     let document = ParserRegistry::default()
         .parse(
             Path::new("input.md"),
-            "# Документ требований\n\n* **Ф-1.** Первое требование\n* **Ф-2.** Второе требование\n"
+            "# Документ требований\n\n* **Ф-1.** Первое требование (σ и Δ)\n* **Ф-2.** Второе требование\n"
                 .as_bytes(),
         )
         .unwrap();
@@ -447,7 +469,8 @@ async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_conte
         [
             "RULE-RU",
             "requirement_checks-001",
-            "requirement_checks-002"
+            "requirement_checks-002",
+            "requirement_checks-004"
         ]
     );
     assert!(ctx.findings[0].suggestion.is_none());
@@ -456,6 +479,12 @@ async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_conte
         ctx.findings[2].suggestion.as_deref(),
         Some("Указать код ошибки HTTP 400 и текст сообщения.")
     );
+    assert!(ctx.findings[3].verified);
+    assert_eq!(
+        ctx.findings[3].explanation,
+        "Не определены параметры σ и Δ."
+    );
+    assert!(ctx.findings[3].suggestion.is_none());
     assert_eq!(ctx.questions.len(), 1);
     assert!(ctx.questions[0].id.starts_with("Q-"));
     assert_eq!(ctx.questions[0].priority, Severity::Medium);
@@ -644,7 +673,7 @@ impl LlmProvider for UnverifiedParaphraseProvider {
                 {
                     "requirement_id": "R-001",
                     "criterion": "unambiguous",
-                    "severity": "high",
+                    "severity": "medium",
                     "evidence": [{
                         "quote": "Сервис отвечает быстро на запросы клиентов",
                         "location": {"start_line": 3, "end_line": 3, "page": null}
@@ -665,7 +694,7 @@ impl LlmProvider for UnverifiedParaphraseProvider {
 }
 
 #[tokio::test]
-async fn unverified_llm_paraphrase_does_not_poison_verified_rule_finding() {
+async fn verified_rule_finding_keeps_its_quote_when_model_paraphrases_it() {
     let source = concat!(
         "# Спецификация (версия 1.0 от 2026-03-10)\n\n",
         "* **Ф-1.** Сервис отвечает быстро на запросы пользователя.\n\n",
@@ -680,22 +709,19 @@ async fn unverified_llm_paraphrase_does_not_poison_verified_rule_finding() {
 
     Pipeline::default().run(&mut ctx).await.unwrap();
 
-    // Подтверждённое правило vague-terms и неподтверждённый пересказ ambiguity не сливаются.
     assert_eq!(ctx.findings.len(), 2, "{:#?}", ctx.findings);
-    let rule_finding = ctx
-        .findings
-        .iter()
-        .find(|f| matches!(&f.detector, Detector::Rule(id) if id == "vague-terms"))
-        .expect("ожидалась находка правила vague-terms");
+    let rule_finding = &ctx.findings[0];
+    assert!(matches!(&rule_finding.detector, Detector::Rule(id) if id == "vague-terms"));
     assert!(rule_finding.verified);
     assert_eq!(rule_finding.severity, Severity::Medium);
-
-    let llm_finding = ctx
-        .findings
-        .iter()
-        .find(|f| matches!(&f.detector, Detector::Llm(_)))
-        .expect("ожидалась находка LLM ambiguity");
-    assert!(!llm_finding.verified);
+    assert!(rule_finding.merged_ids.is_empty());
+    assert_eq!(ctx.findings[1].id, "ambiguity-001");
+    assert!(!ctx.findings[1].verified);
+    assert_eq!(rule_finding.evidence.len(), 1);
+    assert_eq!(
+        rule_finding.evidence[0].quote,
+        "Ф-1. Сервис отвечает быстро на запросы пользователя."
+    );
 
     let passport = RunPassport {
         document_title: ctx.document.title.clone(),
@@ -723,4 +749,184 @@ async fn weak_document_keeps_separate_missing_section_and_version_findings() {
     assert!(ids.contains(&"document-version-date-missing"), "{ids:?}");
     assert!(ids.contains(&"acceptance-criteria-missing"), "{ids:?}");
     assert!(ctx.findings.iter().all(|f| f.verified));
+}
+
+struct DuplicateProvider;
+
+#[async_trait]
+impl LlmProvider for DuplicateProvider {
+    fn model(&self) -> &str {
+        "test-duplicates"
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        let draft = |requirement_id: Option<&str>, criterion, severity, line, quote| {
+            serde_json::json!({
+                "requirement_id": requirement_id,
+                "criterion": criterion,
+                "severity": severity,
+                "evidence": [{"quote": quote, "location": {
+                    "start_line": line, "end_line": line, "page": null
+                }}],
+                "explanation": "Проверка требований.",
+                "suggestion": null
+            })
+        };
+        let json = match request.stage.as_str() {
+            "requirement_checks" => serde_json::json!([
+                draft(
+                    Some("R-001"),
+                    "complete",
+                    "high",
+                    1,
+                    "Комиссия для ТСП (TBD)."
+                ),
+                draft(
+                    Some("R-002"),
+                    "verifiable",
+                    "high",
+                    2,
+                    "Сервис выдерживает высокую нагрузку."
+                ),
+                draft(
+                    Some("R-003"),
+                    "appropriate",
+                    "critical",
+                    3,
+                    "Полные номера карт записываются в журнал."
+                ),
+            ]),
+            "set_checks" => serde_json::json!([
+                draft(None, "set_complete", "high", 1, "Комиссия для ТСП (TBD)."),
+                draft(
+                    None,
+                    "verifiable",
+                    "high",
+                    2,
+                    "Сервис выдерживает высокую нагрузку."
+                ),
+                draft(
+                    None,
+                    "appropriate",
+                    "critical",
+                    3,
+                    "Полные номера карт записываются в журнал."
+                ),
+            ]),
+            "ambiguity" => serde_json::json!([
+                draft(None, "unambiguous", "medium", 4, "В разумные сроки."),
+                draft(None, "unambiguous", "medium", 5, "По возможности."),
+                draft(None, "unambiguous", "medium", 6, "При необходимости."),
+                draft(None, "unambiguous", "medium", 7, "ER-3. И т. п."),
+                draft(
+                    None,
+                    "unambiguous",
+                    "medium",
+                    8,
+                    "Интерфейс должен быть удобным."
+                ),
+                draft(
+                    None,
+                    "unambiguous",
+                    "medium",
+                    9,
+                    "Журнал хранится достаточно долго."
+                ),
+            ]),
+            _ => return MockProvider.generate(request).await,
+        };
+        Ok(LlmResponse {
+            reasoning: None,
+            json,
+            usage: Usage::default(),
+            model: self.model().into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn merges_single_requirement_duplicates_and_counts_critical_findings_once() {
+    let source = concat!(
+        "* FR-7. Комиссия для ТСП (TBD).\n",
+        "* NFR-2. Сервис выдерживает высокую нагрузку.\n",
+        "* NFR-4. Полные номера карт записываются в журнал.\n",
+        "* FR-11. В разумные сроки.\n",
+        "* FR-12. По возможности.\n",
+        "* FR-5. При необходимости.\n",
+        "* ER-3. И т. п.\n",
+        "* NFR-5. Интерфейс должен быть удобным.\n",
+        "* NFR-6. Журнал хранится достаточно долго.\n",
+    );
+    let document = ParserRegistry::default()
+        .parse(Path::new("duplicates.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &DuplicateProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    for (stage, count, offset) in [("set_checks", 3, 0), ("ambiguity", 6, 3)] {
+        for index in 1..=count {
+            let id = format!("{stage}-{index:03}");
+            let expected_scope = if id == "set_checks-001" {
+                Scope::Set
+            } else {
+                Scope::Requirement(format!("R-{:03}", offset + index))
+            };
+            assert!(
+                ctx.findings.iter().any(|finding| {
+                    finding.verified
+                        && finding.scope == expected_scope
+                        && finding.merged_ids.contains(&id)
+                }),
+                "{id}: {:#?}",
+                ctx.findings
+            );
+        }
+    }
+
+    let report = Report::from_run(
+        ctx,
+        RunPassport {
+            document_title: "Требования".into(),
+            date: String::new(),
+            model: "test".into(),
+            agent_version: String::new(),
+        },
+    );
+    assert_eq!(report.summary.critical_findings, ["requirement_checks-003"]);
+    let markdown = MarkdownRenderer.render(&report).unwrap();
+    assert!(markdown.contains("Подтверждённых критичных дефектов — 1"));
+}
+
+#[tokio::test]
+async fn keeps_the_pii_finding_without_a_convenience_warning() {
+    let source = "# Требования\n\n* NFR-4. Для удобства отладки полные номера карт и счетов клиентов записываются в журнал приложения в открытом виде.";
+    let document = ParserRegistry::default()
+        .parse(Path::new("logging.md"), source.as_bytes())
+        .unwrap();
+    let provider = ReviewProvider(
+        Some((
+            Severity::Critical,
+            "полные номера карт и счетов клиентов записываются в журнал приложения в открытом виде.",
+        )),
+        2,
+    );
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &provider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    let pii = ctx
+        .findings
+        .iter()
+        .find(|finding| finding.all_ids().contains(&"set_checks-001"))
+        .unwrap_or_else(|| panic!("{:#?}", ctx.findings));
+    assert!(pii.verified);
+    assert_eq!(pii.scope, Scope::Requirement("R-001".into()));
+    assert_eq!(pii.severity, Severity::Critical);
+    assert!(
+        !ctx.findings
+            .iter()
+            .flat_map(Finding::all_detectors)
+            .any(|detector| { matches!(detector, Detector::Rule(id) if id == "vague-terms") })
+    );
 }

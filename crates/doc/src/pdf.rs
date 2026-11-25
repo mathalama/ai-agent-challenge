@@ -1134,6 +1134,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn joins_wrapped_words_and_preserves_compound_hyphens() {
+        for (wrapped, expected) in [
+            ("QR-\nкода", "QR-кода"),
+            ("SMS-\nкода", "SMS-кода"),
+            ("про-\nверка", "проверка"),
+            ("API-\nшлюз", "API-шлюз"),
+            ("FR-\n12", "FR-12"),
+            ("онлайн-\nплатёж", "онлайн-платёж"),
+            ("из-\nза", "из-за"),
+            ("из-\nпод", "из-под"),
+            ("кто-\nто", "кто-то"),
+            ("Какого-\nто.", "Какого-то."),
+            ("что-\nнибудь", "что-нибудь"),
+            ("по-\nпрежнему", "по-прежнему"),
+            ("по-\nдругому", "по-другому"),
+            ("по-\nрусски", "по-русски"),
+            ("по-\nнемецки", "по-немецки"),
+            ("по-\nволчьи", "по-волчьи"),
+            ("по-\nразному", "по-разному"),
+            ("по-\nновому", "по-новому"),
+            ("по-\nсвоему", "по-своему"),
+            ("по-\nказахски", "по-казахски"),
+            ("по-\nвторному", "повторному"),
+            ("по-\nстоянному", "постоянному"),
+            ("по-\nследнему", "последнему"),
+            ("по-\nдробному", "подробному"),
+            ("по-\nиски", "поиски"),
+            ("по-\nтом", "потом"),
+            ("по-\nтому", "потому"),
+            ("по-\nэтому", "поэтому"),
+            ("по-\nчему", "почему"),
+            ("провер-\nка", "проверка"),
+            ("Интернет-\nбанк", "Интернет-банк"),
+            ("x-\nлуч", "x-луч"),
+            ("3-\nдневный", "3-дневный"),
+            ("про\u{00ad}\nверка", "проверка"),
+        ] {
+            assert_eq!(normalize_cell_text(wrapped), expected);
+            assert_eq!(crate::normalize_quote_dehyphenated(wrapped), expected);
+        }
+    }
+
+    #[test]
+    fn parses_wrapped_compound_words_in_qr_sample() {
+        let document = PdfParser
+            .parse(include_bytes!("../../../samples/qr-payments.pdf"))
+            .unwrap();
+        for (anchor, quote) in [
+            ("Минимальная сумма платежа", "QR-кода"),
+            ("Порог запроса", "SMS-кода"),
+            ("FR-12.", "QR-платежи"),
+        ] {
+            assert!(
+                document.blocks.iter().any(|block| match &block.content {
+                    BlockContent::Table { rows, .. } => rows.iter().any(|row| {
+                        let text = row.join(" ");
+                        text.contains(anchor) && text.contains(quote)
+                    }),
+                    BlockContent::Paragraph { text } | BlockContent::ListItem { text } =>
+                        text.contains(anchor) && text.contains(quote),
+                    _ => false,
+                }),
+                "{anchor}: {quote}"
+            );
+        }
+        for (wrapped, joined) in [("SMS-\nкода", "SMS-кода"), ("QR-\nплатежи", "QR-платежи")]
+        {
+            assert!(
+                document.blocks.iter().any(|block| {
+                    document.contains_quote(block.location, wrapped)
+                        && document.contains_quote(block.location, joined)
+                }),
+                "{wrapped}"
+            );
+        }
+    }
+
+    #[test]
     fn heading_level_saturates_without_u8_overflow_for_many_font_tiers() {
         let tiers: Vec<f64> = (0..300).rev().map(|i| 12.0 + i as f64 * 0.5).collect();
         let line = ExtractedLine {

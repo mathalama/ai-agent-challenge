@@ -11,4 +11,5 @@ quick-xml.workspace = true
 schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+unicode-script.workspace = true
 zip.workspace = true

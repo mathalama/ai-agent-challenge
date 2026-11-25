@@ -68,6 +68,12 @@ macro_rules! criteria {
     };
 }
 
+impl Criterion {
+    pub(crate) fn is_set_level(self) -> bool {
+        matches!(self.reference(), SET | IEEE_830)
+    }
+}
+
 const INDIVIDUAL: &str = "ISO/IEC/IEEE 29148:2018 § 5.2.5";
 const SET: &str = "ISO/IEC/IEEE 29148:2018 § 5.2.6";
 const IEEE_830: &str = "IEEE Std 830-1998 § 4.3";

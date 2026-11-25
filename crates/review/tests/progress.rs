@@ -279,6 +279,7 @@ impl LlmProvider for OverflowReview {
                     "topic": "other",
                     "options": [],
                     "finding_ids": input.iter().map(|finding| &finding["id"]).collect::<Vec<_>>(),
+                    "evidence": input.iter().flat_map(|finding| finding["evidence"].as_array().unwrap()).collect::<Vec<_>>(),
                 }])
             }
             _ => return MockProvider.generate(request).await,

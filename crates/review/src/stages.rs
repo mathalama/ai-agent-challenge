@@ -1,8 +1,12 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
+use doc::{BlockContent, Document};
 use llm::generate_typed;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::warn;
+use unicode_script::{Script, UnicodeScript};
 
 use crate::{
     CheckPhase, ContextItem, Criterion, Detector, Evidence, Finding, Requirement, RunContext,
@@ -155,7 +159,17 @@ impl Stage for ScaffoldStage {
                     .await?;
             }
             Self::Verify => {
+                let greek = source_greek_symbols(&ctx.document);
                 ctx.findings.retain(|finding| {
+                    if matches!(finding.detector, Detector::Llm(_))
+                        && has_foreign_letters(&finding.explanation, &greek)
+                    {
+                        warn!(
+                            finding_id = %finding.id,
+                            "Отброшена находка с посторонней письменностью в пояснении"
+                        );
+                        return false;
+                    }
                     if !has_cyrillic(&finding.explanation) {
                         warn!(
                             finding_id = %finding.id,
@@ -166,14 +180,14 @@ impl Stage for ScaffoldStage {
                     true
                 });
                 for finding in &mut ctx.findings {
-                    if finding
-                        .suggestion
-                        .as_deref()
-                        .is_some_and(|suggestion| !has_cyrillic(suggestion))
-                    {
+                    if finding.suggestion.as_deref().is_some_and(|suggestion| {
+                        !has_cyrillic(suggestion)
+                            || matches!(finding.detector, Detector::Llm(_))
+                                && has_foreign_letters(suggestion, &greek)
+                    }) {
                         warn!(
                             finding_id = %finding.id,
-                            "Удалена рекомендация без кириллицы"
+                            "Удалена рекомендация с неподдерживаемой письменностью"
                         );
                         finding.suggestion = None;
                     }
@@ -182,8 +196,12 @@ impl Stage for ScaffoldStage {
                             ctx.document
                                 .contains_quote(evidence.location, &evidence.quote)
                         });
+                    crate::dedup::narrow_set_scope(finding, &ctx.requirements);
                 }
-                ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
+                ctx.findings = crate::dedup::merge_findings_in_context(
+                    std::mem::take(&mut ctx.findings),
+                    &ctx.requirements,
+                );
             }
             Self::Clarify => clarify::ask_questions(ctx, &self.llm_prompt()).await?,
         }
@@ -227,14 +245,6 @@ impl ScaffoldStage {
                             .any(|requirement| requirement.id == *id)
                     })
                     .map_or(Scope::Set, Scope::Requirement);
-                let suggestion = draft.suggestion.filter(|suggestion| {
-                    if has_cyrillic(suggestion) {
-                        true
-                    } else {
-                        warn!(stage = self.name(), "Удалена рекомендация без кириллицы");
-                        false
-                    }
-                });
                 Finding {
                     id: format!("{}-{:03}", self.name(), offset + index + 1),
                     scope,
@@ -243,7 +253,7 @@ impl ScaffoldStage {
                     severity: draft.severity,
                     evidence: draft.evidence,
                     explanation: draft.explanation,
-                    suggestion,
+                    suggestion: draft.suggestion,
                     detector: Detector::Llm(format!("{}:{}", self.name(), ctx.provider.model())),
                     additional_detectors: Vec::new(),
                     merged_ids: Vec::new(),
@@ -259,6 +269,36 @@ fn set_input(requirements: &[Requirement], context: &[ContextItem]) -> Result<St
     Ok(serde_json::to_string(
         &serde_json::json!({ "requirements": requirements, "context": context }),
     )?)
+}
+
+fn source_greek_symbols(document: &Document) -> HashSet<char> {
+    let mut symbols = HashSet::new();
+    let mut collect = |text: &str| {
+        symbols.extend(text.chars().filter(|ch| ch.script() == Script::Greek));
+    };
+    for block in &document.blocks {
+        match &block.content {
+            BlockContent::Heading { text, .. }
+            | BlockContent::Paragraph { text }
+            | BlockContent::ListItem { text }
+            | BlockContent::Code { text, .. } => collect(text),
+            BlockContent::Table { rows, .. } => {
+                rows.iter().flatten().for_each(|cell| collect(cell))
+            }
+        }
+    }
+    symbols
+}
+
+fn has_foreign_letters(text: &str, greek: &HashSet<char>) -> bool {
+    text.chars().any(|character| {
+        character.is_alphabetic()
+            && match character.script() {
+                Script::Cyrillic | Script::Latin | Script::Common | Script::Inherited => false,
+                Script::Greek => !greek.contains(&character),
+                _ => true,
+            }
+    })
 }
 
 pub(crate) fn has_cyrillic(text: &str) -> bool {

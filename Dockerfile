@@ -9,6 +9,7 @@ COPY web/ ./
 RUN npm run build
 
 FROM rust:1.99-slim-bookworm AS rust
+ARG AGENT_VERSION
 # reqwest использует native-tls.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev \
@@ -17,7 +18,7 @@ WORKDIR /app
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --locked -p cli \
+    AGENT_VERSION="$AGENT_VERSION" cargo build --release --locked -p cli \
     && cp target/release/rs /usr/local/bin/rs
 
 FROM debian:bookworm-slim

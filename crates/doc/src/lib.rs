@@ -14,6 +14,7 @@ use std::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use unicode_script::{Script, UnicodeScript};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Document {
@@ -124,39 +125,162 @@ pub(crate) fn dehyphenate_multiline(text: &str) -> String {
         if next.is_empty() {
             continue;
         }
-        if result.is_empty() {
-            result.push_str(next);
-            continue;
+        let mut tail = result.chars().rev();
+        match (tail.next(), tail.next(), next.chars().next()) {
+            (Some('\u{00AD}'), _, _) => {
+                result.pop();
+            }
+            (Some('-' | '\u{2010}'), Some(left), Some(right))
+                if left.is_alphanumeric() && right.is_alphanumeric() =>
+            {
+                if should_join_hyphenated(&result, next, left, right) {
+                    result.pop();
+                }
+            }
+            (Some(_), _, _) => result.push(' '),
+            _ => {}
         }
-        if should_join_hyphenated(&result, next) {
-            result.pop();
-            result.push_str(next);
-        } else {
-            result.push(' ');
-            result.push_str(next);
-        }
+        result.push_str(next);
     }
     result
 }
 
-fn should_join_hyphenated(left: &str, right: &str) -> bool {
-    let mut left_chars = left.chars().rev();
-    let Some(last) = left_chars.next() else {
-        return false;
-    };
-    if !matches!(last, '-' | '\u{2010}' | '\u{00AD}') {
-        return false;
-    }
-    let Some(before_hyphen) = left_chars.next() else {
-        return false;
-    };
-    if !before_hyphen.is_alphabetic() {
+fn should_join_hyphenated(line: &str, next: &str, left: char, right: char) -> bool {
+    let script = left.script();
+    if !left.is_lowercase()
+        || !right.is_lowercase()
+        || matches!(script, Script::Common | Script::Inherited | Script::Unknown)
+        || script != right.script()
+    {
         return false;
     }
-    right
-        .chars()
+
+    let prefix = line
+        .trim_end_matches(['-', '\u{2010}'])
+        .rsplit(|character: char| !character.is_alphabetic())
         .next()
-        .is_some_and(|ch| ch.is_alphabetic() && ch.is_lowercase())
+        .unwrap_or_default()
+        .to_lowercase();
+    let suffix = next
+        .split(|character: char| !character.is_alphabetic())
+        .next()
+        .unwrap_or_default();
+    // Известные составные слова, предлоги и частицы сохраняют постоянный дефис.
+    let fixed_prefix = matches!(
+        prefix.as_str(),
+        "онлайн" | "офлайн" | "интернет" | "веб" | "бизнес" | "кое"
+    );
+    let fixed_pair = matches!(
+        (prefix.as_str(), suffix),
+        ("из", "за" | "под") | (_, "либо" | "нибудь")
+    );
+    let pronouns_and_adverbs = [
+        "кто",
+        "кого",
+        "кому",
+        "кем",
+        "ком",
+        "что",
+        "чего",
+        "чему",
+        "чем",
+        "чём",
+        "какой",
+        "какая",
+        "какое",
+        "какие",
+        "какую",
+        "какого",
+        "какому",
+        "каким",
+        "каком",
+        "каких",
+        "какими",
+        "чей",
+        "чья",
+        "чьё",
+        "чьи",
+        "чью",
+        "чьего",
+        "чьему",
+        "чьим",
+        "где",
+        "куда",
+        "откуда",
+        "когда",
+        "почему",
+        "зачем",
+        "как",
+        "сколько",
+    ];
+    let has_particle = suffix == "то" && pronouns_and_adverbs.contains(&prefix.as_str());
+    // Окончания совпадают со слитными словами, например «постоянному».
+    const HYPHENATED_PO_ADVERBS: &[&str] = &[
+        "английски",
+        "белорусски",
+        "божески",
+        "братски",
+        "быстрому",
+        "вашему",
+        "весеннему",
+        "вечернему",
+        "видимому",
+        "волчьи",
+        "всякому",
+        "детски",
+        "доброму",
+        "домашнему",
+        "другому",
+        "дружески",
+        "дурацки",
+        "женски",
+        "зимнему",
+        "иному",
+        "испански",
+        "итальянски",
+        "кабардински",
+        "казахски",
+        "китайски",
+        "корейски",
+        "крупному",
+        "летнему",
+        "людски",
+        "маленькому",
+        "моему",
+        "мужски",
+        "нашему",
+        "немецки",
+        "новому",
+        "обычному",
+        "осеннему",
+        "особому",
+        "отечески",
+        "польски",
+        "прежнему",
+        "простому",
+        "разному",
+        "русски",
+        "своему",
+        "серьёзному",
+        "собачьи",
+        "старому",
+        "старчески",
+        "твоему",
+        "товарищески",
+        "турецки",
+        "узбекски",
+        "украински",
+        "утреннему",
+        "французски",
+        "хорошему",
+        "царски",
+        "человечески",
+        "шведски",
+        "щучьему",
+        "японски",
+    ];
+    let is_po_adverb = prefix == "по" && HYPHENATED_PO_ADVERBS.contains(&suffix);
+    !(fixed_prefix || fixed_pair || has_particle || is_po_adverb)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
