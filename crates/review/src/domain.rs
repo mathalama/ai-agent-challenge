@@ -126,12 +126,6 @@ pub struct Finding {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Fact {
-    pub text: String,
-    pub evidence: Vec<Evidence>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "id")]
 pub enum RelatedId {
     Finding(FindingId),

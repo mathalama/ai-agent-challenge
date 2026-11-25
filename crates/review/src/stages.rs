@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::{
     CheckPhase, Criterion, Detector, Evidence, Finding, Question, RelatedId, RunContext, Scope,
-    Severity, Stage,
+    Severity, Stage, consistency,
     pipeline::Result,
     segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
 };
@@ -103,13 +103,17 @@ impl Stage for ScaffoldStage {
                 ctx.requirements = merge_requirements(&ctx.document, drafts);
             }
             Self::Facts => {
-                ctx.facts = generate_typed(
-                    ctx.provider,
-                    name,
-                    prompt,
-                    serde_json::to_string(&ctx.requirements)?,
-                )
-                .await?;
+                ctx.facts = if ctx.requirements.is_empty() {
+                    Vec::new()
+                } else {
+                    generate_typed(
+                        ctx.provider,
+                        name,
+                        prompt,
+                        serde_json::to_string(&ctx.requirements)?,
+                    )
+                    .await?
+                };
             }
             Self::Rules => {
                 // TODO(issue): зарегистрировать детерминированные проверки формулировок.
@@ -129,11 +133,7 @@ impl Stage for ScaffoldStage {
                     .await?;
             }
             Self::Consistency => {
-                let input = serde_json::to_string(&serde_json::json!({
-                    "requirements": ctx.requirements,
-                    "facts": ctx.facts,
-                }))?;
-                self.find_with_model(ctx, input).await?;
+                consistency::check(ctx, prompt).await?;
             }
             Self::Ambiguity => {
                 self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
