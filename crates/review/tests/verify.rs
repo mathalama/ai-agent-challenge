@@ -370,20 +370,30 @@ impl LlmProvider for LanguageAndPromptProvider {
                 {
                     "text": "What error code should be returned?",
                     "why": "Needed for client integration.",
-                    "priority": "high",
+                    "topic": "api",
+                    "options": ["HTTP 400", "HTTP 422"],
                     "finding_ids": ["requirement_checks-001"]
                 },
                 {
                     "text": "Какой код ошибки возвращать при невалидном вводе?",
                     "why": "English rationale without Cyrillic.",
-                    "priority": "high",
+                    "topic": "api",
+                    "options": ["HTTP 400", "HTTP 422"],
                     "finding_ids": ["requirement_checks-001"]
                 },
                 {
                     "text": "Какой HTTP-статус возвращать при ошибке валидации: 400 или 422?",
                     "why": "Влияет на обработку ошибок в мобильном приложении.",
-                    "priority": "medium",
+                    "topic": "api",
+                    "options": ["HTTP 400", "HTTP 422"],
                     "finding_ids": ["requirement_checks-002"]
+                },
+                {
+                    "text": " какой  HTTP-статус возвращать при ошибке валидации: 400 или 422? ",
+                    "why": "Влияет на интеграцию.",
+                    "topic": "api",
+                    "options": ["HTTP 422", "HTTP 400", "HTTP 409", "HTTP 500"],
+                    "finding_ids": ["requirement_checks-002", "unknown-finding"]
                 }
             ]),
             _ => serde_json::json!([]),
@@ -428,7 +438,14 @@ async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_conte
         Some("Указать код ошибки HTTP 400 и текст сообщения.")
     );
     assert_eq!(ctx.questions.len(), 1);
-    assert_eq!(ctx.questions[0].id, "Q-001");
+    assert!(ctx.questions[0].id.starts_with("Q-"));
+    assert_eq!(ctx.questions[0].priority, Severity::Medium);
+    assert_eq!(ctx.questions[0].related.len(), 1);
+    assert_eq!(
+        ctx.questions[0].options,
+        ["HTTP 400", "HTTP 422", "HTTP 409"]
+    );
+    assert_eq!(ctx.questions[0].evidence[0].quote, "Первое требование");
     assert!(ctx.questions[0].text.contains("HTTP-статус"));
 
     let prompts = provider.seen_prompts.lock().unwrap();

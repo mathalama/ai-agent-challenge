@@ -179,17 +179,40 @@ impl LlmProvider for MockProvider {
             "segment" => {
                 #[derive(Deserialize)]
                 struct SegmentInput {
+                    #[serde(default)]
+                    title: String,
                     blocks: Vec<Block>,
                 }
                 let input: SegmentInput = serde_json::from_str(&request.user_text)?;
-                json!(
-                    mock_candidate(&input.blocks)
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                )
+                if input.title == crate::mock_review::DOCUMENT_TITLE {
+                    json!(
+                        input
+                            .blocks
+                            .iter()
+                            .filter_map(numbered_item)
+                            .enumerate()
+                            .map(|(index, (block, id, body, quote))| mock_candidate(
+                                index,
+                                block,
+                                Some(id),
+                                body,
+                                quote
+                            ))
+                            .collect::<Vec<_>>()
+                    )
+                } else {
+                    json!(
+                        first_mock_candidate(&input.blocks)
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    )
+                }
             }
-            "facts" | "rules" | "requirement_checks" | "set_checks" | "consistency"
-            | "ambiguity" | "verify" | "clarify" => json!([]),
+            "set_checks" => crate::mock_review::findings(&request.user_text)?,
+            "clarify" => crate::mock_review::questions(&request.user_text)?,
+            "facts" | "rules" | "requirement_checks" | "consistency" | "ambiguity" | "verify" => {
+                json!([])
+            }
             _ => return Err(LlmError::UnknownStage(request.stage.clone())),
         };
         let count = |text: &str| text.split_whitespace().count() as u64;
@@ -204,24 +227,27 @@ impl LlmProvider for MockProvider {
     }
 }
 
-fn mock_candidate(blocks: &[Block]) -> Option<Value> {
+fn numbered_item(block: &Block) -> Option<(&Block, &str, &str, &str)> {
+    let BlockContent::ListItem { text } = &block.content else {
+        return None;
+    };
+    let (id, body) = text.split_once(". ")?;
+    let (prefix, number) = id.split_once('-')?;
+    if prefix.is_empty()
+        || !prefix.chars().all(char::is_alphabetic)
+        || number.is_empty()
+        || !number.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((block, id, body, text))
+}
+
+fn first_mock_candidate(blocks: &[Block]) -> Option<Value> {
     let (block, source_id, body, quote) = blocks
         .iter()
-        .find_map(|block| {
-            let BlockContent::ListItem { text } = &block.content else {
-                return None;
-            };
-            let (id, body) = text.split_once(". ")?;
-            let (prefix, number) = id.split_once('-')?;
-            if prefix.is_empty()
-                || !prefix.chars().all(char::is_alphabetic)
-                || number.is_empty()
-                || !number.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                return None;
-            }
-            Some((block, Some(id), body, text.as_str()))
-        })
+        .find_map(numbered_item)
+        .map(|(block, id, body, quote)| (block, Some(id), body, quote))
         .or_else(|| {
             blocks.iter().find_map(|block| match &block.content {
                 BlockContent::Paragraph { text } | BlockContent::ListItem { text }
@@ -232,14 +258,24 @@ fn mock_candidate(blocks: &[Block]) -> Option<Value> {
                 _ => None,
             })
         })?;
-    Some(json!({
-        "id": "R-001",
+    Some(mock_candidate(0, block, source_id, body, quote))
+}
+
+fn mock_candidate(
+    index: usize,
+    block: &Block,
+    source_id: Option<&str>,
+    body: &str,
+    quote: &str,
+) -> Value {
+    json!({
+        "id": format!("R-{:03}", index + 1),
         "source_id": source_id,
         "text": body,
         "quote": quote,
         "location": block.location,
         "part": null,
-    }))
+    })
 }
 
 #[cfg(test)]

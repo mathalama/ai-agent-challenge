@@ -138,8 +138,37 @@ pub struct Question {
     pub id: String,
     pub text: String,
     pub why: String,
+    #[serde(default)]
+    pub topic: QuestionTopic,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<Evidence>,
     pub priority: Severity,
     pub related: Vec<RelatedId>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionTopic {
+    Calculation,
+    Notifications,
+    Api,
+    Security,
+    #[default]
+    Other,
+}
+
+impl QuestionTopic {
+    pub fn russian_name(self) -> &'static str {
+        match self {
+            Self::Calculation => "Расчёт",
+            Self::Notifications => "Уведомления",
+            Self::Api => "API",
+            Self::Security => "Безопасность",
+            Self::Other => "Другие вопросы",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

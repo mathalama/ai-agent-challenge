@@ -1,4 +1,7 @@
+mod ask;
+
 use std::{
+    collections::BTreeMap,
     error::Error,
     fs,
     io::{self, Write},
@@ -53,7 +56,16 @@ enum Command {
         trace: Option<PathBuf>,
     },
     /// Задать уточняющие вопросы автору документа.
-    Ask { input: PathBuf },
+    Ask {
+        input: PathBuf,
+        /// Путь к отчёту, рядом с которым сохраняются ответы.
+        #[arg(short, long, default_value = "reports/report.md")]
+        output: PathBuf,
+        #[arg(long, value_enum, default_value = "gemini")]
+        provider: Provider,
+        #[arg(long)]
+        no_cache: bool,
+    },
     /// Оценить качество агента на эталонной разметке.
     Eval {
         #[arg(long, default_value = "eval/")]
@@ -144,10 +156,12 @@ async fn run(cli: Cli) -> Result<()> {
             no_cache,
             trace,
         } => check(&input, output, format, provider, no_cache, trace.as_deref()).await,
-        Command::Ask { input } => {
-            // TODO(issue): провести интерактивный диалог и сохранить ответы.
-            Err(format!("Команда ask для «{}» пока в разработке", input.display()).into())
-        }
+        Command::Ask {
+            input,
+            output,
+            provider,
+            no_cache,
+        } => ask::run(&input, &output, provider, no_cache).await,
         Command::Eval { golden } => {
             // TODO(issue): рассчитать метрики на эталонных данных.
             Err(format!("Команда eval для «{}» пока в разработке", golden.display()).into())
@@ -169,15 +183,56 @@ async fn check(
             Format::Json => "reports/report.json",
         })
     });
-    if same_path(input, &output)? {
-        return Err("Выходной файл совпадает с исходным документом".into());
-    }
+    let answers_path = answers_path(input, &output)?;
     if let Some(path) = trace
-        && (same_path(path, input)? || same_path(path, &output)?)
+        && (same_path(path, input)? || same_path(path, &output)? || same_path(path, &answers_path)?)
     {
-        return Err("Для трассы укажите путь, отличный от путей документа и отчёта".into());
+        return Err(
+            "Для трассы укажите путь, отличный от путей документа, отчёта и ответов".into(),
+        );
     }
 
+    let answers = read_answers(&answers_path)?;
+    let report = review(input, provider, no_cache, trace, &answers).await?;
+    let rendered = match format {
+        Format::Md => MarkdownRenderer.render(&report)?,
+        Format::Json => JsonRenderer.render(&report)?,
+    };
+    write_output(&output, &rendered)?;
+    println!("Отчёт записан в «{}»", output.display());
+    Ok(())
+}
+
+type Answers = BTreeMap<String, String>;
+
+fn answers_path(input: &Path, output: &Path) -> Result<PathBuf> {
+    if same_path(input, output)? {
+        return Err("Выходной файл совпадает с исходным документом".into());
+    }
+    let answers = output.with_extension("answers.json");
+    if same_path(input, &answers)? || same_path(output, &answers)? {
+        return Err("Файл ответов совпадает с путём документа или отчёта".into());
+    }
+    Ok(answers)
+}
+
+fn read_answers(path: &Path) -> Result<Answers> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            format!("Некорректный файл ответов «{}»: {error}", path.display()).into()
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Answers::new()),
+        Err(error) => Err(format!("Не удалось прочитать «{}»: {error}", path.display()).into()),
+    }
+}
+
+async fn review(
+    input: &Path,
+    provider: Provider,
+    no_cache: bool,
+    trace: Option<&Path>,
+    answers: &Answers,
+) -> Result<Report> {
     let bytes = fs::read(input)
         .map_err(|error| format!("Не удалось прочитать «{}»: {error}", input.display()))?;
     let document = ParserRegistry::default().parse(input, &bytes)?;
@@ -212,14 +267,14 @@ async fn check(
         model: provider.model().into(),
         agent_version: AGENT_VERSION.into(),
     };
-    let report = Report::from_run(ctx, passport);
-    let rendered = match format {
-        Format::Md => MarkdownRenderer.render(&report)?,
-        Format::Json => JsonRenderer.render(&report)?,
-    };
-    write_output(&output, &rendered)?;
-    println!("Отчёт записан в «{}»", output.display());
-    Ok(())
+    let report = Report::with_answers(ctx, passport, answers);
+    if !report.unmatched_answers.is_empty() {
+        eprintln!(
+            "Предупреждение: сохранённые ответы без текущего вопроса — {:?}.",
+            report.unmatched_answers.keys().collect::<Vec<_>>(),
+        );
+    }
+    Ok(report)
 }
 
 fn same_path(left: &Path, right: &Path) -> io::Result<bool> {

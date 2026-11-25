@@ -98,6 +98,7 @@ impl LlmProvider for SampleMock {
                     .any(|start| quote.starts_with(start))
                     .then(|| json!({"text": quote, "quote": quote, "location": block["location"]}))
             }).collect::<Vec<_>>()),
+            "set_checks" => json!([]),
             "facts" => {
                 let schema = request.response_schema.to_string();
                 assert!(schema.contains("time_zone") && schema.contains("frequency") && schema.contains("range"));

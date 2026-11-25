@@ -1,3 +1,4 @@
+mod clarify;
 mod consistency;
 mod domain;
 mod facts;
