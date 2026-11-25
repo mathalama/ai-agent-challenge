@@ -1,0 +1,686 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Report",
+  "type": "object",
+  "properties": {
+    "blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Block"
+      }
+    },
+    "finding_answers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Answer"
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Finding"
+      }
+    },
+    "passport": {
+      "$ref": "#/$defs/RunPassport"
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "readiness": {
+      "$ref": "#/$defs/Readiness"
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Requirement"
+      }
+    },
+    "schema_version": {
+      "$ref": "#/$defs/ReportSchemaVersion"
+    },
+    "summary": {
+      "$ref": "#/$defs/ReportSummary"
+    },
+    "unmatched_answers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "passport",
+    "blocks",
+    "requirements",
+    "findings",
+    "summary",
+    "readiness",
+    "questions"
+  ],
+  "$defs": {
+    "Answer": {
+      "type": "object",
+      "properties": {
+        "question_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "text"
+      ]
+    },
+    "Block": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "location": {
+          "$ref": "#/$defs/SourceSpan"
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "heading"
+            },
+            "level": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "level",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "paragraph"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list_item"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "table"
+            },
+            "row_lines": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "rows"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "code"
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "language",
+            "text"
+          ]
+        }
+      ],
+      "required": [
+        "id",
+        "location"
+      ]
+    },
+    "Criterion": {
+      "type": "string",
+      "enum": [
+        "necessary",
+        "appropriate",
+        "unambiguous",
+        "complete",
+        "singular",
+        "feasible",
+        "verifiable",
+        "correct",
+        "conforming",
+        "set_complete",
+        "consistent",
+        "set_feasible",
+        "comprehensible",
+        "able_to_be_validated",
+        "ranked",
+        "modifiable",
+        "traceable"
+      ]
+    },
+    "Detector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "rule"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "llm"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "solver"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "$ref": "#/$defs/SourceSpan"
+        },
+        "quote": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "quote",
+        "location"
+      ]
+    },
+    "Finding": {
+      "type": "object",
+      "properties": {
+        "additional_criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Criterion"
+          }
+        },
+        "additional_detectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Detector"
+          }
+        },
+        "criterion": {
+          "$ref": "#/$defs/Criterion"
+        },
+        "detector": {
+          "$ref": "#/$defs/Detector"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "fallback_evidence": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "merged_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "suggestion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "scope",
+        "criterion",
+        "severity",
+        "evidence",
+        "explanation",
+        "suggestion",
+        "detector",
+        "verified"
+      ]
+    },
+    "Question": {
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "priority": {
+          "$ref": "#/$defs/Severity"
+        },
+        "related": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RelatedId"
+          }
+        },
+        "text": {
+          "type": "string"
+        },
+        "topic": {
+          "$ref": "#/$defs/QuestionTopic",
+          "default": "other"
+        },
+        "why": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "why",
+        "topic",
+        "options",
+        "evidence",
+        "priority",
+        "related"
+      ]
+    },
+    "QuestionTopic": {
+      "type": "string",
+      "enum": [
+        "calculation",
+        "notifications",
+        "api",
+        "security",
+        "other"
+      ]
+    },
+    "Readiness": {
+      "type": "string",
+      "enum": [
+        "blocked",
+        "checks_incomplete",
+        "ready"
+      ]
+    },
+    "RelatedId": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "finding"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "requirement"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ]
+        }
+      ]
+    },
+    "ReportSchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1"
+      ]
+    },
+    "ReportSummary": {
+      "type": "object",
+      "properties": {
+        "critical_findings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "finding_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "requirement_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "verified_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "requirement_count",
+        "finding_count",
+        "verified_count",
+        "critical_findings"
+      ]
+    },
+    "Requirement": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/SourceSpan"
+        },
+        "part": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quote": {
+          "type": "string"
+        },
+        "section": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "table": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TableRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source_id",
+        "text",
+        "quote",
+        "location",
+        "part"
+      ]
+    },
+    "RunPassport": {
+      "type": "object",
+      "properties": {
+        "agent_version": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "document_title": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "document_title",
+        "date",
+        "model",
+        "agent_version"
+      ]
+    },
+    "Scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "requirement"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "Severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "SourceSpan": {
+      "type": "object",
+      "properties": {
+        "end_line": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "page": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "start_line": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line",
+        "page"
+      ]
+    },
+    "TableRef": {
+      "type": "object",
+      "properties": {
+        "block_id": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "row": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "block_id",
+        "index",
+        "row"
+      ]
+    }
+  }
+}

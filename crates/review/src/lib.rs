@@ -23,7 +23,8 @@ pub use pipeline::{
     Check, CheckPhase, CheckRegistry, Pipeline, RunContext, Stage, StageError, StageTrace,
 };
 pub use report::{
-    JsonRenderer, MarkdownRenderer, Readiness, Report, ReportRenderer, ReportSummary,
+    JsonRenderer, MarkdownRenderer, Readiness, Report, ReportRenderer, ReportSchemaVersion,
+    ReportSummary,
 };
 pub use segment::{extract_source_id, extract_table_requirements};
 pub use vague::{VagueDictionary, VagueMatch, VagueTermEntry};

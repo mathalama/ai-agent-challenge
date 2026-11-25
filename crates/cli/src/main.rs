@@ -76,6 +76,12 @@ enum Command {
         #[arg(long)]
         no_cache: bool,
     },
+    /// Вывести JSON Schema отчёта.
+    Schema {
+        /// Записать схему в файл вместо стандартного вывода.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -108,7 +114,7 @@ async fn main() -> ExitCode {
                 ErrorKind::MissingRequiredArgument => "Отсутствует обязательный аргумент",
                 ErrorKind::MissingSubcommand
                 | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                    "Укажите команду check, ask или eval"
+                    "Укажите команду check, ask, eval или schema"
                 }
                 ErrorKind::InvalidValue | ErrorKind::ValueValidation => {
                     "Недопустимое значение аргумента"
@@ -172,6 +178,15 @@ async fn run(cli: Cli) -> Result<()> {
             provider,
             no_cache,
         } => eval_golden(&golden, provider, no_cache).await,
+        Command::Schema { output } => {
+            let schema = serde_json::to_string_pretty(&Report::json_schema())? + "\n";
+            if let Some(path) = output {
+                write_output(&path, &schema)?;
+            } else {
+                io::stdout().write_all(schema.as_bytes())?;
+            }
+            Ok(())
+        }
     }
 }
 

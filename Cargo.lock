@@ -369,6 +369,7 @@ dependencies = [
  "clap",
  "doc",
  "dotenvy",
+ "jsonschema",
  "llm",
  "review",
  "serde_json",

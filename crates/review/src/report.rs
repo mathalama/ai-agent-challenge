@@ -4,7 +4,8 @@ use std::{
     fmt::Write,
 };
 
-use schemars::JsonSchema;
+use doc::Block;
+use schemars::{JsonSchema, Schema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,7 +15,9 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Report {
+    pub schema_version: ReportSchemaVersion,
     pub passport: RunPassport,
+    pub blocks: Vec<Block>,
     pub requirements: Vec<Requirement>,
     pub findings: Vec<Finding>,
     pub summary: ReportSummary,
@@ -24,6 +27,12 @@ pub struct Report {
     pub finding_answers: BTreeMap<FindingId, Vec<Answer>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unmatched_answers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+pub enum ReportSchemaVersion {
+    #[serde(rename = "1")]
+    V1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -64,6 +73,13 @@ fn needs_fix(finding: &Finding) -> bool {
 }
 
 impl Report {
+    pub fn json_schema() -> Schema {
+        SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<Self>()
+    }
+
     pub fn from_run(ctx: RunContext<'_>, passport: RunPassport) -> Self {
         Self::with_answers(ctx, passport, &BTreeMap::new())
     }
@@ -113,7 +129,9 @@ impl Report {
             ctx.findings.iter(),
         );
         Self {
+            schema_version: ReportSchemaVersion::V1,
             passport,
+            blocks: ctx.document.blocks,
             requirements: ctx.requirements,
             findings: ctx.findings,
             summary,
@@ -603,6 +621,8 @@ mod tests {
             })
             .collect();
         let report = Report {
+            schema_version: ReportSchemaVersion::V1,
+            blocks: Vec::new(),
             passport: RunPassport {
                 document_title: String::new(),
                 date: String::new(),
@@ -749,6 +769,8 @@ mod tests {
             .into();
 
         let report = Report {
+            schema_version: ReportSchemaVersion::V1,
+            blocks: Vec::new(),
             passport: RunPassport {
                 document_title: String::new(),
                 date: String::new(),
