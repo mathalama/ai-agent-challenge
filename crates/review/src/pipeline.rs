@@ -40,6 +40,7 @@ pub struct RunContext<'a> {
     pub findings: Vec<Finding>,
     pub questions: Vec<Question>,
     pub trace: Vec<StageTrace>,
+    pub(crate) rules_completed: bool,
     pub(crate) checks_complete: bool,
 }
 
@@ -58,6 +59,7 @@ impl<'a> RunContext<'a> {
             findings: Vec::new(),
             questions: Vec::new(),
             trace: Vec::new(),
+            rules_completed: false,
             checks_complete: false,
         }
     }
@@ -95,6 +97,7 @@ impl Pipeline {
     }
 
     pub async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
+        ctx.rules_completed = false;
         ctx.checks_complete = false;
         for stage in &self.stages {
             let started = Instant::now();
@@ -110,6 +113,7 @@ impl Pipeline {
             })?;
         }
         ctx.checks_complete = self.full_review
+            && ctx.rules_completed
             && ctx.provider.model() != "mock"
             && ctx.requirements.iter().all(|requirement| {
                 ctx.document
@@ -129,6 +133,9 @@ pub enum CheckPhase {
 #[async_trait]
 pub trait Check: Send + Sync {
     fn phase(&self) -> CheckPhase;
+    fn applies_to(&self, _ctx: &RunContext<'_>) -> bool {
+        true
+    }
     async fn run(&self, ctx: &RunContext<'_>) -> Result<Vec<Finding>>;
 }
 
@@ -138,13 +145,32 @@ pub struct CheckRegistry {
 }
 
 impl CheckRegistry {
+    pub fn with_builtin_rules() -> Self {
+        let mut registry = Self::default();
+        registry.register(crate::rules::TestingSection);
+        registry
+    }
+
     pub fn register(&mut self, check: impl Check + 'static) {
         self.checks.push(Box::new(check));
     }
 
+    pub(crate) fn can_complete_rules(&self, ctx: &RunContext<'_>) -> bool {
+        let mut rules = self
+            .checks
+            .iter()
+            .filter(|check| check.phase() == CheckPhase::Rules)
+            .peekable();
+        rules.peek().is_some() && rules.all(|check| check.applies_to(ctx))
+    }
+
     pub async fn run(&self, phase: CheckPhase, ctx: &RunContext<'_>) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for check in self.checks.iter().filter(|check| check.phase() == phase) {
+        for check in self
+            .checks
+            .iter()
+            .filter(|check| check.phase() == phase && check.applies_to(ctx))
+        {
             findings.extend(check.run(ctx).await?);
         }
         Ok(findings)
