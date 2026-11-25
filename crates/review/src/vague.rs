@@ -653,6 +653,17 @@ mod tests {
         assert_eq!(vague[0].entry.term, "достаточно");
     }
 
+    #[test]
+    fn convenience_rationale_is_exempt_but_ux_requirements_still_match() {
+        let dict = VagueDictionary::builtin();
+        let rationale = "NFR-4. Для удобства отладки полные номера карт и счетов клиентов записываются в журнал приложения в открытом виде.";
+        assert!(dict.find_matches(rationale).is_empty());
+        let text = format!("{rationale} Интерфейс должен быть удобным.");
+        let matches = dict.find_matches(&text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].matched_text, "удобным");
+    }
+
     #[tokio::test]
     async fn vague_terms_rule_emits_verified_finding_with_term_quote_and_rewrite() {
         let source = concat!(

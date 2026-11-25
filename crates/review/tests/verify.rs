@@ -862,3 +862,36 @@ async fn merges_single_requirement_duplicates_and_counts_critical_findings_once(
     let markdown = MarkdownRenderer.render(&report).unwrap();
     assert!(markdown.contains("Подтверждённых критичных дефектов — 1"));
 }
+
+#[tokio::test]
+async fn keeps_the_pii_finding_without_a_convenience_warning() {
+    let source = "# Требования\n\n* NFR-4. Для удобства отладки полные номера карт и счетов клиентов записываются в журнал приложения в открытом виде.";
+    let document = ParserRegistry::default()
+        .parse(Path::new("logging.md"), source.as_bytes())
+        .unwrap();
+    let provider = ReviewProvider(
+        Some((
+            Severity::Critical,
+            "полные номера карт и счетов клиентов записываются в журнал приложения в открытом виде.",
+        )),
+        2,
+    );
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &provider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    let pii = ctx
+        .findings
+        .iter()
+        .find(|finding| finding.all_ids().contains(&"set_checks-001"))
+        .unwrap_or_else(|| panic!("{:#?}", ctx.findings));
+    assert!(pii.verified);
+    assert_eq!(pii.scope, Scope::Requirement("R-001".into()));
+    assert_eq!(pii.severity, Severity::Critical);
+    assert!(
+        !ctx.findings
+            .iter()
+            .flat_map(Finding::all_detectors)
+            .any(|detector| { matches!(detector, Detector::Rule(id) if id == "vague-terms") })
+    );
+}
