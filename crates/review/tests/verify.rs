@@ -70,7 +70,7 @@ async fn verify_checks_quote_in_its_declared_span() {
     assert_eq!(verified, ["F-1", "F-4", "F-5"]);
 }
 
-struct ReviewProvider(Option<(Severity, &'static str)>);
+struct ReviewProvider(Option<(Severity, &'static str)>, usize);
 
 #[async_trait]
 impl LlmProvider for ReviewProvider {
@@ -81,7 +81,7 @@ impl LlmProvider for ReviewProvider {
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
         if request.stage == "segment" {
             let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
-            assert!(!input["blocks"].as_array().unwrap().is_empty());
+            assert_eq!(input["blocks"].as_array().unwrap().len(), self.1);
             return MockProvider.generate(request).await;
         }
         let mut findings = Vec::new();
@@ -173,7 +173,7 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
                 "# Документ требований\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование\n\n## 5. Тестирование и приёмка:\n\nПроверить, что пустой ввод вызывает ошибку.".as_bytes(),
             )
             .unwrap();
-        let provider = ReviewProvider(finding);
+        let provider = ReviewProvider(finding, 5);
         let checks = match rules_phase {
             Some(CheckPhase::Rules) => CheckRegistry::with_builtin_rules(),
             Some(phase) => {
@@ -204,7 +204,7 @@ async fn readiness_requires_testing_section_coverage() {
         let document = ParserRegistry::default()
             .parse(Path::new(path), source.as_bytes())
             .unwrap();
-        let provider = ReviewProvider(None);
+        let provider = ReviewProvider(None, 2);
         let mut ctx = RunContext::new(document, &provider, &checks);
         Pipeline::default().run(&mut ctx).await.unwrap();
         let passport = RunPassport {

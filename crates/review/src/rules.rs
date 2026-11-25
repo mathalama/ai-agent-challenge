@@ -15,11 +15,11 @@ impl Check for TestingSection {
     }
 
     fn applies_to(&self, ctx: &RunContext<'_>) -> bool {
+        // Без заголовков границы раздела не определить, поэтому правило не применяется.
         ctx.document
-            .source_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_none_or(|ext| !ext.eq_ignore_ascii_case("txt") && !ext.eq_ignore_ascii_case("text"))
+            .blocks
+            .iter()
+            .any(|block| matches!(block.content, BlockContent::Heading { .. }))
     }
 
     async fn run(&self, ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
@@ -30,7 +30,7 @@ impl Check for TestingSection {
             let BlockContent::Heading { level, text } = &heading.content else {
                 continue;
             };
-            if !is_testing_heading(text) {
+            if !is_testing_title(text) {
                 continue;
             }
             found_section = true;
@@ -71,6 +71,19 @@ impl Check for TestingSection {
                 ));
             }
         }
+        // Заголовок раздела иногда оформлен жирным абзацем, а не заголовком Markdown.
+        found_section |= ctx
+            .document
+            .blocks
+            .iter()
+            .any(|block| match &block.content {
+                BlockContent::Paragraph { text } | BlockContent::ListItem { text } => {
+                    !text.contains('\n')
+                        && text.split_whitespace().count() <= 6
+                        && is_testing_title(text)
+                }
+                _ => false,
+            });
         if !found_section {
             let evidence = ctx.document.blocks.iter().find_map(|block| {
                 let quote = match &block.content {
@@ -97,34 +110,18 @@ impl Check for TestingSection {
     }
 }
 
-fn is_testing_heading(text: &str) -> bool {
-    let title = text
-        .trim_start_matches(|c: char| {
-            c.is_whitespace()
-                || c.is_ascii_digit()
-                || c.is_ascii_punctuation()
-                || matches!(c, '—' | '–' | '«')
-        })
-        .trim_end_matches(|c: char| {
-            c.is_whitespace() || c.is_ascii_punctuation() || matches!(c, '—' | '–' | '»' | '…')
-        })
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-        .replace('ё', "е");
-    matches!(
-        title.as_str(),
-        "требования к тестированию"
-            | "тестирование"
-            | "тестирование требований"
-            | "тестирование и приемка"
-            | "требования к тестированию и приемке"
-            | "testing"
-            | "testing requirements"
-            | "test requirements"
-            | "testing and acceptance"
-    )
+fn is_testing_title(text: &str) -> bool {
+    let title = text.to_lowercase().replace('ё', "е");
+    title.contains("контроля и приемки")
+        || title
+            .split(|c: char| !c.is_alphanumeric() && c != '-')
+            .any(|word| {
+                word.starts_with("тестир")
+                    || word.starts_with("тест-")
+                    || word.starts_with("испытан")
+                    || word.starts_with("test")
+                    || matches!(word, "тест" | "тесты" | "тестов" | "qa")
+            })
 }
 
 fn testing_finding(id: String, evidence: Vec<Evidence>, explanation: &str) -> Finding {
@@ -140,6 +137,7 @@ fn testing_finding(id: String, evidence: Vec<Evidence>, explanation: &str) -> Fi
         verified: false,
     }
 }
+
 fn is_placeholder(text: &str) -> bool {
     text.lines().all(|line| {
         let normalized = line.trim().trim_end_matches(['.', '!', '…']).to_lowercase();
