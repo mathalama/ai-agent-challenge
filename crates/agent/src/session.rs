@@ -10,18 +10,20 @@ use serde::Serialize;
 
 use crate::{Answers, Result, progress_trace, review};
 
-const HELP: &str = "Загрузите документ командой /load <путь> или передайте файл. Для проверки введите /check. После проверки доступны /findings, /questions, /verdict и /export md|json. Для ответа введите /answer <ID> <ответ> или ответьте на текущий вопрос. Сохранение рассуждений переключается командой /reasoning on|off.";
+const HELP: &str = "Загрузите документ через клиент. Если клиент поддерживает команду /load <путь>, он прочитает файл по указанному пути. Для проверки введите /check. После проверки доступны /findings, /questions, /verdict и /export md|json. Для ответа введите /answer <ID> <ответ> или ответьте на текущий вопрос. Сохранение рассуждений по умолчанию выключено. Для переключения используйте /reasoning on|off.";
 
 pub enum Input<'a> {
     Text(&'a str),
-    /// Байты предоставляет клиент. Имя используется для выбора парсера.
+    /// Клиент обрабатывает `/load <путь>` или загрузку файла и передаёт байты.
+    /// Имя используется для выбора парсера.
     Document {
         name: &'a Path,
         bytes: &'a [u8],
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Empty,
     Loaded,
@@ -52,6 +54,9 @@ pub enum AgentEvent {
     Progress {
         progress: ProgressEvent,
     },
+    StateChanged {
+        state: SessionState,
+    },
     ReportReady {
         summary: ReportSummary,
     },
@@ -74,7 +79,6 @@ type ProviderFactory = dyn Fn(TraceLog, bool) -> Result<Box<dyn LlmProvider>> + 
 type EventHandler = dyn Fn(AgentEvent) + Send + Sync;
 
 pub struct Session {
-    state: SessionState,
     document: Option<Document>,
     report: Option<Report>,
     answers: Answers,
@@ -89,18 +93,24 @@ impl Session {
         provider: impl Fn(TraceLog, bool) -> Result<Box<dyn LlmProvider>> + Send + Sync + 'static,
     ) -> Self {
         Self {
-            state: SessionState::Empty,
             document: None,
             report: None,
             answers: Answers::new(),
             current_question: None,
-            include_reasoning: true,
+            include_reasoning: false,
             provider: Box::new(provider),
         }
     }
 
+    /// Состояние между командами. Во время проверки клиент получает `Reviewing` событием.
     pub fn state(&self) -> SessionState {
-        self.state
+        if self.report.is_some() {
+            SessionState::Reviewed
+        } else if self.document.is_some() {
+            SessionState::Loaded
+        } else {
+            SessionState::Empty
+        }
     }
 
     pub fn report(&self) -> Option<&Report> {
@@ -119,7 +129,12 @@ impl Session {
     ) {
         let emit: Arc<EventHandler> = Arc::new(emit);
         let result = match input {
-            Input::Document { name, bytes } => self.load(name, bytes).map(|event| emit(event)),
+            Input::Document { name, bytes } => self.load(name, bytes).map(|event| {
+                emit(AgentEvent::StateChanged {
+                    state: self.state(),
+                });
+                emit(event);
+            }),
             Input::Text(text) => self.handle_text(text.trim(), &emit).await,
         };
         if let Err(error) = result {
@@ -142,7 +157,6 @@ impl Session {
             document.title,
             document.blocks.len()
         ));
-        self.state = SessionState::Loaded;
         self.document = Some(document);
         self.report = None;
         self.answers.clear();
@@ -153,11 +167,7 @@ impl Session {
     async fn handle_text(&mut self, text: &str, emit: &Arc<EventHandler>) -> Result<()> {
         let (command, arguments) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
         let arguments = arguments.trim();
-        if self.document.is_none() || matches!(command, "/help" | "/load") {
-            emit(message(HELP));
-        } else if command == "/check" || command.to_lowercase() == "проверь" {
-            self.check(Arc::clone(emit)).await?;
-        } else if command == "/reasoning" {
+        if command == "/reasoning" {
             self.include_reasoning = match arguments {
                 "on" => true,
                 "off" => false,
@@ -168,6 +178,14 @@ impl Session {
             } else {
                 "Сохранение рассуждений выключено."
             }));
+        } else if command == "/load" {
+            emit(message(
+                "Команду /load <путь> обрабатывает клиент. Загрузите файл через интерфейс клиента.",
+            ));
+        } else if self.document.is_none() || command == "/help" {
+            emit(message(HELP));
+        } else if command == "/check" || text.to_lowercase() == "проверь" {
+            self.check(Arc::clone(emit)).await?;
         } else if self.report.is_some() {
             self.handle_report(command, arguments, text, emit.as_ref())?;
         } else {
@@ -241,18 +259,26 @@ impl Session {
     }
 
     async fn check(&mut self, emit: Arc<EventHandler>) -> Result<()> {
+        emit(AgentEvent::StateChanged {
+            state: SessionState::Reviewing,
+        });
+        let result = self.run_check(Arc::clone(&emit)).await.map(|report| {
+            let summary = report.summary.clone();
+            self.report = Some(report);
+            self.current_question = None;
+            summary
+        });
+        emit(AgentEvent::StateChanged {
+            state: self.state(),
+        });
+        emit(AgentEvent::ReportReady { summary: result? });
+        Ok(())
+    }
+
+    async fn run_check(&self, emit: Arc<EventHandler>) -> Result<Report> {
         let document = self.document.as_ref().expect("документ загружен").clone();
-        let sink: Arc<dyn ProgressSink> = Arc::new(SessionProgress(Arc::clone(&emit)));
+        let sink: Arc<dyn ProgressSink> = Arc::new(SessionProgress(emit));
         let trace = progress_trace(Arc::clone(&sink));
-        self.state = SessionState::Reviewing;
-        let mut state = ReviewState {
-            state: &mut self.state,
-            next: if self.report.is_some() {
-                SessionState::Reviewed
-            } else {
-                SessionState::Loaded
-            },
-        };
         let provider = (self.provider)(trace.clone(), self.include_reasoning)?;
         let run = review(
             document,
@@ -262,14 +288,7 @@ impl Session {
             &self.answers,
         )
         .await;
-        let report = run.report?;
-        let summary = report.summary.clone();
-        self.report = Some(report);
-        self.current_question = None;
-        state.next = SessionState::Reviewed;
-        drop(state);
-        emit(AgentEvent::ReportReady { summary });
-        Ok(())
+        Ok(run.report?)
     }
 
     fn answer(&mut self, id: &str, text: &str, emit: &EventHandler) -> Result<()> {
@@ -308,17 +327,5 @@ impl ProgressSink for SessionProgress {
         (self.0)(AgentEvent::Progress {
             progress: event.clone(),
         });
-    }
-}
-
-// Возвращает сессию в рабочее состояние и при отмене будущего результата проверки.
-struct ReviewState<'a> {
-    state: &'a mut SessionState,
-    next: SessionState,
-}
-
-impl Drop for ReviewState<'_> {
-    fn drop(&mut self) {
-        *self.state = self.next;
     }
 }
