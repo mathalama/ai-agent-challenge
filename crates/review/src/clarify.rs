@@ -24,18 +24,17 @@ struct QuestionDraft {
     finding_ids: Vec<String>,
 }
 
-pub(crate) async fn ask_questions(
-    ctx: &mut RunContext<'_>,
-    prompt: &str,
-    batch_size: usize,
-) -> Result<()> {
+pub(crate) async fn ask_questions(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> {
     ctx.questions.clear();
     let verified: Vec<_> = ctx
         .findings
         .iter()
         .filter(|finding| finding.verified)
         .collect();
-    let mut pending: Vec<_> = verified.chunks(batch_size).rev().collect();
+    if verified.is_empty() {
+        return Ok(());
+    }
+    let mut pending = vec![verified.as_slice()];
     let mut drafts = Vec::new();
     let mut skipped_finding = false;
     while let Some(batch) = pending.pop() {

@@ -222,6 +222,7 @@ async fn unrelated_provider_error_still_fails_the_facts_stage() {
 
 struct OverflowReview {
     stage: &'static str,
+    clarify_limit: Option<usize>,
 }
 
 fn output_limit() -> LlmError {
@@ -261,13 +262,12 @@ impl LlmProvider for OverflowReview {
             }
             "clarify" => {
                 let input: Vec<Value> = serde_json::from_str(&request.user_text).unwrap();
-                if input.len() > 2 {
-                    return Err(output_limit());
-                }
-                if input
-                    .iter()
-                    .any(|finding| finding["id"] == "requirement_checks-003")
-                {
+                if self.clarify_limit.is_some_and(|limit| {
+                    input.len() > limit
+                        || input
+                            .iter()
+                            .any(|finding| finding["id"] == "requirement_checks-003")
+                }) {
                     return Err(output_limit());
                 }
                 json!([{
@@ -297,6 +297,7 @@ async fn output_limits_preserve_partial_questions_and_report_incomplete_stages()
     let recorder = Recorder::default();
     let provider = OverflowReview {
         stage: "set_checks",
+        clarify_limit: Some(2),
     };
     let checks = CheckRegistry::default();
     let mut ctx =
@@ -352,11 +353,48 @@ async fn output_limits_preserve_partial_questions_and_report_incomplete_stages()
 
 #[tokio::test]
 async fn segmentation_overflow_still_keeps_deterministic_requirements() {
-    let provider = OverflowReview { stage: "segment" };
+    let provider = OverflowReview {
+        stage: "segment",
+        clarify_limit: None,
+    };
     let checks = CheckRegistry::default();
     let mut ctx = RunContext::new(facts_input(), &provider, &checks);
     Pipeline::default().run(&mut ctx).await.unwrap();
     assert_eq!(ctx.requirements.len(), 3);
     assert_eq!(ctx.context_items.len(), 2);
     assert!(ctx.findings.iter().all(|finding| finding.verified));
+}
+
+#[tokio::test]
+async fn clarify_sees_all_findings_in_one_request_before_falling_back_to_batches() {
+    let source: String = (1..=15)
+        .map(|index| format!("* Ф-{index}. Архивировать запись {index}.\n"))
+        .collect();
+    let document = ParserRegistry::default()
+        .parse(Path::new("archives.md"), source.as_bytes())
+        .unwrap();
+    let trace = TraceLog::default();
+    let provider = RetryProvider::new(Box::new(OverflowReview {
+        stage: "",
+        clarify_limit: None,
+    }))
+    .with_trace(trace.clone());
+    let checks = CheckRegistry::default();
+    let mut ctx = RunContext::new(document, &provider, &checks);
+
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert_eq!(ctx.findings.len(), 15);
+    let calls = serde_json::to_value(trace.entries()).unwrap();
+    assert_eq!(
+        calls
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["stage"] == "clarify")
+            .count(),
+        1
+    );
+    assert_eq!(ctx.questions.len(), 1);
+    assert_eq!(ctx.questions[0].related.len(), 15);
 }

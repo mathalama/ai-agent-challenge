@@ -185,9 +185,7 @@ impl Stage for ScaffoldStage {
                 }
                 ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
             }
-            Self::Clarify => {
-                clarify::ask_questions(ctx, &self.llm_prompt(), REVIEW_BATCH_SIZE).await?
-            }
+            Self::Clarify => clarify::ask_questions(ctx, &self.llm_prompt()).await?,
         }
         Ok(())
     }
