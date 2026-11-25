@@ -194,7 +194,7 @@ async fn check(
     } else {
         Box::new(CachedProvider::new(retry, ".cache/llm"))
     };
-    let checks = CheckRegistry::default();
+    let checks = CheckRegistry::with_builtin_rules();
     let mut ctx = RunContext::new(document, provider.as_ref(), &checks);
     let result = Pipeline::default().run(&mut ctx).await;
     if let Some(path) = trace {
