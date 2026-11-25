@@ -263,10 +263,10 @@ impl Check for LanguageCheck {
 
     async fn run(&self, _ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
         let evidence = vec![Evidence {
-            quote: "Первое требование".into(),
+            quote: "Второе требование".into(),
             location: SourceSpan {
-                start_line: 3,
-                end_line: 3,
+                start_line: 4,
+                end_line: 4,
                 page: None,
             },
         }];
@@ -382,6 +382,28 @@ impl LlmProvider for LanguageAndPromptProvider {
                     }],
                     "explanation": "Не описана реакция на ошибку ввода.",
                     "suggestion": "Указать код ошибки HTTP 400 и текст сообщения."
+                },
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "verifiable",
+                    "severity": "high",
+                    "evidence": [{
+                        "quote": "Первое требование",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Не описан сценарий 보안-тестирования.",
+                    "suggestion": null
+                },
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "ranked",
+                    "severity": "high",
+                    "evidence": [{
+                        "quote": "Первое требование",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Не описан сценарий тестирования.",
+                    "suggestion": "安全"
                 }
             ]),
             "clarify" => serde_json::json!([
@@ -426,7 +448,7 @@ impl LlmProvider for LanguageAndPromptProvider {
 }
 
 #[tokio::test]
-async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_context() {
+async fn validates_finding_and_question_languages_and_attaches_domain_context() {
     let document = ParserRegistry::default()
         .parse(
             Path::new("input.md"),
