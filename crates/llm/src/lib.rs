@@ -95,6 +95,11 @@ pub enum LlmError {
 }
 
 impl LlmError {
+    pub fn is_output_limit(&self) -> bool {
+        matches!(self, Self::MissingCandidate { finish_reason, .. }
+            if matches!(finish_reason.as_str(), "length" | "MAX_TOKENS"))
+    }
+
     pub(crate) fn usage(&self) -> Option<Usage> {
         match self {
             Self::MissingCandidate { usage, .. } | Self::ResponseJson { usage, .. } => *usage,

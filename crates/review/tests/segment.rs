@@ -561,6 +561,7 @@ async fn business_status_prose_stays_in_requirements_while_http_statuses_are_con
         "# Спецификация заявки\n\n",
         "## Статусная модель заявки\n\n",
         "Система переводит заявку в статус «Одобрена» после решения.\n\n",
+        "HTTP 429 возвращается при превышении лимита запросов.\n\n",
         "## Статусы\n\n",
         "Статус «На рассмотрении» доступен только сотруднику.\n\n",
         "**400.** Запрос содержит ошибку.\n\n",
@@ -572,14 +573,57 @@ async fn business_status_prose_stays_in_requirements_while_http_statuses_are_con
         .parse(Path::new("statuses.md"), source.as_bytes())
         .unwrap();
     let checks = CheckRegistry::default();
-    let mut ctx = RunContext::new(document, &llm::MockProvider, &checks);
+    struct StatusProvider;
+    #[async_trait]
+    impl LlmProvider for StatusProvider {
+        fn model(&self) -> &str {
+            "test-statuses"
+        }
+
+        async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+            if request.stage != "segment" {
+                return llm::MockProvider.generate(request).await;
+            }
+            let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
+            let blocks = input["blocks"].as_array().unwrap();
+            let refs: Vec<_> = [
+                "Система переводит заявку",
+                "Статус «На рассмотрении»",
+                "HTTP 429 возвращается",
+            ]
+            .iter()
+            .map(|prefix| {
+                let block = blocks
+                    .iter()
+                    .find(|block| {
+                        block["text"]
+                            .as_str()
+                            .is_some_and(|text| text.starts_with(*prefix))
+                    })
+                    .unwrap_or_else(|| panic!("Строка не передана в нарезку: {prefix}"));
+                json!({
+                    "block_id": block["id"], "kind":"requirement",
+                    "start_line":block["location"]["start_line"],
+                    "end_line":block["location"]["end_line"],
+                })
+            })
+            .collect();
+            Ok(LlmResponse {
+                json: json!(refs),
+                usage: Usage::default(),
+                model: self.model().into(),
+            })
+        }
+    }
+
+    let mut ctx = RunContext::new(document, &StatusProvider, &checks);
     Pipeline::default().run(&mut ctx).await.unwrap();
 
-    assert_eq!(ctx.requirements.len(), 1);
+    assert_eq!(ctx.requirements.len(), 3);
     assert!(
-        ctx.requirements[0]
-            .quote
-            .contains("Система переводит заявку")
+        ctx.requirements
+            .iter()
+            .any(|r| r.quote.starts_with("HTTP 429"))
     );
     assert_eq!(
         ctx.context_items

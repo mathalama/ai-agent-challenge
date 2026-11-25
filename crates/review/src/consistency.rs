@@ -112,6 +112,9 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
         }
     }
 
+    let rule_count = findings.len();
+    ctx.findings.extend(findings);
+
     let shared: Vec<_> = groups
         .values()
         .filter(|g| g.requirements.len() + g.context.len() > 1)
@@ -125,6 +128,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
         )
         .await?;
         let mut seen = BTreeSet::new();
+        let mut findings = Vec::new();
         for draft in drafts {
             let [first, second] = draft.requirement_ids;
             let pair = ordered_pair(first, second);
@@ -143,7 +147,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 continue;
             }
             findings.push(Finding {
-                id: format!("consistency-{:03}", findings.len() + 1),
+                id: format!("consistency-{:03}", rule_count + findings.len() + 1),
                 scope: Scope::Set,
                 criterion: Criterion::Consistent,
                 additional_criteria: Vec::new(),
@@ -158,8 +162,8 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 verified: false,
             });
         }
+        ctx.findings.extend(findings);
     }
-    ctx.findings.extend(findings);
     Ok(())
 }
 

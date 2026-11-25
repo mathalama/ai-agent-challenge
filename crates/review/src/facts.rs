@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use doc::SourceSpan;
-use llm::{LlmError, generate_typed};
+use llm::generate_typed;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -237,6 +237,7 @@ pub(crate) async fn extract(
         .rev()
         .collect();
     let mut facts = Vec::new();
+    let mut skipped_source = false;
     let mut known_entities = BTreeSet::new();
     while let Some(batch) = pending.pop() {
         let input = serde_json::to_string(&FactInput {
@@ -246,9 +247,7 @@ pub(crate) async fn extract(
         let drafts: Vec<FactDraft> =
             match generate_typed(ctx.provider, "facts", prompt, input).await {
                 Ok(drafts) => drafts,
-                Err(LlmError::MissingCandidate {
-                    ref finish_reason, ..
-                }) if matches!(finish_reason.as_str(), "length" | "MAX_TOKENS") => {
+                Err(error) if error.is_output_limit() => {
                     if batch.requirements.len() + batch.context.len() > 1 {
                         let (left, right) = batch.split();
                         ctx.emit(|| ProgressEvent::FactBatchSplit {
@@ -257,7 +256,7 @@ pub(crate) async fn extract(
                         pending.push(right);
                         pending.push(left);
                     } else if let Some((id, _, location)) = batch.sources().next() {
-                        ctx.facts_complete = false;
+                        skipped_source = true;
                         ctx.emit(|| ProgressEvent::FactSourceSkipped {
                             source_id: id.to_owned(),
                             location,
@@ -296,5 +295,8 @@ pub(crate) async fn extract(
         }));
     }
     ctx.facts = facts;
+    if skipped_source {
+        ctx.mark_incomplete("facts");
+    }
     Ok(())
 }

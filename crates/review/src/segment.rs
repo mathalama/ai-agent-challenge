@@ -680,9 +680,7 @@ fn api_context_kind(block: &Block, context: &BlockContext) -> Option<ContextKind
         }
         BlockContent::Paragraph { text } | BlockContent::ListItem { text }
             if context.http_status_scenario
-                || (context.http_status_list && starts_with_http_status(text, true))
-                || (strip_case_insensitive_prefix(text.trim_start(), "HTTP ").is_some()
-                    && starts_with_http_status(text, true)) =>
+                || (context.http_status_list && starts_with_http_status(text, true)) =>
         {
             Some(ContextKind::StatusExample)
         }

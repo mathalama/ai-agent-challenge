@@ -5,7 +5,10 @@ use doc::ParserRegistry;
 use llm::{
     LlmError, LlmProvider, LlmRequest, LlmResponse, MockProvider, RetryProvider, TraceLog, Usage,
 };
-use review::{CheckRegistry, Pipeline, ProgressEvent, ProgressSink, RunContext};
+use review::{
+    CheckRegistry, MarkdownRenderer, Pipeline, ProgressEvent, ProgressSink, Report, ReportRenderer,
+    RunContext, RunPassport,
+};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -215,4 +218,145 @@ async fn unrelated_provider_error_still_fails_the_facts_stage() {
 
     assert!(error.to_string().contains("finishReason=content_filter"));
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+struct OverflowReview {
+    stage: &'static str,
+}
+
+fn output_limit() -> LlmError {
+    LlmError::MissingCandidate {
+        finish_reason: "length".into(),
+        block_reason: "—".into(),
+        usage: None,
+    }
+}
+
+#[async_trait]
+impl LlmProvider for OverflowReview {
+    fn model(&self) -> &str {
+        "test-limit"
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == self.stage {
+            return Err(output_limit());
+        }
+        let json = match request.stage.as_str() {
+            "requirement_checks" => {
+                let input: Vec<Value> = serde_json::from_str(&request.user_text).unwrap();
+                json!(
+                    input
+                        .iter()
+                        .map(|req| json!({
+                            "requirement_id": req["id"],
+                            "criterion": "complete",
+                            "severity": "medium",
+                            "evidence": [{"quote": req["quote"], "location": req["location"]}],
+                            "explanation": "Нужны условия архивации.",
+                            "suggestion": null
+                        }))
+                        .collect::<Vec<_>>()
+                )
+            }
+            "clarify" => {
+                let input: Vec<Value> = serde_json::from_str(&request.user_text).unwrap();
+                if input.len() > 2 {
+                    return Err(output_limit());
+                }
+                if input
+                    .iter()
+                    .any(|finding| finding["id"] == "requirement_checks-003")
+                {
+                    return Err(output_limit());
+                }
+                json!([{
+                    "text": "Когда нужно архивировать запись?",
+                    "why": "От срока зависит проверка архивации.",
+                    "topic": "other",
+                    "options": [],
+                    "finding_ids": input.iter().map(|finding| &finding["id"]).collect::<Vec<_>>(),
+                }])
+            }
+            _ => return MockProvider.generate(request).await,
+        };
+        Ok(LlmResponse {
+            json,
+            usage: Usage::default(),
+            model: self.model().into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn output_limits_preserve_partial_questions_and_report_incomplete_stages() {
+    let source = "* Ф-1. Архивировать договор.\n* Ф-2. Архивировать заявку.\n* Ф-3. Архивировать решение.\n* Ф-4. Архивировать справку.\n";
+    let document = ParserRegistry::default()
+        .parse(Path::new("archive.md"), source.as_bytes())
+        .unwrap();
+    let recorder = Recorder::default();
+    let provider = OverflowReview {
+        stage: "set_checks",
+    };
+    let checks = CheckRegistry::default();
+    let mut ctx =
+        RunContext::new(document, &provider, &checks).with_progress(&recorder, TraceLog::default());
+
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    let report = Report::from_run(
+        ctx,
+        RunPassport {
+            document_title: "Архив".into(),
+            date: "2026-11-25".into(),
+            model: provider.model().into(),
+            agent_version: "test".into(),
+        },
+    );
+    assert_eq!(report.findings.iter().filter(|f| f.verified).count(), 4);
+    assert_eq!(report.questions.len(), 1);
+    assert_eq!(report.questions[0].evidence.len(), 3);
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["readiness"], "blocked");
+    assert_eq!(json["incomplete_stages"], json!(["set_checks", "clarify"]));
+    assert!(
+        MarkdownRenderer
+            .render(&report)
+            .unwrap()
+            .contains("Проверка неполная")
+    );
+    let events = recorder.0.into_inner().unwrap();
+    let events: Vec<_> = events
+        .iter()
+        .map(|event| serde_json::to_value(event).unwrap())
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event"] == "stage_output_limit" && event["stage"] == "set_checks")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event"] == "clarify_batch_split"
+                && event["finding_ids"].as_array().unwrap().len() == 4)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event"] == "clarify_finding_skipped"
+                && event["finding_id"] == "requirement_checks-003")
+    );
+    assert_eq!(events.last().unwrap()["succeeded"], true);
+}
+
+#[tokio::test]
+async fn segmentation_overflow_still_keeps_deterministic_requirements() {
+    let provider = OverflowReview { stage: "segment" };
+    let checks = CheckRegistry::default();
+    let mut ctx = RunContext::new(facts_input(), &provider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+    assert_eq!(ctx.requirements.len(), 3);
+    assert_eq!(ctx.context_items.len(), 2);
+    assert!(ctx.findings.iter().all(|finding| finding.verified));
 }

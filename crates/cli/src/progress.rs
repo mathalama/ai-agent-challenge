@@ -104,6 +104,17 @@ fn console_line(event: &ProgressEvent) -> Option<String> {
                 location.start_line, location.end_line,
             )
         }
+        ProgressEvent::StageOutputLimit { stage } => format!(
+            "      {stage} — превышен лимит ответа, проверка продолжится с частичными результатами"
+        ),
+        ProgressEvent::ClarifyBatchSplit { finding_ids } => format!(
+            "      clarify — превышен лимит ответа, делим пачку из {} находок ({})",
+            finding_ids.len(),
+            finding_ids.join(", ")
+        ),
+        ProgressEvent::ClarifyFindingSkipped { finding_id } => format!(
+            "      clarify — находка {finding_id} пропущена при составлении вопросов из-за лимита ответа"
+        ),
         ProgressEvent::RunFinished {
             duration_ms,
             succeeded: true,

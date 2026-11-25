@@ -101,8 +101,22 @@ impl Stage for ScaffoldStage {
                         "title": ctx.document.title,
                         "blocks": blocks,
                     }))?;
-                    generate_typed::<Vec<RequirementDraft>>(ctx.provider, name, &prompt, input)
-                        .await?
+                    match generate_typed::<Vec<RequirementDraft>>(
+                        ctx.provider,
+                        name,
+                        &prompt,
+                        input,
+                    )
+                    .await
+                    {
+                        Ok(drafts) => drafts,
+                        Err(error) if error.is_output_limit() => {
+                            (ctx.requirements, ctx.context_items) =
+                                merge_requirements(&ctx.document, Vec::new());
+                            return Err(error.into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 } else {
                     Vec::new()
                 };
@@ -171,7 +185,9 @@ impl Stage for ScaffoldStage {
                 }
                 ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
             }
-            Self::Clarify => clarify::ask_questions(ctx, &self.llm_prompt()).await?,
+            Self::Clarify => {
+                clarify::ask_questions(ctx, &self.llm_prompt(), REVIEW_BATCH_SIZE).await?
+            }
         }
         Ok(())
     }

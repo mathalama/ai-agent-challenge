@@ -49,6 +49,15 @@ pub enum ProgressEvent {
         source_id: String,
         location: SourceSpan,
     },
+    StageOutputLimit {
+        stage: &'static str,
+    },
+    ClarifyBatchSplit {
+        finding_ids: Vec<String>,
+    },
+    ClarifyFindingSkipped {
+        finding_id: String,
+    },
     RunFinished {
         duration_ms: u64,
         succeeded: bool,
