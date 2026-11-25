@@ -112,9 +112,17 @@ fn decode_gemini_response(body: &Value, model: &str) -> Result<LlmResponse> {
     let candidate = &body["candidates"][0];
     let finish_reason = candidate["finishReason"].as_str();
     let block_reason = body["promptFeedback"]["blockReason"].as_str();
+    let usage = body.get("usageMetadata").map(|metadata| Usage {
+        input_tokens: metadata["promptTokenCount"].as_u64().unwrap_or(0),
+        output_tokens: metadata["candidatesTokenCount"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_add(metadata["thoughtsTokenCount"].as_u64().unwrap_or(0)),
+    });
     let missing_candidate = || LlmError::MissingCandidate {
         finish_reason: finish_reason.unwrap_or("—").into(),
         block_reason: block_reason.unwrap_or("—").into(),
+        usage,
     };
     let parts = candidate["content"]["parts"]
         .as_array()
@@ -125,16 +133,10 @@ fn decode_gemini_response(body: &Value, model: &str) -> Result<LlmResponse> {
         .filter(|part| part["thought"] != true)
         .filter_map(|part| part["text"].as_str())
         .collect();
-    let usage = &body["usageMetadata"];
     Ok(LlmResponse {
-        json: serde_json::from_str(&text)?,
-        usage: Usage {
-            input_tokens: usage["promptTokenCount"].as_u64().unwrap_or(0),
-            output_tokens: usage["candidatesTokenCount"]
-                .as_u64()
-                .unwrap_or(0)
-                .saturating_add(usage["thoughtsTokenCount"].as_u64().unwrap_or(0)),
-        },
+        json: serde_json::from_str(&text)
+            .map_err(|source| LlmError::ResponseJson { source, usage })?,
+        usage: usage.unwrap_or_default(),
         model: body["modelVersion"].as_str().unwrap_or(model).into(),
     })
 }
@@ -261,6 +263,20 @@ mod tests {
             };
             assert!(error.to_string().contains(expected));
         }
+    }
+
+    #[test]
+    fn broken_candidate_json_retains_gemini_usage() {
+        let body = json!({
+            "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "{"}]}}],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2, "thoughtsTokenCount": 3}
+        });
+        let Err(error) = decode_gemini_response(&body, "test") else {
+            panic!("Некорректный JSON Gemini принят");
+        };
+        let usage = error.usage().unwrap();
+        assert_eq!((usage.input_tokens, usage.output_tokens), (5, 5));
+        assert!(matches!(error, LlmError::ResponseJson { .. }));
     }
 
     #[test]

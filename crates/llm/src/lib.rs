@@ -1,9 +1,7 @@
 mod decorators;
 mod providers;
 
-pub use decorators::{
-    CachedProvider, RateLimitedProvider, RetryProvider, TraceEntry, TraceLog, TracingProvider,
-};
+pub use decorators::{CachedProvider, RateLimitedProvider, RetryProvider, TraceEntry, TraceLog};
 pub use providers::{GeminiProvider, MockProvider};
 
 use async_trait::async_trait;
@@ -73,6 +71,13 @@ pub enum LlmError {
     MissingCandidate {
         finish_reason: String,
         block_reason: String,
+        usage: Option<Usage>,
+    },
+    #[error("Ошибка обработки JSON ответа Gemini: {source}")]
+    ResponseJson {
+        #[source]
+        source: serde_json::Error,
+        usage: Option<Usage>,
     },
     #[error("Некорректная схема ответа LLM")]
     InvalidSchema,
@@ -82,6 +87,15 @@ pub enum LlmError {
     Json(#[from] serde_json::Error),
     #[error("Mock не поддерживает стадию «{0}»")]
     UnknownStage(String),
+}
+
+impl LlmError {
+    pub(crate) fn usage(&self) -> Option<Usage> {
+        match self {
+            Self::MissingCandidate { usage, .. } | Self::ResponseJson { usage, .. } => *usage,
+            _ => None,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, LlmError>;

@@ -14,7 +14,7 @@ use clap::{
 use doc::ParserRegistry;
 use llm::{
     CachedProvider, GeminiProvider, LlmProvider, MockProvider, RateLimitedProvider, RetryProvider,
-    TraceLog, TracingProvider,
+    TraceLog,
 };
 use review::{
     AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, Report, ReportRenderer,
@@ -188,13 +188,14 @@ async fn check(
         ))?),
     };
     let trace_log = TraceLog::default();
-    let mut provider: Box<dyn LlmProvider> = Box::new(RetryProvider::new(provider));
-    if !no_cache {
-        provider = Box::new(CachedProvider::new(provider, ".cache/llm"));
-    }
-    let provider = TracingProvider::new(provider, trace_log.clone());
+    let retry = RetryProvider::new(provider).with_trace(trace_log.clone());
+    let provider: Box<dyn LlmProvider> = if no_cache {
+        Box::new(retry)
+    } else {
+        Box::new(CachedProvider::new(retry, ".cache/llm"))
+    };
     let checks = CheckRegistry::default();
-    let mut ctx = RunContext::new(document, &provider, &checks);
+    let mut ctx = RunContext::new(document, provider.as_ref(), &checks);
     let result = Pipeline::default().run(&mut ctx).await;
     if let Some(path) = trace {
         let json = serde_json::to_string_pretty(&serde_json::json!({

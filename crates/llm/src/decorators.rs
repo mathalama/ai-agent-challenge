@@ -18,12 +18,12 @@ use tokio::{
 use crate::{LlmError, LlmProvider, LlmRequest, LlmResponse, Result, Usage};
 
 pub struct CachedProvider {
-    inner: Box<dyn LlmProvider>,
+    inner: RetryProvider,
     directory: PathBuf,
 }
 
 impl CachedProvider {
-    pub fn new(inner: Box<dyn LlmProvider>, directory: impl Into<PathBuf>) -> Self {
+    pub fn new(inner: RetryProvider, directory: impl Into<PathBuf>) -> Self {
         Self {
             inner,
             directory: directory.into(),
@@ -49,19 +49,26 @@ impl LlmProvider for CachedProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
+        let started = Instant::now();
         let path = self.entry_path(request)?;
         let validator = response_validator(request)?;
         if let Ok(bytes) = tokio::fs::read(&path).await
             && let Ok(mut cached) = serde_json::from_slice::<LlmResponse>(&bytes)
-            && validator.is_valid(&cached.json)
-            && request.validate_shape(&cached.json).is_ok()
+            && validate_response(&validator, request, &cached).is_ok()
         {
             cached.usage = Usage::default();
+            self.inner.trace.record(
+                request,
+                started,
+                Some(cached.usage),
+                &cached.model,
+                true,
+                true,
+            );
             return Ok(cached);
         }
 
-        let response = self.inner.generate(request).await?;
-        validate_response(&validator, request, &response)?;
+        let response = self.inner.generate_validated(request, &validator).await?;
         let bytes = serde_json::to_vec(&response)?;
         let write_result =
             tokio::task::spawn_blocking(move || write_cache_entry(&path, &bytes)).await;
@@ -103,31 +110,51 @@ fn write_cache_entry(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 pub struct RetryProvider {
     inner: Box<dyn LlmProvider>,
+    trace: TraceLog,
 }
 
 impl RetryProvider {
     pub fn new(inner: Box<dyn LlmProvider>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            trace: TraceLog::default(),
+        }
     }
-}
-
-#[async_trait]
-impl LlmProvider for RetryProvider {
-    fn model(&self) -> &str {
-        self.inner.model()
+    pub fn with_trace(mut self, trace: TraceLog) -> Self {
+        self.trace = trace;
+        self
     }
 
-    async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
-        let validator = response_validator(request)?;
+    async fn generate_validated(
+        &self,
+        request: &LlmRequest,
+        validator: &jsonschema::Validator,
+    ) -> Result<LlmResponse> {
         let mut transient_delays = [250, 500, 1000].into_iter().map(Duration::from_millis);
         let mut retry_invalid_response = true;
         loop {
-            let error = match self.inner.generate(request).await.and_then(|response| {
-                validate_response(&validator, request, &response)?;
-                Ok(response)
-            }) {
-                Ok(response) => return Ok(response),
-                Err(error) => error,
+            let started = Instant::now();
+            let error = match self.inner.generate(request).await {
+                Ok(response) => {
+                    let validation = validate_response(validator, request, &response);
+                    self.trace.record(
+                        request,
+                        started,
+                        Some(response.usage),
+                        &response.model,
+                        validation.is_ok(),
+                        false,
+                    );
+                    match validation {
+                        Ok(()) => return Ok(response),
+                        Err(error) => error,
+                    }
+                }
+                Err(error) => {
+                    self.trace
+                        .record(request, started, error.usage(), self.model(), false, false);
+                    error
+                }
             };
             let (reason, status, delay) = match &error {
                 LlmError::Http {
@@ -152,7 +179,9 @@ impl LlmProvider for RetryProvider {
                 {
                     ("transport", None, transient_delays.next())
                 }
-                LlmError::SchemaMismatch(_) | LlmError::Json(_) if retry_invalid_response => {
+                LlmError::SchemaMismatch(_) | LlmError::Json(_) | LlmError::ResponseJson { .. }
+                    if retry_invalid_response =>
+                {
                     retry_invalid_response = false;
                     ("invalid_response", None, Some(Duration::from_millis(250)))
                 }
@@ -164,6 +193,18 @@ impl LlmProvider for RetryProvider {
             tracing::warn!(reason, ?status, ?delay, "Повтор запроса LLM");
             sleep(delay).await;
         }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for RetryProvider {
+    fn model(&self) -> &str {
+        self.inner.model()
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
+        let validator = response_validator(request)?;
+        self.generate_validated(request, &validator).await
     }
 }
 
@@ -218,6 +259,8 @@ pub struct TraceEntry {
     duration_ms: u64,
     usage: Option<Usage>,
     model: String,
+    succeeded: bool,
+    cached: bool,
 }
 
 #[derive(Clone, Default)]
@@ -227,46 +270,25 @@ impl TraceLog {
     pub fn entries(&self) -> Vec<TraceEntry> {
         self.0.lock().expect("блокировка трассы").clone()
     }
-}
-
-pub struct TracingProvider {
-    inner: Box<dyn LlmProvider>,
-    trace: TraceLog,
-}
-
-impl TracingProvider {
-    pub fn new(inner: Box<dyn LlmProvider>, trace: TraceLog) -> Self {
-        Self { inner, trace }
-    }
-}
-
-#[async_trait]
-impl LlmProvider for TracingProvider {
-    fn model(&self) -> &str {
-        self.inner.model()
-    }
-
-    async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
-        let started = Instant::now();
-        let result = self.inner.generate(request).await;
+    fn record(
+        &self,
+        request: &LlmRequest,
+        started: Instant,
+        usage: Option<Usage>,
+        model: &str,
+        succeeded: bool,
+        cached: bool,
+    ) {
         let duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-        let usage = result.as_ref().ok().map(|response| response.usage);
-        let model = result.as_ref().map_or_else(
-            |_| self.model().to_owned(),
-            |response| response.model.clone(),
-        );
-        tracing::debug!(stage = %request.stage, duration_ms, ?usage, %model, "Запрос LLM");
-        self.trace
-            .0
-            .lock()
-            .expect("блокировка трассы")
-            .push(TraceEntry {
-                stage: request.stage.clone(),
-                duration_ms,
-                usage,
-                model,
-            });
-        result
+        tracing::debug!(stage = %request.stage, duration_ms, ?usage, %model, succeeded, cached, "Запрос LLM");
+        self.0.lock().expect("блокировка трассы").push(TraceEntry {
+            stage: request.stage.clone(),
+            duration_ms,
+            usage,
+            model: model.into(),
+            succeeded,
+            cached,
+        });
     }
 }
 
@@ -299,13 +321,18 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn invalid_responses_never_poison_the_cache() {
         let directory = tempfile::tempdir().unwrap();
         let provider = CachedProvider::new(
-            Box::new(Replies(Mutex::new(
-                vec![Ok(reply(json!(null))), Ok(reply(json!(42)))].into_iter(),
-            ))),
+            RetryProvider::new(Box::new(Replies(Mutex::new(
+                vec![
+                    Ok(reply(json!(null))),
+                    Ok(reply(json!(null))),
+                    Ok(reply(json!(42))),
+                ]
+                .into_iter(),
+            )))),
             directory.path(),
         );
         let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
@@ -335,12 +362,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn retry_recovers_from_schema_mismatch_and_saves_only_valid_response() {
+    async fn trace_records_usage_for_failed_attempts_and_zero_for_cache_hits() {
         let directory = tempfile::tempdir().unwrap();
+        let trace = TraceLog::default();
         let retry = RetryProvider::new(Box::new(Replies(Mutex::new(
             vec![Ok(reply(json!(null))), Ok(reply(json!(42)))].into_iter(),
-        ))));
-        let provider = CachedProvider::new(Box::new(retry), directory.path());
+        ))))
+        .with_trace(trace.clone());
+        let provider = CachedProvider::new(retry, directory.path());
         let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
 
         assert_eq!(provider.generate(&request).await.unwrap().json, 42);
@@ -353,20 +382,44 @@ mod tests {
                 .input_tokens,
             0
         );
+        let entries = trace.entries();
+        assert_eq!(entries.len(), 3);
+        assert!(!entries[0].succeeded && !entries[0].cached);
+        assert_eq!(entries[0].usage.unwrap().input_tokens, 1);
+        assert!(entries[1].succeeded && !entries[1].cached);
+        assert_eq!(entries[1].usage.unwrap().input_tokens, 1);
+        assert!(entries[2].succeeded && entries[2].cached);
+        assert_eq!(entries[2].usage.unwrap().input_tokens, 0);
     }
 
     #[tokio::test(start_paused = true)]
     async fn malformed_json_and_schema_violations_share_one_retry() {
         let bad_json = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let trace = TraceLog::default();
         let retry = RetryProvider::new(Box::new(Replies(Mutex::new(
-            vec![Err(LlmError::Json(bad_json)), Ok(reply(json!(null)))].into_iter(),
-        ))));
+            vec![
+                Err(LlmError::ResponseJson {
+                    source: bad_json,
+                    usage: Some(Usage {
+                        input_tokens: 5,
+                        output_tokens: 2,
+                    }),
+                }),
+                Ok(reply(json!(null))),
+            ]
+            .into_iter(),
+        ))))
+        .with_trace(trace.clone());
         let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
 
         assert!(matches!(
             retry.generate(&request).await,
             Err(LlmError::SchemaMismatch(_))
         ));
+        let entries = trace.entries();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| !entry.succeeded));
+        assert_eq!(entries[0].usage.unwrap().output_tokens, 2);
     }
 
     #[tokio::test]
