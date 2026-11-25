@@ -67,8 +67,13 @@ pub enum LlmError {
     },
     #[error("Ошибка запроса к Gemini: {0}")]
     Transport(#[from] reqwest::Error),
-    #[error("Ответ Gemini не содержит полного результата")]
-    MissingCandidate,
+    #[error(
+        "Ответ Gemini не содержит полного результата (finishReason={finish_reason}, promptFeedback.blockReason={block_reason})"
+    )]
+    MissingCandidate {
+        finish_reason: String,
+        block_reason: String,
+    },
     #[error("Некорректная схема ответа LLM")]
     InvalidSchema,
     #[error("Ответ LLM не соответствует схеме (поле «{0}»)")]

@@ -103,35 +103,40 @@ impl LlmProvider for GeminiProvider {
                 retry_after,
             });
         }
-        let body = response.json::<Value>().await?;
-        let candidate = &body["candidates"][0];
-        let parts = candidate["content"]["parts"]
-            .as_array()
-            .filter(|_| candidate["finishReason"] == "STOP")
-            .ok_or(LlmError::MissingCandidate)?;
-        let text: String = parts
-            .iter()
-            .filter(|part| part["thought"] != true)
-            .filter_map(|part| part["text"].as_str())
-            .collect();
-        Ok(LlmResponse {
-            json: serde_json::from_str(&text)?,
-            usage: Usage {
-                input_tokens: body["usageMetadata"]["promptTokenCount"]
-                    .as_u64()
-                    .unwrap_or(0),
-                output_tokens: body["usageMetadata"]["candidatesTokenCount"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    .saturating_add(
-                        body["usageMetadata"]["thoughtsTokenCount"]
-                            .as_u64()
-                            .unwrap_or(0),
-                    ),
-            },
-            model: body["modelVersion"].as_str().unwrap_or(self.model()).into(),
-        })
+        let body = serde_json::from_slice(&response.bytes().await?)?;
+        decode_gemini_response(&body, self.model())
     }
+}
+
+fn decode_gemini_response(body: &Value, model: &str) -> Result<LlmResponse> {
+    let candidate = &body["candidates"][0];
+    let finish_reason = candidate["finishReason"].as_str();
+    let block_reason = body["promptFeedback"]["blockReason"].as_str();
+    let missing_candidate = || LlmError::MissingCandidate {
+        finish_reason: finish_reason.unwrap_or("—").into(),
+        block_reason: block_reason.unwrap_or("—").into(),
+    };
+    let parts = candidate["content"]["parts"]
+        .as_array()
+        .filter(|_| finish_reason == Some("STOP"))
+        .ok_or_else(missing_candidate)?;
+    let text: String = parts
+        .iter()
+        .filter(|part| part["thought"] != true)
+        .filter_map(|part| part["text"].as_str())
+        .collect();
+    let usage = &body["usageMetadata"];
+    Ok(LlmResponse {
+        json: serde_json::from_str(&text)?,
+        usage: Usage {
+            input_tokens: usage["promptTokenCount"].as_u64().unwrap_or(0),
+            output_tokens: usage["candidatesTokenCount"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_add(usage["thoughtsTokenCount"].as_u64().unwrap_or(0)),
+        },
+        model: body["modelVersion"].as_str().unwrap_or(model).into(),
+    })
 }
 
 fn retry_after_header(value: &HeaderValue) -> Option<Duration> {
@@ -238,6 +243,25 @@ fn mock_candidate(blocks: &[Block]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_gemini_response_reports_finish_and_block_reasons() {
+        for (body, expected) in [
+            (
+                json!({"candidates": [{"finishReason": "MAX_TOKENS"}]}),
+                "finishReason=MAX_TOKENS, promptFeedback.blockReason=—",
+            ),
+            (
+                json!({"promptFeedback": {"blockReason": "SAFETY"}}),
+                "finishReason=—, promptFeedback.blockReason=SAFETY",
+            ),
+        ] {
+            let Err(error) = decode_gemini_response(&body, "test") else {
+                panic!("Неполный ответ Gemini принят");
+            };
+            assert!(error.to_string().contains(expected));
+        }
+    }
 
     #[test]
     fn gemini_retry_delays_support_http_headers_and_rpc_details() {

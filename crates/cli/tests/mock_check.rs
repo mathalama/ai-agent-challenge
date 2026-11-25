@@ -44,6 +44,7 @@ fn mock_produces_a_report_with_all_sections() {
     assert!(report.contains("R-001") && report.contains("Ф-1"));
     assert!(report.contains("> Ф-1. Держатель активной карты"));
     assert!(report.contains("Нужно завершить проверки"));
+    assert!(report.contains("Вопросы отсутствуют."));
 
     let trace: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(trace_path).unwrap()).unwrap();
@@ -70,4 +71,11 @@ fn mock_produces_a_report_with_all_sections() {
     assert_eq!(trace["llm_calls"][0]["stage"], "segment");
     assert!(trace["llm_calls"][0]["duration_ms"].is_number());
     assert!(trace["llm_calls"][0]["usage"]["input_tokens"].is_number());
+    assert!(
+        trace["llm_calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|call| call["stage"] != "clarify")
+    );
 }

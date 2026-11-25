@@ -141,11 +141,15 @@ impl Stage for ScaffoldStage {
                 }
             }
             Self::Clarify => {
+                ctx.questions.clear();
                 let verified: Vec<_> = ctx
                     .findings
                     .iter()
                     .filter(|finding| finding.verified)
                     .collect();
+                if verified.is_empty() {
+                    return Ok(());
+                }
                 let questions: Vec<QuestionDraft> = generate_typed(
                     ctx.provider,
                     name,
@@ -153,7 +157,6 @@ impl Stage for ScaffoldStage {
                     serde_json::to_string(&verified)?,
                 )
                 .await?;
-                ctx.questions.clear();
                 for question in questions {
                     let related: Vec<_> = question
                         .finding_ids
