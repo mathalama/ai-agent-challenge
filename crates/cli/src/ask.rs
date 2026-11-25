@@ -58,13 +58,19 @@ pub(crate) async fn run(
         for (index, option) in question.options.iter().enumerate() {
             writeln!(stdout, "  {}. {}", index + 1, terminal_text(option))?;
         }
+        let numeric_choices = question.options.iter().all(|option| is_integer(option));
         let answer = loop {
             if question.options.is_empty() {
                 write!(stdout, "Введите ответ или нажмите Enter для пропуска > ")?;
+            } else if numeric_choices {
+                write!(
+                    stdout,
+                    "Введите свой ответ или выберите вариант через #N (например, #1). Enter — пропустить > "
+                )?;
             } else {
                 write!(
                     stdout,
-                    "Введите номер варианта или свой ответ. Enter — пропустить > "
+                    "Введите номер варианта или свой ответ (для целого числа — =число). Enter — пропустить > "
                 )?;
             }
             stdout.flush()?;
@@ -78,20 +84,8 @@ pub(crate) async fn run(
             if input.is_empty() {
                 continue 'questions;
             }
-            let digits = input.strip_prefix(['+', '-']).unwrap_or(input);
-            if question.options.is_empty()
-                || digits.is_empty()
-                || !digits.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                break input;
-            }
-            if let Some(option) = input
-                .parse::<usize>()
-                .ok()
-                .and_then(|number| number.checked_sub(1))
-                .and_then(|index| question.options.get(index))
-            {
-                break option.as_str();
+            if let Some(answer) = parse_answer(input, &question.options, numeric_choices) {
+                break answer;
             }
             writeln!(
                 stdout,
@@ -109,8 +103,62 @@ pub(crate) async fn run(
     Ok(())
 }
 
+fn parse_answer<'a>(
+    input: &'a str,
+    options: &'a [String],
+    numeric_choices: bool,
+) -> Option<&'a str> {
+    if options.is_empty() {
+        return Some(input);
+    }
+    if let Some(value) = input.strip_prefix('=').filter(|value| is_integer(value)) {
+        return Some(value);
+    }
+    let index = input
+        .strip_prefix('#')
+        .filter(|value| is_integer(value))
+        .or_else(|| (!numeric_choices && is_integer(input)).then_some(input));
+    match index {
+        Some(number) => number
+            .parse::<usize>()
+            .ok()
+            .and_then(|number| number.checked_sub(1))
+            .and_then(|index| options.get(index))
+            .map(String::as_str),
+        None => Some(input),
+    }
+}
+
+fn is_integer(value: &str) -> bool {
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 fn terminal_text(text: &str) -> String {
     text.chars()
         .filter(|character| !character.is_control())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_choices_accept_a_bare_numeric_answer_and_use_explicit_indices() {
+        let options = ["5000".to_owned(), "10000".to_owned()];
+        assert_eq!(parse_answer("15000", &options, true), Some("15000"));
+        assert_eq!(parse_answer("1", &options, true), Some("1"));
+        assert_eq!(parse_answer("#2", &options, true), Some("10000"));
+        assert_eq!(parse_answer("#3", &options, true), None);
+    }
+
+    #[test]
+    fn text_choices_keep_index_validation_and_allow_an_explicit_numeric_answer() {
+        let options = ["Да".to_owned(), "Нет".to_owned()];
+        assert_eq!(parse_answer("2", &options, false), Some("Нет"));
+        assert_eq!(parse_answer("3", &options, false), None);
+        assert_eq!(parse_answer("0", &options, false), None);
+        assert_eq!(parse_answer("=15000", &options, false), Some("15000"));
+    }
 }
