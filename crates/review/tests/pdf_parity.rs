@@ -344,6 +344,7 @@ impl LlmProvider for PartialPdfReferences {
             .unwrap();
         let location = &block["location"];
         Ok(LlmResponse {
+            reasoning: None,
             json: json!([&location["start_line"], &location["end_line"]].map(|line| json!({
                 "block_id": block["id"], "start_line": line, "end_line": line, "kind": "requirement"
             }))),

@@ -117,6 +117,7 @@ impl LlmProvider for ReviewProvider {
             });
         }
         Ok(LlmResponse {
+            reasoning: None,
             json: serde_json::to_value(
                 findings
                     .into_iter()
@@ -416,6 +417,7 @@ impl LlmProvider for LanguageAndPromptProvider {
             _ => serde_json::json!([]),
         };
         Ok(LlmResponse {
+            reasoning: None,
             json,
             usage: Usage::default(),
             model: self.model().into(),
@@ -572,6 +574,7 @@ impl LlmProvider for DuplicateStagesProvider {
             _ => serde_json::json!([]),
         };
         Ok(LlmResponse {
+            reasoning: None,
             json,
             usage: Usage::default(),
             model: self.model().into(),
@@ -653,6 +656,7 @@ impl LlmProvider for UnverifiedParaphraseProvider {
             _ => serde_json::json!([]),
         };
         Ok(LlmResponse {
+            reasoning: None,
             json,
             usage: Usage::default(),
             model: self.model().into(),

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     env, fs,
     io::{self, Write},
     num::NonZeroU32,
@@ -49,6 +50,7 @@ impl LlmProvider for CachedProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
+        let request = &self.inner.configure_request(request);
         let started = Instant::now();
         let path = self.entry_path(request)?;
         let validator = response_validator(request)?;
@@ -57,14 +59,9 @@ impl LlmProvider for CachedProvider {
             && validate_response(&validator, request, &cached).is_ok()
         {
             cached.usage = Usage::default();
-            self.inner.trace.record(
-                request,
-                started,
-                Some(cached.usage),
-                &cached.model,
-                true,
-                true,
-            );
+            self.inner
+                .trace
+                .record(request, started, Ok(&cached), &cached.model, true, true);
             return Ok(cached);
         }
 
@@ -111,6 +108,7 @@ fn write_cache_entry(path: &Path, bytes: &[u8]) -> io::Result<()> {
 pub struct RetryProvider {
     inner: Box<dyn LlmProvider>,
     trace: TraceLog,
+    include_reasoning: bool,
 }
 
 impl RetryProvider {
@@ -118,11 +116,27 @@ impl RetryProvider {
         Self {
             inner,
             trace: TraceLog::default(),
+            include_reasoning: false,
         }
     }
     pub fn with_trace(mut self, trace: TraceLog) -> Self {
         self.trace = trace;
         self
+    }
+
+    pub fn with_reasoning(mut self, include_reasoning: bool) -> Self {
+        self.include_reasoning = include_reasoning;
+        self
+    }
+
+    fn configure_request<'a>(&self, request: &'a LlmRequest) -> Cow<'a, LlmRequest> {
+        if self.include_reasoning && !request.include_reasoning {
+            let mut request = request.clone();
+            request.include_reasoning = true;
+            Cow::Owned(request)
+        } else {
+            Cow::Borrowed(request)
+        }
     }
 
     async fn generate_validated(
@@ -141,7 +155,7 @@ impl RetryProvider {
                     self.trace.record(
                         request,
                         started,
-                        Some(response.usage),
+                        Ok(&response),
                         &response.model,
                         validation.is_ok(),
                         false,
@@ -153,7 +167,7 @@ impl RetryProvider {
                 }
                 Err(error) => {
                     self.trace
-                        .record(request, started, error.usage(), self.model(), false, false);
+                        .record(request, started, Err(&error), self.model(), false, false);
                     error
                 }
             };
@@ -207,6 +221,7 @@ impl LlmProvider for RetryProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
+        let request = &self.configure_request(request);
         let validator = response_validator(request)?;
         self.generate_validated(request, &validator).await
     }
@@ -265,6 +280,9 @@ pub struct TraceEntry {
     model: String,
     succeeded: bool,
     cached: bool,
+    // В выключенном режиме поля нет, во включённом отсутствие текста обозначается null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Option<String>>,
 }
 
 /// Повтор запроса к LLM: причина и пауза перед следующей попыткой.
@@ -337,12 +355,16 @@ impl TraceLog {
         &self,
         request: &LlmRequest,
         started: Instant,
-        usage: Option<Usage>,
+        outcome: std::result::Result<&LlmResponse, &LlmError>,
         model: &str,
         succeeded: bool,
         cached: bool,
     ) {
         let duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        let (usage, reasoning) = match outcome {
+            Ok(response) => (Some(response.usage), response.reasoning.as_deref()),
+            Err(error) => (error.usage(), error.reasoning()),
+        };
         tracing::debug!(stage = %request.stage, duration_ms, ?usage, %model, succeeded, cached, "Запрос LLM");
         self.entries
             .lock()
@@ -354,6 +376,9 @@ impl TraceLog {
                 model: model.into(),
                 succeeded,
                 cached,
+                reasoning: request
+                    .include_reasoning
+                    .then(|| reasoning.map(str::to_owned)),
             });
     }
 }
@@ -380,11 +405,49 @@ mod tests {
         LlmResponse {
             json,
             model: "test".into(),
+            reasoning: None,
             usage: Usage {
                 input_tokens: 1,
                 output_tokens: 1,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn reasoning_survives_cache_hits_without_reusing_disabled_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let trace = TraceLog::default();
+        let mut response = reply(json!(42));
+        response.reasoning = Some("Объяснение".into());
+        let provider = CachedProvider::new(
+            RetryProvider::new(Box::new(Replies(Mutex::new(
+                vec![Ok(response)].into_iter(),
+            ))))
+            .with_trace(trace.clone()),
+            directory.path(),
+        );
+        let mut request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        let path = provider.entry_path(&request).unwrap();
+        fs::write(
+            path,
+            br#"{"json":21,"usage":{"input_tokens":1,"output_tokens":1},"model":"test"}"#,
+        )
+        .unwrap();
+        let legacy = provider.generate(&request).await.unwrap();
+        assert_eq!(legacy.json, 21);
+        assert_eq!(legacy.reasoning, None);
+
+        request.include_reasoning = true;
+        for expected_cached in [false, true] {
+            let response = provider.generate(&request).await.unwrap();
+            assert_eq!(response.json, 42);
+            assert_eq!(response.reasoning.as_deref(), Some("Объяснение"));
+            assert_eq!(trace.entries().last().unwrap().cached, expected_cached);
+        }
+        let entries = serde_json::to_value(trace.entries()).unwrap();
+        assert!(entries[0].get("reasoning").is_none());
+        assert_eq!(entries[1]["reasoning"], "Объяснение");
+        assert_eq!(entries[2]["reasoning"], "Объяснение");
     }
 
     #[tokio::test(start_paused = true)]
@@ -465,6 +528,7 @@ mod tests {
         let retry = RetryProvider::new(Box::new(Replies(Mutex::new(
             vec![
                 Err(LlmError::ResponseJson {
+                    reasoning: None,
                     source: bad_json,
                     usage: Some(Usage {
                         input_tokens: 5,

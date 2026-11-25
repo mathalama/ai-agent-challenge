@@ -33,12 +33,14 @@ cargo run -p cli -- check samples/requirements.md -o reports/report.md --provide
 Команда создаёт `reports/report.md`. Файл `samples/requirements.md` взят из репозитория задания. [Исходный документ организаторов](https://github.com/BCC-HUB/ai-requirements-validator-task/blob/main/docs/requirements.md)
 
 ```text
-rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|openai|mock] [--no-cache] [--trace <PATH>] [--events <PATH>]
+rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|openai|mock] [--no-cache] [--trace <PATH>] [--reasoning] [--events <PATH>]
 rs ask <INPUT> [-o <PATH>] [--provider gemini|openai|mock] [--no-cache]
 rs eval [--golden eval/] [--provider gemini|openai|mock] [--no-cache]
 ```
 
 По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Во время прогона CLI печатает в stderr ход по стадиям: время, расход токенов, число требований и находок, а также повторы запросов к LLM с причиной и паузой. `--events <PATH>` пишет те же события в JSON Lines по мере выполнения, формат описан в [docs/api/README.md](docs/api/README.md#события-прогресса). Команда `eval` рассчитывает precision, recall и список пропусков по эталонным разметкам в `eval/` (формат описан в [eval/README.md](eval/README.md)).
+
+Флаг `--reasoning` сохраняет резюме рассуждений Gemini и рассуждения, которые возвращают OpenAI-совместимые модели. Текст сохраняется в кэше и записывается в поле `reasoning` каждого элемента `llm_calls` при использовании `--trace`. Если провайдер не вернул текст в ответе, значение поля будет `null`. По умолчанию сбор выключен. Для Gemini с этим флагом нужна [модель с поддержкой рассуждений](https://ai.google.dev/gemini-api/docs/generate-content/thinking).
 
 `rs ask` показывает открытые вопросы по одному. Можно выбрать вариант командой `#1`, написать свой ответ или нажать Enter для пропуска. Если все варианты — целые числа, ввод `15000` сохраняет это число как ответ. При текстовых вариантах число без префикса выбирает вариант, а `=15000` сохраняет собственный числовой ответ. Ответы сразу сохраняются по ID вопроса в `reports/report.answers.json`. Для собственного пути отчёта передайте одинаковый `-o` в обе команды. Например, для `reports/review.md` файл ответов — `reports/review.answers.json`. Повторный `rs check` показывает текст ответов под связанными находками. Исправления в документе проверяются отдельно при каждом прогоне. Если сохранённый ответ больше не совпадает с вопросом, CLI предупреждает об этом и сохраняет ответ в JSON-файле и в отчёте.
 

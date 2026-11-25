@@ -84,12 +84,40 @@ fn mock_produces_a_report_with_all_sections() {
     assert_eq!(trace["llm_calls"][0]["stage"], "segment");
     assert!(trace["llm_calls"][0]["duration_ms"].is_number());
     assert!(trace["llm_calls"][0]["usage"]["input_tokens"].is_number());
+    assert!(trace["llm_calls"][0].get("reasoning").is_none());
     assert!(
         trace["llm_calls"]
             .as_array()
             .unwrap()
             .iter()
             .any(|call| call["stage"] == "clarify")
+    );
+}
+
+#[test]
+fn enabled_trace_records_null_when_mock_has_no_reasoning() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = tempfile::tempdir().unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_rs"))
+        .current_dir(output.path())
+        .arg("check")
+        .arg(workspace.join("samples/requirements.md"))
+        .args(["--provider", "mock", "--trace", "trace.json", "--reasoning"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let trace: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.path().join("trace.json")).unwrap()).unwrap();
+    let calls = trace["llm_calls"].as_array().unwrap();
+    assert!(!calls.is_empty());
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.get("reasoning") == Some(&serde_json::Value::Null))
     );
 }
 

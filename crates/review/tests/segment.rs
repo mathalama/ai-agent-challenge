@@ -287,6 +287,7 @@ impl LlmProvider for StubSegmentProvider {
             _ => json!([]),
         };
         Ok(LlmResponse {
+            reasoning: None,
             json,
             usage: Usage::default(),
             model: self.model().into(),
@@ -399,6 +400,7 @@ async fn segment_stage_extracts_id_from_heading_and_mid_sentence() {
                 json!([])
             };
             Ok(LlmResponse {
+                reasoning: None,
                 json,
                 usage: Usage::default(),
                 model: self.model().into(),
@@ -442,6 +444,7 @@ async fn segment_stage_handles_table_only_document_without_llm_call() {
                 panic!("LLM не должен вызываться для документа только из таблиц");
             }
             Ok(LlmResponse {
+                reasoning: None,
                 json: json!([]),
                 usage: Usage::default(),
                 model: self.model().into(),
@@ -609,6 +612,7 @@ async fn business_status_prose_stays_in_requirements_while_http_statuses_are_con
             })
             .collect();
             Ok(LlmResponse {
+                reasoning: None,
                 json: json!(refs),
                 usage: Usage::default(),
                 model: self.model().into(),

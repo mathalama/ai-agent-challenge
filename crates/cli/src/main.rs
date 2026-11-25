@@ -57,6 +57,9 @@ enum Command {
         no_cache: bool,
         #[arg(long)]
         trace: Option<PathBuf>,
+        /// Сохранять рассуждения LLM в кэше и трассе.
+        #[arg(long)]
+        reasoning: bool,
         /// Писать события прогресса в JSON Lines по мере выполнения.
         #[arg(long)]
         events: Option<PathBuf>,
@@ -173,10 +176,12 @@ async fn run(cli: Cli) -> Result<()> {
             provider,
             no_cache,
             trace,
+            reasoning,
             events,
         } => {
             let paths = RunPaths {
                 trace: trace.as_deref(),
+                reasoning,
                 events: events.as_deref(),
             };
             check(&input, output, format, provider, no_cache, paths).await
@@ -250,10 +255,11 @@ async fn check(
 
 type Answers = BTreeMap<String, String>;
 
-/// Необязательные файлы прогона рядом с отчётом.
+/// Параметры записи трассы и событий прогона.
 #[derive(Clone, Copy, Default)]
 struct RunPaths<'a> {
     trace: Option<&'a Path>,
+    reasoning: bool,
     events: Option<&'a Path>,
 }
 
@@ -290,7 +296,7 @@ async fn review(
     let document = ParserRegistry::default().parse(input, &bytes)?;
     let sink = progress_sink(paths.events)?;
     let trace_log = progress_trace(&sink);
-    let provider = build_provider(provider, no_cache, Some(trace_log.clone()))?;
+    let provider = build_provider(provider, no_cache, trace_log.clone(), paths.reasoning)?;
     let checks = CheckRegistry::with_builtin_rules();
     let mut ctx = RunContext::new(document, provider.as_ref(), &checks)
         .with_progress(sink.as_ref(), trace_log.clone());
@@ -329,7 +335,7 @@ async fn eval_golden(golden: &Path, provider_kind: Provider, no_cache: bool) -> 
 
     let sink = progress_sink(None)?;
     let trace_log = progress_trace(&sink);
-    let provider = build_provider(provider_kind, no_cache, Some(trace_log.clone()))?;
+    let provider = build_provider(provider_kind, no_cache, trace_log.clone(), false)?;
     let registry = ParserRegistry::default();
     let checks = CheckRegistry::with_builtin_rules();
     let pipeline = Pipeline::default();
@@ -377,7 +383,8 @@ fn progress_trace(sink: &Arc<dyn ProgressSink>) -> TraceLog {
 fn build_provider(
     provider: Provider,
     no_cache: bool,
-    trace_log: Option<TraceLog>,
+    trace_log: TraceLog,
+    reasoning: bool,
 ) -> Result<Box<dyn LlmProvider>> {
     let base: Box<dyn LlmProvider> = match provider {
         Provider::Mock => Box::new(MockProvider),
@@ -388,10 +395,9 @@ fn build_provider(
             OpenAiProvider::from_env()?,
         ))?),
     };
-    let retry = match trace_log {
-        Some(log) => RetryProvider::new(base).with_trace(log),
-        None => RetryProvider::new(base),
-    };
+    let retry = RetryProvider::new(base)
+        .with_trace(trace_log)
+        .with_reasoning(reasoning);
     Ok(if no_cache {
         Box::new(retry)
     } else {
