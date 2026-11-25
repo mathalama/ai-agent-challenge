@@ -40,6 +40,8 @@ rs eval [--golden eval/]
 
 По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команды `ask` и `eval` находятся в разработке.
 
+В репозитории опубликован пример прогона `gemini-3.1-flash-lite` на публичном документе `samples/requirements.md`. Трасса содержит семь вызовов API на версии агента `21266e0`. [Отчёт](reports/gemini-review.md) · [Трасса вызовов](reports/gemini-review-trace.json)
+
 ## Настройка Gemini
 
 1. Войдите в Google AI Studio и создайте ключ в разделе API Keys. Выберите проект Google Cloud, если Studio запросит проект. [Google AI Studio](https://aistudio.google.com/apikey) · [Инструкция Google](https://ai.google.dev/gemini-api/docs/api-key)

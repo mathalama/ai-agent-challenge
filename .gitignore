@@ -5,5 +5,7 @@
 !.env.example
 /reports/*
 !/reports/.gitkeep
+!/reports/gemini-review.md
+!/reports/gemini-review-trace.json
 .claude/
 .codex/

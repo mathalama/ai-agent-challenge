@@ -1,0 +1,114 @@
+{
+  "llm_calls": [
+    {
+      "duration_ms": 8540,
+      "model": "gemini-3.1-flash-lite",
+      "stage": "segment",
+      "usage": {
+        "input_tokens": 5273,
+        "output_tokens": 1693
+      }
+    },
+    {
+      "duration_ms": 7515,
+      "model": "gemini-3.1-flash-lite",
+      "stage": "facts",
+      "usage": {
+        "input_tokens": 1370,
+        "output_tokens": 1012
+      }
+    },
+    {
+      "duration_ms": 46249,
+      "model": "gemini-3.1-flash-lite",
+      "stage": "requirement_checks",
+      "usage": {
+        "input_tokens": 1424,
+        "output_tokens": 502
+      }
+    },
+    {
+      "duration_ms": 15520,
+      "model": "gemini-3.1-flash-lite",
+      "stage": "set_checks",
+      "usage": {
+        "input_tokens": 1421,
+        "output_tokens": 655
+      }
+    },
+    {
+      "duration_ms": 65482,
+      "model": "gemini-3.1-flash-lite",
+      "stage": "consistency",
+      "usage": {
+        "input_tokens": 2158,
+        "output_tokens": 1
+      }
+    },
+    {
+      "duration_ms": 3838,
+      "model": "gemini-3.1-flash-lite",
+      "stage": "ambiguity",
+      "usage": {
+        "input_tokens": 1422,
+        "output_tokens": 710
+      }
+    },
+    {
+      "duration_ms": 12322,
+      "model": "gemini-3.1-flash-lite",
+      "stage": "clarify",
+      "usage": {
+        "input_tokens": 1771,
+        "output_tokens": 703
+      }
+    }
+  ],
+  "stages": [
+    {
+      "duration_ms": 8544,
+      "stage": "segment",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 7516,
+      "stage": "facts",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 0,
+      "stage": "rules",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 46251,
+      "stage": "requirement_checks",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 15521,
+      "stage": "set_checks",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 65485,
+      "stage": "consistency",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 3840,
+      "stage": "ambiguity",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 1,
+      "stage": "verify",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 12323,
+      "stage": "clarify",
+      "succeeded": true
+    }
+  ]
+}
