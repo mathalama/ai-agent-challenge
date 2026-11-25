@@ -116,8 +116,8 @@ impl Stage for ScaffoldStage {
                 };
             }
             Self::Rules => {
-                // TODO(issue): зарегистрировать детерминированные проверки формулировок.
                 let findings = ctx.checks.run(CheckPhase::Rules, ctx).await?;
+                ctx.rules_completed = ctx.checks.can_complete_rules(ctx);
                 ctx.findings.extend(findings);
             }
             Self::RequirementChecks => {

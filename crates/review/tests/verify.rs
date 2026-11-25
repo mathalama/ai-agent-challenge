@@ -70,7 +70,7 @@ async fn verify_checks_quote_in_its_declared_span() {
     assert_eq!(verified, ["F-1", "F-4", "F-5"]);
 }
 
-struct ReviewProvider(Option<(Severity, &'static str)>);
+struct ReviewProvider(Option<(Severity, &'static str)>, usize);
 
 #[async_trait]
 impl LlmProvider for ReviewProvider {
@@ -81,7 +81,7 @@ impl LlmProvider for ReviewProvider {
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
         if request.stage == "segment" {
             let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
-            assert_eq!(input["blocks"].as_array().unwrap().len(), 3);
+            assert_eq!(input["blocks"].as_array().unwrap().len(), self.1);
             return MockProvider.generate(request).await;
         }
         let mut findings = Vec::new();
@@ -131,25 +131,58 @@ impl LlmProvider for ReviewProvider {
 }
 
 #[tokio::test]
-async fn review_readiness_requires_coverage_and_clear_serious_findings() {
-    for (finding, expected) in [
-        (None, "ready"),
-        (Some((Severity::High, "Первое требование")), "blocked"),
-        (Some((Severity::Critical, "Первое требование")), "blocked"),
+async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
+    for (rules_phase, finding, expected) in [
+        (None, None, "checks_incomplete"),
+        (Some(CheckPhase::Set), None, "checks_incomplete"),
         (
+            None,
+            Some((Severity::Critical, "Первое требование")),
+            "blocked",
+        ),
+        (Some(CheckPhase::Rules), None, "ready"),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::Low, "Первое требование")),
+            "ready",
+        ),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::High, "Первое требование")),
+            "blocked",
+        ),
+        (
+            Some(CheckPhase::Rules),
             Some((Severity::Critical, "Вымышленная цитата")),
             "checks_incomplete",
         ),
-        (Some((Severity::Medium, "Первое требование")), "ready"),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::Medium, "Первое требование")),
+            "blocked",
+        ),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::Critical, "Первое требование")),
+            "blocked",
+        ),
     ] {
         let document = ParserRegistry::default()
             .parse(
                 Path::new("input.md"),
-                "# Документ требований\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование".as_bytes(),
+                "# Документ требований\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование\n\n## 5. Тестирование и приёмка:\n\nПроверить, что пустой ввод вызывает ошибку.".as_bytes(),
             )
             .unwrap();
-        let provider = ReviewProvider(finding);
-        let checks = CheckRegistry::default();
+        let provider = ReviewProvider(finding, 5);
+        let checks = match rules_phase {
+            Some(CheckPhase::Rules) => CheckRegistry::with_builtin_rules(),
+            Some(phase) => {
+                let mut checks = CheckRegistry::default();
+                checks.register(EmptyCheck(phase));
+                checks
+            }
+            None => CheckRegistry::default(),
+        };
         let mut ctx = RunContext::new(document, &provider, &checks);
         Pipeline::default().run(&mut ctx).await.unwrap();
         let passport = RunPassport {
@@ -160,5 +193,52 @@ async fn review_readiness_requires_coverage_and_clear_serious_findings() {
         };
         let readiness: Readiness = Report::from_run(ctx, passport).readiness;
         assert_eq!(serde_json::to_value(readiness).unwrap(), expected);
+    }
+}
+
+#[tokio::test]
+async fn readiness_requires_testing_section_coverage() {
+    let source = "# Спецификация\n\n* **Ф-1.** Сохранять изменения.";
+    let checks = CheckRegistry::with_builtin_rules();
+    for (path, expected) in [("input.md", "blocked"), ("input.txt", "checks_incomplete")] {
+        let document = ParserRegistry::default()
+            .parse(Path::new(path), source.as_bytes())
+            .unwrap();
+        let provider = ReviewProvider(None, 2);
+        let mut ctx = RunContext::new(document, &provider, &checks);
+        Pipeline::default().run(&mut ctx).await.unwrap();
+        let passport = RunPassport {
+            document_title: ctx.document.title.clone(),
+            date: String::new(),
+            model: provider.model().into(),
+            agent_version: String::new(),
+        };
+        let report = Report::from_run(ctx, passport);
+        assert_eq!(
+            serde_json::to_value(report.readiness).unwrap(),
+            expected,
+            "{path}"
+        );
+        if path == "input.md" {
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.id == "testing-section-missing" && finding.verified)
+            );
+        }
+    }
+}
+
+struct EmptyCheck(CheckPhase);
+
+#[async_trait]
+impl Check for EmptyCheck {
+    fn phase(&self) -> CheckPhase {
+        self.0
+    }
+
+    async fn run(&self, _ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
+        Ok(Vec::new())
     }
 }
