@@ -32,6 +32,8 @@ pub struct OpenAiProvider {
     model: String,
     endpoint: String,
     format: ResponseFormat,
+    /// `reasoning_effort` для рассуждающих моделей; `none` отключает рассуждения у Ollama.
+    reasoning_effort: Option<String>,
     client: Client,
 }
 
@@ -41,6 +43,7 @@ impl OpenAiProvider {
         const MODEL: &str = "OPENAI_MODEL";
         const BASE_URL: &str = "OPENAI_BASE_URL";
         const FORMAT: &str = "OPENAI_RESPONSE_FORMAT";
+        const REASONING: &str = "OPENAI_REASONING_EFFORT";
 
         let key = env::var(KEY).map_err(|_| LlmError::Config(KEY))?;
         let mut api_key: HeaderValue = format!("Bearer {}", key.trim())
@@ -68,12 +71,22 @@ impl OpenAiProvider {
             Some("json_object") => ResponseFormat::JsonObject,
             Some(_) => return Err(LlmError::Config(FORMAT)),
         };
+        let reasoning_effort = optional_var(REASONING)?
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if reasoning_effort
+            .as_deref()
+            .is_some_and(|value| !value.bytes().all(|byte| byte.is_ascii_alphabetic()))
+        {
+            return Err(LlmError::Config(REASONING));
+        }
 
         Ok(Self {
             api_key,
             model: model.into(),
             endpoint: format!("{base_url}/chat/completions"),
             format,
+            reasoning_effort,
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(180))
@@ -99,14 +112,18 @@ impl OpenAiProvider {
                 json!({"type": "json_object"}),
             ),
         };
-        json!({
+        let mut body = json!({
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": request.user_text},
             ],
             "response_format": response_format,
-        })
+        });
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        body
     }
 }
 
@@ -230,6 +247,7 @@ mod tests {
             model: "test-model".into(),
             endpoint: format!("{DEFAULT_BASE_URL}/chat/completions"),
             format,
+            reasoning_effort: None,
             client: Client::new(),
         }
     }
@@ -270,6 +288,11 @@ mod tests {
         assert_eq!(loose["response_format"]["type"], "json_object");
         let system = loose["messages"][0]["content"].as_str().unwrap();
         assert!(system.starts_with("Проверь") && system.contains("\"result\""));
+        assert!(loose.get("reasoning_effort").is_none());
+
+        let mut quick = provider(ResponseFormat::JsonSchema);
+        quick.reasoning_effort = Some("none".into());
+        assert_eq!(quick.request_body(&request)["reasoning_effort"], "none");
     }
 
     #[test]
