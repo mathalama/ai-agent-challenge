@@ -47,6 +47,7 @@ pub struct RunContext<'a> {
     progress: Option<(&'a dyn ProgressSink, TraceLog)>,
     pub(crate) rules_completed: bool,
     pub(crate) checks_complete: bool,
+    pub(crate) facts_complete: bool,
 }
 
 impl<'a> RunContext<'a> {
@@ -68,6 +69,7 @@ impl<'a> RunContext<'a> {
             progress: None,
             rules_completed: false,
             checks_complete: false,
+            facts_complete: true,
         }
     }
 
@@ -78,7 +80,7 @@ impl<'a> RunContext<'a> {
         self
     }
 
-    fn emit(&self, event: impl FnOnce() -> ProgressEvent) {
+    pub(crate) fn emit(&self, event: impl FnOnce() -> ProgressEvent) {
         if let Some((sink, _)) = &self.progress {
             sink.emit(&event());
         }
@@ -125,6 +127,7 @@ impl Pipeline {
     pub async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
         ctx.rules_completed = false;
         ctx.checks_complete = false;
+        ctx.facts_complete = true;
         let run_started = Instant::now();
         let total = self.stages.len();
         ctx.emit(|| ProgressEvent::RunStarted {
@@ -182,6 +185,7 @@ impl Pipeline {
         }
         ctx.checks_complete = self.full_review
             && ctx.rules_completed
+            && ctx.facts_complete
             && ctx.provider.model() != "mock"
             && ctx.requirements.iter().all(|requirement| {
                 ctx.document

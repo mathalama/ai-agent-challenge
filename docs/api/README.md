@@ -61,6 +61,8 @@ CLI записывает стадии в `stages` отдельной трасс�
 | `stage_started` | `stage`, `index` (с единицы), `total` | Перед стадией |
 | `stage_finished` | `stage`, `index`, `total`, `duration_ms`, `succeeded`, `llm_calls`, `cached_calls`, `input_tokens`, `output_tokens`, `requirements`, `findings`, `questions` | После стадии, в том числе при ошибке |
 | `llm_retry` | `stage`, `reason` (`http`, `transport`, `invalid_response`), `status` (HTTP-код или `null`), `delay_ms` | Перед паузой повтора запроса к LLM |
+| `fact_batch_split` | Поле `source_ids` содержит ID требований или элементов контекста | После превышения лимита ответа, если пачка делится пополам |
+| `fact_source_skipped` | Поля `source_id` и `location` указывают на источник | После превышения лимита ответа для одного источника. Прогон продолжается с неполной проверкой |
 | `run_finished` | `duration_ms`, `succeeded` | В конце прогона или после стадии с ошибкой |
 
 `llm_calls` считает все попытки стадии, включая повторы и попадания в кэш. `requirements`, `findings` и `questions` — состояние прогона после стадии, а не прирост.

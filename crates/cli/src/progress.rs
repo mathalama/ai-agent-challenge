@@ -87,6 +87,23 @@ fn console_line(event: &ProgressEvent) -> Option<String> {
                 format_duration(*delay_ms)
             )
         }
+        ProgressEvent::FactBatchSplit { source_ids } => format!(
+            "      facts: превышен лимит ответа, делим пачку из {} источников ({})",
+            source_ids.len(),
+            source_ids.join(", ")
+        ),
+        ProgressEvent::FactSourceSkipped {
+            source_id,
+            location,
+        } => {
+            let page = location
+                .page
+                .map_or_else(String::new, |page| format!(", стр. {page}"));
+            format!(
+                "      facts: предупреждение — источник {source_id} пропущен (строки {}–{}{page}, превышен лимит ответа)",
+                location.start_line, location.end_line,
+            )
+        }
         ProgressEvent::RunFinished {
             duration_ms,
             succeeded: true,

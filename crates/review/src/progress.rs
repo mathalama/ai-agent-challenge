@@ -1,6 +1,7 @@
 //! События прогресса прогона. CLI печатает их в консоль и пишет в JSON Lines,
 //! а HTTP-сервер сможет отдавать те же события через SSE.
 
+use doc::SourceSpan;
 use llm::RetryNotice;
 use serde::Serialize;
 
@@ -40,6 +41,13 @@ pub enum ProgressEvent {
         reason: &'static str,
         status: Option<u16>,
         delay_ms: u64,
+    },
+    FactBatchSplit {
+        source_ids: Vec<String>,
+    },
+    FactSourceSkipped {
+        source_id: String,
+        location: SourceSpan,
     },
     RunFinished {
         duration_ms: u64,

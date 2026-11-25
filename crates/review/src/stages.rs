@@ -5,8 +5,8 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::{
-    CheckPhase, ContextItem, Criterion, Detector, Evidence, Fact, FactData, Finding, Requirement,
-    RunContext, Scope, Severity, Stage, clarify, consistency,
+    CheckPhase, ContextItem, Criterion, Detector, Evidence, Finding, Requirement, RunContext,
+    Scope, Severity, Stage, clarify, consistency, facts,
     pipeline::Result,
     segment::{RequirementDraft, merge_requirements, segment_blocks},
 };
@@ -22,14 +22,6 @@ struct FindingDraft {
     evidence: Vec<Evidence>,
     explanation: String,
     suggestion: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct FactDraft {
-    entity: String,
-    requirement_id: String,
-    quote: Option<String>,
-    data: FactData,
 }
 
 #[derive(Clone, Copy)]
@@ -117,47 +109,7 @@ impl Stage for ScaffoldStage {
                 (ctx.requirements, ctx.context_items) = merge_requirements(&ctx.document, drafts);
             }
             Self::Facts => {
-                let prompt = self.llm_prompt();
-                let batches = ctx
-                    .requirements
-                    .chunks(REVIEW_BATCH_SIZE)
-                    .map(|batch| (batch, &[][..]))
-                    .chain(
-                        ctx.context_items
-                            .chunks(REVIEW_BATCH_SIZE)
-                            .map(|batch| (&[][..], batch)),
-                    );
-                let mut facts = Vec::new();
-                for (requirements, context) in batches {
-                    let input = set_input(requirements, context)?;
-                    let drafts: Vec<FactDraft> =
-                        generate_typed(ctx.provider, name, &prompt, input).await?;
-                    facts.extend(drafts.into_iter().filter_map(|draft| {
-                        let (source_quote, location) = requirements
-                            .iter()
-                            .find(|source| source.id == draft.requirement_id)
-                            .map(|source| (&source.quote, source.location))
-                            .or_else(|| {
-                                context
-                                    .iter()
-                                    .find(|source| source.id == draft.requirement_id)
-                                    .map(|source| (&source.quote, source.location))
-                            })?;
-                        let quote = draft.quote.unwrap_or_else(|| source_quote.clone());
-                        if !source_quote.contains(&quote)
-                            || !ctx.document.contains_quote(location, &quote)
-                        {
-                            return None;
-                        }
-                        Some(Fact {
-                            entity: draft.entity,
-                            requirement_id: draft.requirement_id,
-                            evidence: Evidence { quote, location },
-                            data: draft.data,
-                        })
-                    }));
-                }
-                ctx.facts = facts;
+                facts::extract(ctx, &self.llm_prompt(), REVIEW_BATCH_SIZE).await?;
             }
             Self::Rules => {
                 let findings = ctx.checks.run(CheckPhase::Rules, ctx).await?;
