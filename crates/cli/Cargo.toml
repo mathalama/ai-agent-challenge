@@ -8,7 +8,7 @@ name = "rs"
 path = "src/main.rs"
 
 [dependencies]
-chrono.workspace = true
+agent.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 serde_json.workspace = true
@@ -17,7 +17,6 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 review.workspace = true
 doc.workspace = true
-llm.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true

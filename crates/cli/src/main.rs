@@ -2,8 +2,6 @@ mod ask;
 mod progress;
 
 use std::{
-    collections::BTreeMap,
-    error::Error,
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -11,24 +9,18 @@ use std::{
     sync::Arc,
 };
 
-use chrono::Local;
+use agent::{Answers, Result, build_provider, progress_trace, read_answers};
 use clap::{
     Parser, Subcommand, ValueEnum,
     error::{ContextKind, ErrorKind},
 };
 use doc::ParserRegistry;
-use llm::{
-    CachedProvider, GeminiProvider, LlmProvider, MockProvider, OpenAiProvider, RateLimitedProvider,
-    RetryProvider, TraceLog,
-};
 use review::{
     AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, ProgressSink, Report,
-    ReportRenderer, RunContext, RunPassport, discover_golden_files, evaluate_document,
-    format_eval_report, load_golden_file,
+    ReportRenderer, RunContext, discover_golden_files, evaluate_document, format_eval_report,
+    load_golden_file,
 };
 use tracing_subscriber::EnvFilter;
-
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Parser)]
 #[command(
@@ -104,6 +96,16 @@ enum Provider {
     /// Любой API, совместимый с OpenAI Chat Completions (OPENAI_BASE_URL).
     Openai,
     Mock,
+}
+
+impl From<Provider> for agent::Provider {
+    fn from(provider: Provider) -> Self {
+        match provider {
+            Provider::Gemini => Self::Gemini,
+            Provider::Openai => Self::Openai,
+            Provider::Mock => Self::Mock,
+        }
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -253,8 +255,6 @@ async fn check(
     Ok(())
 }
 
-type Answers = BTreeMap<String, String>;
-
 /// Параметры записи трассы и событий прогона.
 #[derive(Clone, Copy, Default)]
 struct RunOptions<'a> {
@@ -274,16 +274,6 @@ fn answers_path(input: &Path, output: &Path) -> Result<PathBuf> {
     Ok(answers)
 }
 
-fn read_answers(path: &Path) -> Result<Answers> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-            format!("Некорректный файл ответов «{}»: {error}", path.display()).into()
-        }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Answers::new()),
-        Err(error) => Err(format!("Не удалось прочитать «{}»: {error}", path.display()).into()),
-    }
-}
-
 async fn review(
     input: &Path,
     provider: Provider,
@@ -295,28 +285,29 @@ async fn review(
         .map_err(|error| format!("Не удалось прочитать «{}»: {error}", input.display()))?;
     let document = ParserRegistry::default().parse(input, &bytes)?;
     let sink = progress_sink(options.events)?;
-    let trace_log = progress_trace(&sink);
-    let provider = build_provider(provider, no_cache, trace_log.clone(), options.reasoning)?;
-    let checks = CheckRegistry::with_builtin_rules();
-    let mut ctx = RunContext::new(document, provider.as_ref(), &checks)
-        .with_progress(sink.as_ref(), trace_log.clone());
-    let result = Pipeline::default().run(&mut ctx).await;
+    let trace_log = progress_trace(Arc::clone(&sink));
+    let provider = build_provider(
+        provider.into(),
+        no_cache,
+        trace_log.clone(),
+        options.reasoning,
+    )?;
+    let run = agent::review(
+        document,
+        provider.as_ref(),
+        sink.as_ref(),
+        trace_log.clone(),
+        answers,
+    )
+    .await;
     if let Some(path) = options.trace {
         let json = serde_json::to_string_pretty(&serde_json::json!({
-            "stages": ctx.trace,
+            "stages": run.stages,
             "llm_calls": trace_log.entries(),
         }))? + "\n";
         write_output(path, &json)?;
     }
-    result?;
-
-    let passport = RunPassport {
-        document_title: ctx.document.title.clone(),
-        date: Local::now().date_naive().to_string(),
-        model: provider.model().into(),
-        agent_version: AGENT_VERSION.into(),
-    };
-    let report = Report::with_answers(ctx, passport, answers);
+    let report = run.report?;
     if !report.unmatched_answers.is_empty() {
         eprintln!(
             "Предупреждение: сохранённые ответы без текущего вопроса — {:?}.",
@@ -334,8 +325,8 @@ async fn eval_golden(golden: &Path, provider_kind: Provider, no_cache: bool) -> 
     }
 
     let sink = progress_sink(None)?;
-    let trace_log = progress_trace(&sink);
-    let provider = build_provider(provider_kind, no_cache, trace_log.clone(), false)?;
+    let trace_log = progress_trace(Arc::clone(&sink));
+    let provider = build_provider(provider_kind.into(), no_cache, trace_log.clone(), false)?;
     let registry = ParserRegistry::default();
     let checks = CheckRegistry::with_builtin_rules();
     let pipeline = Pipeline::default();
@@ -372,37 +363,6 @@ fn progress_sink(events: Option<&Path>) -> Result<Arc<dyn ProgressSink>> {
         sinks.push(Box::new(file));
     }
     Ok(Arc::new(progress::Fanout(sinks)))
-}
-
-/// Трасса LLM, которая сообщает о повторах тем же получателям прогресса.
-fn progress_trace(sink: &Arc<dyn ProgressSink>) -> TraceLog {
-    let sink = Arc::clone(sink);
-    TraceLog::default().on_retry(move |notice| sink.emit(&notice.into()))
-}
-
-fn build_provider(
-    provider: Provider,
-    no_cache: bool,
-    trace_log: TraceLog,
-    reasoning: bool,
-) -> Result<Box<dyn LlmProvider>> {
-    let base: Box<dyn LlmProvider> = match provider {
-        Provider::Mock => Box::new(MockProvider),
-        Provider::Gemini => Box::new(RateLimitedProvider::from_env(Box::new(
-            GeminiProvider::from_env()?,
-        ))?),
-        Provider::Openai => Box::new(RateLimitedProvider::from_env(Box::new(
-            OpenAiProvider::from_env()?,
-        ))?),
-    };
-    let retry = RetryProvider::new(base)
-        .with_trace(trace_log)
-        .with_reasoning(reasoning);
-    Ok(if no_cache {
-        Box::new(retry)
-    } else {
-        Box::new(CachedProvider::new(retry, ".cache/llm"))
-    })
 }
 
 fn same_path(left: &Path, right: &Path) -> io::Result<bool> {

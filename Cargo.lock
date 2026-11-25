@@ -29,6 +29,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "doc",
+ "llm",
+ "review",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -365,12 +378,11 @@ dependencies = [
 name = "cli"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "agent",
  "clap",
  "doc",
  "dotenvy",
  "jsonschema",
- "llm",
  "review",
  "serde_json",
  "sha2 0.11.1",

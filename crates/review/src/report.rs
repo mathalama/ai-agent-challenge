@@ -87,30 +87,10 @@ impl Report {
     }
 
     pub fn with_answers(
-        mut ctx: RunContext<'_>,
+        ctx: RunContext<'_>,
         passport: RunPassport,
         answers: &BTreeMap<String, String>,
     ) -> Self {
-        let mut unmatched_answers = answers.clone();
-        let mut finding_answers = BTreeMap::<_, Vec<_>>::new();
-        ctx.questions.retain(|question| {
-            let Some(text) = unmatched_answers.remove(&question.id) else {
-                return true;
-            };
-            if text.trim().is_empty() {
-                return true;
-            }
-            for related in &question.related {
-                if let RelatedId::Finding(id) = related {
-                    finding_answers.entry(id.clone()).or_default().push(Answer {
-                        question_id: question.id.clone(),
-                        text: text.clone(),
-                    });
-                }
-            }
-            false
-        });
-
         let summary = ReportSummary {
             requirement_count: ctx.requirements.len(),
             finding_count: ctx.findings.len(),
@@ -130,7 +110,7 @@ impl Report {
             ctx.checks_complete && !ctx.requirements.is_empty(),
             ctx.findings.iter(),
         );
-        Self {
+        let mut report = Self {
             schema_version: ReportSchemaVersion::V1,
             passport,
             blocks: ctx.document.blocks,
@@ -140,8 +120,47 @@ impl Report {
             readiness,
             incomplete_stages: ctx.incomplete_stages,
             questions: ctx.questions,
-            finding_answers,
-            unmatched_answers,
+            finding_answers: BTreeMap::new(),
+            unmatched_answers: answers.clone(),
+        };
+        report.questions.retain(|question| {
+            let Some(text) = report.unmatched_answers.remove(&question.id) else {
+                return true;
+            };
+            if text.trim().is_empty() {
+                return true;
+            }
+            record_answer(&mut report.finding_answers, question, &text);
+            false
+        });
+        report
+    }
+
+    /// Снимает открытый вопрос и прикрепляет ответ к связанным находкам.
+    pub fn answer_question(&mut self, id: &str, text: &str) -> bool {
+        if text.trim().is_empty() {
+            return false;
+        }
+        let Some(index) = self.questions.iter().position(|question| question.id == id) else {
+            return false;
+        };
+        let question = self.questions.remove(index);
+        record_answer(&mut self.finding_answers, &question, text);
+        true
+    }
+}
+
+fn record_answer(
+    finding_answers: &mut BTreeMap<FindingId, Vec<Answer>>,
+    question: &Question,
+    text: &str,
+) {
+    for related in &question.related {
+        if let RelatedId::Finding(id) = related {
+            finding_answers.entry(id.clone()).or_default().push(Answer {
+                question_id: question.id.clone(),
+                text: text.to_owned(),
+            });
         }
     }
 }
