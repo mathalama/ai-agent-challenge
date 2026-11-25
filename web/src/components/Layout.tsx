@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useReportStore } from '../lib/report-store';
+import { ChatScreen } from '../screens/ChatScreen';
 
 const NAV = [
-  { to: '/', label: 'Старт' },
+  { to: '/', label: 'Чат' },
   { to: '/progress', label: 'Прогресс' },
   { to: '/summary', label: 'Сводка' },
   { to: '/document', label: 'Документ' },
@@ -19,12 +20,13 @@ const SELF_LOADING = new Set(['/', '/progress']);
 export function Layout() {
   const { pathname } = useLocation();
   const status = useReportStore((s) => s.status);
+  const mode = useReportStore((s) => s.mode);
   const report = useReportStore((s) => s.report);
   const load = useReportStore((s) => s.load);
 
   useEffect(() => {
-    if (status === 'idle' && !SELF_LOADING.has(pathname)) void load();
-  }, [pathname, status, load]);
+    if (mode === 'demo' && status === 'idle' && !SELF_LOADING.has(pathname)) void load();
+  }, [pathname, status, mode, load]);
 
   const counts: Record<string, number | undefined> = {
     '/findings': report?.findings.length,
@@ -60,6 +62,9 @@ export function Layout() {
         </nav>
       </header>
       <main className="min-w-0 px-5 py-8 sm:px-8 lg:px-12 lg:py-10">
+        <div hidden={pathname !== '/'} className="mx-auto max-w-5xl">
+          <ChatScreen />
+        </div>
         <div key={pathname} className="rise mx-auto max-w-5xl">
           <Outlet />
         </div>

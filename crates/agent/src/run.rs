@@ -7,8 +7,8 @@ use llm::{
     RetryProvider, TraceLog,
 };
 use review::{
-    AGENT_VERSION, CheckRegistry, Pipeline, ProgressSink, Report, RunContext, RunPassport,
-    StageResult, StageTrace,
+    AGENT_VERSION, CheckRegistry, Pipeline, ProgressEvent, ProgressSink, Report, RunContext,
+    RunPassport, StageResult, StageTrace,
 };
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -76,7 +76,22 @@ pub async fn review(
 }
 
 pub fn progress_trace(sink: Arc<dyn ProgressSink>) -> TraceLog {
-    TraceLog::default().on_retry(move |notice| sink.emit(&notice.into()))
+    let retry_sink = Arc::clone(&sink);
+    TraceLog::default()
+        .on_retry(move |notice| retry_sink.emit(&notice.into()))
+        .on_reasoning(move |stage, text, delta| {
+            sink.emit(&if delta {
+                ProgressEvent::LlmReasoningDelta {
+                    stage: stage.into(),
+                    delta: text.into(),
+                }
+            } else {
+                ProgressEvent::LlmReasoning {
+                    stage: stage.into(),
+                    text: text.into(),
+                }
+            });
+        })
 }
 
 /// Читает сохранённые ответы для файловых клиентов.

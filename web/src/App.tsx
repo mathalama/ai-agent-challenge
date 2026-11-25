@@ -1,6 +1,5 @@
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
-import { StartScreen } from './screens/StartScreen';
 import { ProgressScreen } from './screens/ProgressScreen';
 import { SummaryScreen } from './screens/SummaryScreen';
 import { DocumentScreen } from './screens/DocumentScreen';
@@ -13,7 +12,7 @@ export function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<StartScreen />} />
+        <Route index element={null} />
         <Route path="progress" element={<ProgressScreen />} />
         <Route path="summary" element={<SummaryScreen />} />
         <Route path="document" element={<DocumentScreen />} />
@@ -21,7 +20,7 @@ export function App() {
         <Route path="findings" element={<FindingsScreen />} />
         <Route path="questions" element={<QuestionsScreen />} />
         <Route path="export" element={<ExportScreen />} />
-        <Route path="*" element={<StartScreen />} />
+        <Route path="*" element={<Navigate replace to="/" />} />
       </Route>
     </Routes>
   );

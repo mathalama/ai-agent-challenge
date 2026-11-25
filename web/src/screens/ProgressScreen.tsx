@@ -4,7 +4,7 @@ import { ThinkingOrb, type OrbState } from 'thinking-orbs';
 import { Button, ButtonLink } from '../components/Button';
 import { demoDelay, DEMO_FINISH_PAUSE_MS, formatInt, formatSeconds, stageMsFromUrl } from '../lib/demo';
 import { STAGE_BY_ID, type StageId } from '../lib/labels';
-import { useReportStore } from '../lib/report-store';
+import { useReportStore, type StageRecord } from '../lib/report-store';
 
 const ORB_STATE: Record<StageId, OrbState> = {
   segment: 'working',
@@ -18,9 +18,12 @@ const ORB_STATE: Record<StageId, OrbState> = {
   clarify: 'composing',
 };
 
-type Status = 'done' | 'running' | 'pending';
+type Status = 'done' | 'running' | 'pending' | 'error';
 
 function StatusMark({ status }: { status: Status }) {
+  if (status === 'error') {
+    return <span aria-label="Ошибка" className="grid size-6 place-items-center rounded-full bg-sev-critical-bg text-sev-critical-ink">!</span>;
+  }
   if (status === 'done') {
     return (
       <span aria-hidden className="grid size-6 place-items-center rounded-full bg-ok text-white">
@@ -36,7 +39,53 @@ function StatusMark({ status }: { status: Status }) {
   return <span aria-hidden className="size-6 rounded-full border-2 border-line-strong" />;
 }
 
+export function StageList({ stages, current, completed, elapsed }: {
+  stages: StageId[];
+  current: StageId | null;
+  completed: StageRecord[];
+  elapsed?: number;
+}) {
+  return (
+    <ol className="divide-y divide-line rounded-2xl border border-line bg-surface">
+      {stages.map((stage) => {
+        const record = completed.find((item) => item.stage === stage);
+        const status = record ? (record.succeeded ? 'done' : 'error') : current === stage ? 'running' : 'pending';
+        const info = STAGE_BY_ID[stage];
+        return (
+          <li key={stage} className="grid grid-cols-[auto_1fr_auto] items-center gap-x-4 gap-y-0.5 px-4 py-3 sm:grid-cols-[auto_1fr_5rem_7rem]">
+            <StatusMark status={status} />
+            <div className="min-w-0">
+              <p className={`font-medium ${status === 'pending' ? 'text-muted' : 'text-ink'}`}>{info.label}</p>
+              <p className="hidden text-sm text-muted sm:block">{info.note}</p>
+            </div>
+            <p className="tabular text-right text-sm text-ink-2">
+              {record ? formatSeconds(record.duration_ms) : status === 'running' && elapsed !== undefined ? formatSeconds(elapsed) : ''}
+            </p>
+            <p className="tabular hidden text-right text-sm text-muted sm:block">
+              {record ? (record.tokens_in + record.tokens_out > 0 ? `${formatInt(record.tokens_in)} → ${formatInt(record.tokens_out)}` : 'без токенов') : ''}
+            </p>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export function ProgressScreen() {
+  const { mode, stageTrace } = useReportStore();
+  if (mode !== 'demo') {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-2xl font-semibold">Ход проверки</h1>
+        {stageTrace.length > 0 && <StageList stages={stageTrace.map((stage) => stage.stage)} current={null} completed={stageTrace} />}
+        <ButtonLink to="/">Открыть чат</ButtonLink>
+      </div>
+    );
+  }
+  return <DemoProgressScreen />;
+}
+
+function DemoProgressScreen() {
   const navigate = useNavigate();
   const { search } = useLocation();
   const { status, stageTrace, sourceName, demoPlayed, load, markDemoPlayed } = useReportStore();
@@ -118,27 +167,7 @@ export function ProgressScreen() {
         </div>
       </div>
 
-      <ol className="divide-y divide-line rounded-3xl border border-line bg-surface">
-        {(ready ? stageTrace : []).map((s, i) => {
-          const st: Status = i < position ? 'done' : i === position ? 'running' : 'pending';
-          const info = STAGE_BY_ID[s.stage];
-          return (
-            <li key={s.stage} className="grid grid-cols-[auto_1fr_auto] items-center gap-x-4 gap-y-0.5 px-5 py-3.5 sm:grid-cols-[auto_1fr_5rem_9rem]">
-              <StatusMark status={st} />
-              <div className="min-w-0">
-                <p className={`font-medium ${st === 'pending' ? 'text-muted' : 'text-ink'}`}>{info.label}</p>
-                <p className="hidden text-sm text-muted sm:block">{info.note}</p>
-              </div>
-              <p className="tabular text-right text-sm text-ink-2">
-                {st === 'done' ? formatSeconds(s.duration_ms) : st === 'running' ? formatSeconds(elapsed) : ''}
-              </p>
-              <p className="tabular hidden text-right text-sm text-muted sm:block">
-                {st === 'done' ? (s.tokens_in + s.tokens_out > 0 ? `${formatInt(s.tokens_in)} → ${formatInt(s.tokens_out)}` : 'без модели') : ''}
-              </p>
-            </li>
-          );
-        })}
-      </ol>
+      {ready && <StageList stages={stageTrace.map((stage) => stage.stage)} current={current?.stage ?? null} completed={stageTrace.slice(0, position)} elapsed={elapsed} />}
 
       <div className="flex gap-3">
         {finished ? (

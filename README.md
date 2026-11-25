@@ -32,6 +32,32 @@ cargo run -p cli -- check samples/requirements.md -o reports/report.md --provide
 
 Команда создаёт `reports/report.md`. Файл `samples/requirements.md` взят из репозитория задания. [Исходный документ организаторов](https://github.com/BCC-HUB/ai-requirements-validator-task/blob/main/docs/requirements.md)
 
+### Чат в терминале и браузере
+
+`rs` без аргументов открывает чат. Для прогона без ключа используйте `cargo run -p cli -- chat --provider mock`.
+Введите `/load samples/requirements.md`, затем `/check`. После проверки доступны `/findings`, `/questions`,
+`/verdict`, свободные вопросы и `/ask <вопрос>`. Ответ на уточнение можно отправить командой
+`/answer <ID> <текст>`. Терминал записывает ответы рядом с документом в `*.answers.json`.
+`/export md` и `/export json` выгружают отчёт в `reports/`, `/exit` завершает сессию.
+
+Для веб-чата соберите интерфейс и запустите сервер из корня репозитория.
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+cargo run -p cli -- serve --provider mock
+```
+
+Откройте [веб-чат на localhost](http://127.0.0.1:3000), прикрепите документ и нажмите «Проверить».
+Веб-сессии хранятся в памяти. Режим разработки `npm --prefix web run dev` подключается к серверу
+на порту 3000 и показывает демонстрацию на готовых данных, когда сервер недоступен.
+
+До запуска проверки чат отвечает по шаблонам. Сбор рассуждений включается командой `/reasoning on`
+и выключается командой `/reasoning off`. OpenAI-совместимые модели могут передавать рассуждение по частям.
+Gemini и кэшированные ответы передают его после запроса.
+
+### Команды для скриптов
+
 ```text
 rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|openai|mock] [--no-cache] [--trace <PATH>] [--reasoning] [--events <PATH>]
 rs ask <INPUT> [-o <PATH>] [--provider gemini|openai|mock] [--no-cache]
@@ -83,6 +109,8 @@ segment → facts → rules → requirement_checks → set_checks
 | `doc` | Модель документа, координаты блоков, реестр парсеров |
 | `llm` | Контракт провайдера, mock, HTTP-клиенты Gemini и OpenAI-совместимых API, кэш, повторы, лимит и трасса |
 | `review` | Доменные типы, стадии и проверки, сводка и форматы отчёта |
+| `agent` | Чат-сессия, маршрутизация команд и общий запуск проверки |
+| `server` | Локальный HTTP-сервер, REST, SSE и раздача веб-интерфейса |
 | `cli` | Конфигурация, команды `rs`, чтение и запись файлов |
 
 [Архитектура](docs/architecture.md) · [Решения](docs/decisions.md)

@@ -1,16 +1,17 @@
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use doc::{Document, ParserRegistry};
-use llm::{LlmProvider, TraceLog};
+use llm::{LlmProvider, TraceLog, generate_typed};
 use review::{
-    JsonRenderer, MarkdownRenderer, ProgressEvent, ProgressSink, Question, Readiness, Report,
-    ReportRenderer, ReportSummary,
+    Evidence, JsonRenderer, MarkdownRenderer, ProgressEvent, ProgressSink, Question, Readiness,
+    Report, ReportRenderer, ReportSummary,
 };
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::{Answers, Result, progress_trace, review};
 
-const HELP: &str = "Загрузите документ через клиент. Если клиент поддерживает команду /load <путь>, он прочитает файл по указанному пути. Для проверки введите /check. После проверки доступны /findings, /questions, /verdict и /export md|json. Для ответа введите /answer <ID> <ответ> или ответьте на текущий вопрос. Сохранение рассуждений по умолчанию выключено. Для переключения используйте /reasoning on|off.";
+const HELP: &str = "Загрузите документ через клиент. В терминале используйте /load <путь>. Для проверки введите /check. После проверки доступны /findings, /questions, /verdict, /export md|json и /ask <вопрос>. Для ответа введите /answer <ID> <ответ> или ответьте на текущий вопрос. Рассуждения включаются командой /reasoning on.";
 
 pub enum Input<'a> {
     Text(&'a str),
@@ -19,6 +20,7 @@ pub enum Input<'a> {
     Document {
         name: &'a Path,
         bytes: &'a [u8],
+        answers: Answers,
     },
 }
 
@@ -50,15 +52,23 @@ pub enum AgentEvent {
     Message {
         role: Role,
         text: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<Evidence>,
     },
     Progress {
         progress: ProgressEvent,
+    },
+    Reasoning {
+        stage: String,
+        delta: String,
+        complete: bool,
     },
     StateChanged {
         state: SessionState,
     },
     ReportReady {
         summary: ReportSummary,
+        readiness: Readiness,
     },
     Question {
         question: Question,
@@ -77,6 +87,12 @@ pub enum AgentEvent {
 
 type ProviderFactory = dyn Fn(TraceLog, bool) -> Result<Box<dyn LlmProvider>> + Send + Sync;
 type EventHandler = dyn Fn(AgentEvent) + Send + Sync;
+
+#[derive(Deserialize, JsonSchema)]
+struct ChatReply {
+    text: String,
+    citations: Vec<Evidence>,
+}
 
 pub struct Session {
     document: Option<Document>,
@@ -129,7 +145,11 @@ impl Session {
     ) {
         let emit: Arc<EventHandler> = Arc::new(emit);
         let result = match input {
-            Input::Document { name, bytes } => self.load(name, bytes).map(|event| {
+            Input::Document {
+                name,
+                bytes,
+                answers,
+            } => self.load(name, bytes, answers).map(|event| {
                 emit(AgentEvent::StateChanged {
                     state: self.state(),
                 });
@@ -144,7 +164,7 @@ impl Session {
         }
     }
 
-    fn load(&mut self, name: &Path, bytes: &[u8]) -> Result<AgentEvent> {
+    fn load(&mut self, name: &Path, bytes: &[u8], answers: Answers) -> Result<AgentEvent> {
         let document = ParserRegistry::default().parse(name, bytes)?;
         let mut last_line_by_page = BTreeMap::<_, usize>::new();
         for block in &document.blocks {
@@ -159,7 +179,7 @@ impl Session {
         ));
         self.document = Some(document);
         self.report = None;
-        self.answers.clear();
+        self.answers = answers;
         self.current_question = None;
         Ok(event)
     }
@@ -187,7 +207,17 @@ impl Session {
         } else if command == "/check" || text.to_lowercase() == "проверь" {
             self.check(Arc::clone(emit)).await?;
         } else if self.report.is_some() {
-            self.handle_report(command, arguments, text, emit.as_ref())?;
+            if command == "/ask" {
+                if arguments.is_empty() {
+                    return Err("Используйте /ask <вопрос>.".into());
+                }
+                self.ask(arguments, Arc::clone(emit)).await?;
+            } else if !text.is_empty() && !text.starts_with('/') && self.current_question.is_none()
+            {
+                self.ask(text, Arc::clone(emit)).await?;
+            } else {
+                self.handle_report(command, arguments, text, emit.as_ref())?;
+            }
         } else {
             emit(message(
                 "Документ загружен. Введите /check для проверки или /help для справки.",
@@ -264,14 +294,16 @@ impl Session {
         });
         let result = self.run_check(Arc::clone(&emit)).await.map(|report| {
             let summary = report.summary.clone();
+            let readiness = report.readiness;
             self.report = Some(report);
             self.current_question = None;
-            summary
+            (summary, readiness)
         });
         emit(AgentEvent::StateChanged {
             state: self.state(),
         });
-        emit(AgentEvent::ReportReady { summary: result? });
+        let (summary, readiness) = result?;
+        emit(AgentEvent::ReportReady { summary, readiness });
         Ok(())
     }
 
@@ -289,6 +321,31 @@ impl Session {
         )
         .await;
         Ok(run.report?)
+    }
+
+    async fn ask(&self, question: &str, emit: Arc<EventHandler>) -> Result<()> {
+        let document = self.document.as_ref().expect("документ загружен");
+        let report = self.report.as_ref().expect("проверка завершена");
+        let sink = Arc::new(SessionProgress(Arc::clone(&emit)));
+        let provider = (self.provider)(progress_trace(sink), self.include_reasoning)?;
+        let payload =
+            serde_json::to_string(&serde_json::json!({ "question": question, "report": report }))?;
+        let mut reply = generate_typed::<ChatReply>(
+            provider.as_ref(),
+            "chat",
+            include_str!("../../../prompts/chat.md"),
+            payload,
+        )
+        .await?;
+        reply
+            .citations
+            .retain(|item| document.contains_quote(item.location, &item.quote));
+        emit(AgentEvent::Message {
+            role: Role::Assistant,
+            text: reply.text,
+            citations: reply.citations,
+        });
+        Ok(())
     }
 
     fn answer(&mut self, id: &str, text: &str, emit: &EventHandler) -> Result<()> {
@@ -317,6 +374,7 @@ fn message(text: impl Into<String>) -> AgentEvent {
     AgentEvent::Message {
         role: Role::Assistant,
         text: text.into(),
+        citations: Vec::new(),
     }
 }
 
@@ -324,8 +382,20 @@ struct SessionProgress(Arc<EventHandler>);
 
 impl ProgressSink for SessionProgress {
     fn emit(&self, event: &ProgressEvent) {
-        (self.0)(AgentEvent::Progress {
-            progress: event.clone(),
+        (self.0)(match event {
+            ProgressEvent::LlmReasoning { stage, text } => AgentEvent::Reasoning {
+                stage: stage.clone(),
+                delta: text.clone(),
+                complete: true,
+            },
+            ProgressEvent::LlmReasoningDelta { stage, delta } => AgentEvent::Reasoning {
+                stage: stage.clone(),
+                delta: delta.clone(),
+                complete: false,
+            },
+            _ => AgentEvent::Progress {
+                progress: event.clone(),
+            },
         });
     }
 }

@@ -39,6 +39,7 @@ async fn chat_without_document_uses_templates() {
             Input::Document {
                 name: Path::new("sample.md"),
                 bytes: SAMPLE,
+                answers: Default::default(),
             },
             |_| {},
         )
@@ -62,6 +63,7 @@ async fn mock_review_streams_progress_and_exports_the_shared_report() {
             Input::Document {
                 name: Path::new("requirements.md"),
                 bytes: SAMPLE,
+                answers: Default::default(),
             },
             emit.clone(),
         )
@@ -117,6 +119,7 @@ async fn answers_update_the_report_and_survive_a_second_check() {
             Input::Document {
                 name: Path::new("requirements.md"),
                 bytes: SAMPLE,
+                answers: Default::default(),
             },
             |_| {},
         )
@@ -178,6 +181,7 @@ async fn reasoning_can_be_enabled_before_loading_the_document() {
             Input::Document {
                 name: Path::new("requirements.md"),
                 bytes: SAMPLE,
+                answers: Default::default(),
             },
             |_| {},
         )
@@ -197,6 +201,7 @@ async fn failed_checks_leave_the_document_available_for_retry() {
             Input::Document {
                 name: Path::new("requirements.md"),
                 bytes: SAMPLE,
+                answers: Default::default(),
             },
             |_| {},
         )

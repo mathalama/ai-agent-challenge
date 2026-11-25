@@ -23,11 +23,7 @@ export const EMPTY_FILTERS: Filters = { severities: [], criteria: [], stages: []
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-/**
- * Единственная точка получения данных. Сейчас читает мок из public/mock,
- * позже сюда подставляется вызов бэкенда.
- */
-export async function loadReport(): Promise<{ report: Report; stageTrace: StageRecord[] }> {
+export async function loadDemoReport(): Promise<{ report: Report; stageTrace: StageRecord[] }> {
   const base = import.meta.env.BASE_URL;
   const [reportRes, stagesRes] = await Promise.all([
     fetch(`${base}mock/report.json`),
@@ -42,6 +38,8 @@ export async function loadReport(): Promise<{ report: Report; stageTrace: StageR
 }
 
 interface ReportState {
+  mode: 'connecting' | 'live' | 'demo';
+  sessionId: string | null;
   status: LoadStatus;
   error: string | null;
   report: Report | null;
@@ -70,6 +68,8 @@ interface ReportState {
 }
 
 export const useReportStore = create<ReportState>((set, get) => ({
+  mode: 'connecting',
+  sessionId: null,
   status: 'idle',
   error: null,
   report: null,
@@ -82,13 +82,18 @@ export const useReportStore = create<ReportState>((set, get) => ({
   demoPlayed: false,
 
   load: async () => {
-    if (get().status === 'loading') return;
+    if (get().status === 'loading' || get().mode === 'connecting') return;
+    const sessionId = get().sessionId;
     set({ status: 'loading', error: null });
     try {
-      const { report, stageTrace } = await loadReport();
-      set({ status: 'ready', report, stageTrace });
+      const result = sessionId
+        ? { report: await fetchLiveReport(sessionId) }
+        : await loadDemoReport();
+      if (get().sessionId === sessionId && get().status === 'loading') set({ status: 'ready', ...result });
     } catch (e) {
-      set({ status: 'error', error: e instanceof Error ? e.message : String(e) });
+      if (get().sessionId === sessionId && get().status === 'loading') {
+        set({ status: 'error', error: e instanceof Error ? e.message : String(e) });
+      }
     }
   },
   reset: () =>
@@ -126,6 +131,12 @@ export const useReportStore = create<ReportState>((set, get) => ({
       return { answers: rest };
     }),
 }));
+
+async function fetchLiveReport(sessionId: string): Promise<Report> {
+  const response = await fetch(`/api/sessions/${sessionId}/report`);
+  if (!response.ok) throw new Error(`Не удалось загрузить отчёт (${response.status})`);
+  return response.json() as Promise<Report>;
+}
 
 /** Находки после применения фильтров. Чистая функция, чтобы экран B вызывал её через useMemo. */
 export function applyFilters(findings: Finding[], f: Filters): Finding[] {

@@ -74,6 +74,8 @@ pub enum LlmError {
     },
     #[error("Ошибка запроса к LLM: {0}")]
     Transport(#[from] reqwest::Error),
+    #[error("Поток ответа LLM прервался до результата")]
+    IncompleteStream,
     #[error(
         "Ответ LLM не содержит полного результата (finishReason={finish_reason}, promptFeedback.blockReason={block_reason})"
     )]
@@ -124,11 +126,21 @@ impl LlmError {
 }
 
 pub type Result<T> = std::result::Result<T, LlmError>;
+pub type ReasoningCallback<'a> = dyn Fn(&str) + Send + Sync + 'a;
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     fn model(&self) -> &str;
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse>;
+
+    /// Провайдеры со стримингом могут передавать рассуждение до готовности ответа.
+    async fn generate_with_reasoning(
+        &self,
+        request: &LlmRequest,
+        _on_delta: &ReasoningCallback<'_>,
+    ) -> Result<LlmResponse> {
+        self.generate(request).await
+    }
 }
 
 pub async fn generate_typed<T: JsonSchema + DeserializeOwned>(

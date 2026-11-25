@@ -54,7 +54,7 @@ CLI записывает стадии в `stages` отдельной трасс�
 
 ## События прогресса
 
-`rs check --events <путь>` пишет события в JSON Lines: одна строка — один объект, файл дописывается и сбрасывается после каждого события, поэтому его можно читать во время прогона. Тип события лежит в поле `event`. Эти же объекты планируется отдавать через SSE в `GET /api/runs/{id}/events`.
+`rs check --events <путь>` пишет события в JSON Lines: одна строка — один объект, файл сбрасывается после каждого события и доступен во время прогона. Тип события лежит в поле `event`. SSE сессии передаёт эти же события во вложенном поле `progress`, а рассуждения — отдельным событием `reasoning`.
 
 | `event` | Поля | Когда |
 | --- | --- | --- |
@@ -62,6 +62,8 @@ CLI записывает стадии в `stages` отдельной трасс�
 | `stage_started` | `stage`, `index` (с единицы), `total` | Перед стадией |
 | `stage_finished` | `stage`, `index`, `total`, `duration_ms`, `succeeded`, `llm_calls`, `cached_calls`, `input_tokens`, `output_tokens`, `requirements`, `findings`, `questions` | После стадии, в том числе при ошибке |
 | `llm_retry` | `stage`, `reason` (`http`, `transport`, `invalid_response`), `status` (HTTP-код или `null`), `delay_ms` | Перед паузой повтора запроса к LLM |
+| `llm_reasoning` | `stage`, `text` | Полный текст рассуждения после ответа или попадания в кэш при включённом сборе |
+| `llm_reasoning_delta` | `stage`, `delta` | Фрагмент рассуждения из потока OpenAI-совместимого провайдера |
 | `fact_batch_split` | Поле `source_ids` содержит ID требований или элементов контекста | После превышения лимита ответа, если пачка делится пополам |
 | `fact_source_skipped` | Поля `source_id` и `location` указывают на источник | После превышения лимита ответа для одного источника. Прогон продолжается с неполной проверкой |
 | `stage_output_limit` | `stage` | Лимит ответа прервал стадию, прогон продолжается |
@@ -74,6 +76,26 @@ CLI записывает стадии в `stages` отдельной трасс�
 ```json
 {"event":"stage_finished","stage":"requirement_checks","index":4,"total":9,"duration_ms":38150,"succeeded":true,"llm_calls":1,"cached_calls":0,"input_tokens":7100,"output_tokens":1600,"requirements":20,"findings":12,"questions":0}
 ```
+
+## HTTP-сессия
+
+`rs serve` по умолчанию слушает `127.0.0.1:3000` и раздаёт `web/dist`. API предназначено для локального запуска.
+Сессии хранятся в памяти и удаляются при перезапуске. Сервер освобождает неактивные сессии через час при создании новых.
+
+| Метод и путь | Тело и результат |
+| --- | --- |
+| `POST /api/sessions` | `201` с UUID в `id` и приветствием в `greeting` |
+| `POST /api/sessions/{id}/document` | Один multipart-файл в поле `file` до 20 МиБ. `202` после принятия |
+| `POST /api/sessions/{id}/messages` | JSON с полем `text` до 16 КиБ. `202` после принятия |
+| `GET /api/sessions/{id}/events` | SSE с журналом событий. `Last-Event-ID` возобновляет чтение с последнего известного события |
+| `GET /api/sessions/{id}/report?format=json` | Готовый отчёт. Поддерживается `format=md` |
+| `GET /api/schema` | JSON Schema отчёта |
+
+В SSE-событии `message` поле `data` содержит JSON с типом в поле `event`.
+Переходы состояния приходят как `state_changed`. Прогресс приходит как `progress`, итог — как `report_ready`.
+`reasoning` передаёт `stage`, `delta` и `complete`. Сообщения чата могут содержать проверенные `citations`.
+Отдельное SSE-событие `done` отмечает завершение принятой операции. Следующий POST следует отправлять после `done`.
+Занятая сессия возвращает `409`. Отчёт до завершения первой проверки также возвращает `409`.
 
 ## Совместимость
 

@@ -42,6 +42,14 @@ pub enum ProgressEvent {
         status: Option<u16>,
         delay_ms: u64,
     },
+    LlmReasoning {
+        stage: String,
+        text: String,
+    },
+    LlmReasoningDelta {
+        stage: String,
+        delta: String,
+    },
     FactBatchSplit {
         source_ids: Vec<String>,
     },

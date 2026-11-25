@@ -1,9 +1,11 @@
 mod ask;
+mod chat;
 mod progress;
 
 use std::{
     fs,
     io::{self, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::ExitCode,
     sync::Arc,
@@ -31,11 +33,30 @@ use tracing_subscriber::EnvFilter;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Открыть интерактивную чат-сессию.
+    Chat {
+        input: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "gemini")]
+        provider: Provider,
+        #[arg(long)]
+        no_cache: bool,
+    },
+    /// Запустить локальный веб-сервер.
+    Serve {
+        #[arg(long, value_enum, default_value = "gemini")]
+        provider: Provider,
+        #[arg(long)]
+        no_cache: bool,
+        #[arg(long, default_value = "127.0.0.1:3000")]
+        listen: SocketAddr,
+        #[arg(long, default_value = "web/dist")]
+        web_dir: PathBuf,
+    },
     /// Проверить документ и записать отчёт.
     Check {
         input: PathBuf,
@@ -108,7 +129,7 @@ impl From<Provider> for agent::Provider {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -124,10 +145,6 @@ async fn main() -> ExitCode {
                 ErrorKind::UnknownArgument => "Неизвестный аргумент",
                 ErrorKind::InvalidSubcommand => "Неизвестная команда",
                 ErrorKind::MissingRequiredArgument => "Отсутствует обязательный аргумент",
-                ErrorKind::MissingSubcommand
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                    "Укажите команду check, ask, eval или schema"
-                }
                 ErrorKind::InvalidValue | ErrorKind::ValueValidation => {
                     "Недопустимое значение аргумента"
                 }
@@ -170,7 +187,22 @@ async fn run(cli: Cli) -> Result<()> {
         .with_writer(io::stderr)
         .init();
 
-    match cli.command {
+    match cli.command.unwrap_or(Command::Chat {
+        input: None,
+        provider: Provider::Gemini,
+        no_cache: false,
+    }) {
+        Command::Chat {
+            input,
+            provider,
+            no_cache,
+        } => chat::run(input, provider.into(), no_cache).await,
+        Command::Serve {
+            provider,
+            no_cache,
+            listen,
+            web_dir,
+        } => server::serve(listen, provider.into(), no_cache, web_dir).await,
         Command::Check {
             input,
             output,
@@ -352,7 +384,8 @@ async fn eval_golden(golden: &Path, provider_kind: Provider, no_cache: bool) -> 
 
 /// Прогресс всегда печатается в stderr, а при `--events` ещё и пишется в файл.
 fn progress_sink(events: Option<&Path>) -> Result<Arc<dyn ProgressSink>> {
-    let mut sinks: Vec<Box<dyn ProgressSink>> = vec![Box::new(progress::ConsoleProgress)];
+    let mut sinks: Vec<Box<dyn ProgressSink>> =
+        vec![Box::new(progress::ConsoleProgress::default())];
     if let Some(path) = events {
         let file = progress::JsonLinesProgress::create(path).map_err(|error| {
             format!(
