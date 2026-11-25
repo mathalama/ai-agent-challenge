@@ -224,16 +224,24 @@ impl ReportRenderer for MarkdownRenderer {
 
         let summary = &report.summary;
         writeln!(output,
-            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- Находок с ответами — {}\n- Критичные дефекты — {}",
-            summary.requirement_count, summary.finding_count, summary.verified_count, report.finding_answers.len(),
+            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- Критичные дефекты — {}",
+            summary.requirement_count, summary.finding_count, summary.verified_count,
             if summary.critical_findings.is_empty() { "список пуст".into() } else {
                 summary.critical_findings.iter().map(|id| markdown(id)).collect::<Vec<_>>().join(", ")
             },
         ).expect("запись в строку");
+        if !report.finding_answers.is_empty() {
+            writeln!(
+                output,
+                "- Находок с ответами — {}",
+                report.finding_answers.len()
+            )
+            .expect("запись в строку");
+        }
 
         output.push_str("\n## 6. Итог\n\n");
         output.push_str(match report.readiness {
-            Readiness::Blocked => "**Не готово.**\n",
+            Readiness::Blocked => "**Не готово.**\n\n",
             Readiness::ChecksIncomplete => {
                 "**Готовность не подтверждена.** Нужно завершить проверки.\n"
             }
@@ -241,6 +249,9 @@ impl ReportRenderer for MarkdownRenderer {
                 "**Готово.** По результатам проверки можно начинать разработку и тестирование.\n"
             }
         });
+        if matches!(report.readiness, Readiness::Blocked) {
+            write_blocking_reason(&mut output, &report.findings);
+        }
         if !report.incomplete_stages.is_empty() {
             let stages = report
                 .incomplete_stages
@@ -347,6 +358,30 @@ fn write_question(output: &mut String, report: &Report, question: &Question) {
     }
 }
 
+fn write_blocking_reason(output: &mut String, findings: &[Finding]) {
+    let critical: Vec<_> = findings
+        .iter()
+        .enumerate()
+        .filter(|(_, finding)| needs_fix(finding) && finding.severity == Severity::Critical)
+        .map(|(index, finding)| format!("[{}](#finding-{})", markdown(&finding.id), index + 1))
+        .collect();
+    if critical.is_empty() {
+        let count = findings.iter().filter(|finding| needs_fix(finding)).count();
+        writeln!(
+            output,
+            "Подтверждённых дефектов средней важности и выше — {count}."
+        )
+    } else {
+        writeln!(
+            output,
+            "Подтверждённых критичных дефектов — {} ({}).",
+            critical.len(),
+            critical.join(", ")
+        )
+    }
+    .expect("запись в строку");
+}
+
 fn write_priority_fixes(output: &mut String, report: &Report) {
     let mut fixes: Vec<_> = report
         .findings
@@ -363,7 +398,7 @@ fn write_priority_fixes(output: &mut String, report: &Report) {
     if !fixes.is_empty() {
         output.push_str("\n### Что исправить в первую очередь\n\n");
     }
-    for (index, finding, affected) in fixes {
+    for (index, finding, affected) in fixes.into_iter().take(7) {
         writeln!(
             output,
             "- [{}](#finding-{}) — {} важность, затронуто требований — {}. {}",
@@ -711,6 +746,7 @@ mod tests {
         assert!(report.questions.is_empty());
         let markdown = MarkdownRenderer.render(&report).unwrap();
         assert!(markdown.contains("Ответ Q-1 — не знаю"));
+        assert!(markdown.contains("Находок с ответами — 1"));
         assert!(markdown.contains("[critical](#finding-1)"));
         assert!(markdown.contains("**Q-old** — предыдущее решение"));
         let json: serde_json::Value =
@@ -803,12 +839,15 @@ mod tests {
                 finding("unverified", Severity::Critical, false),
                 finding("low", Severity::Low, true),
                 orphan,
+                finding("extra-1", Severity::Medium, true),
+                finding("extra-2", Severity::Medium, true),
+                finding("extra-3", Severity::Medium, true),
             ],
             summary: ReportSummary {
                 requirement_count: 3,
-                finding_count: 7,
-                verified_count: 6,
-                critical_findings: Vec::new(),
+                finding_count: 10,
+                verified_count: 9,
+                critical_findings: vec!["critical".into(), "unverified".into()],
             },
             readiness: Readiness::Blocked,
             incomplete_stages: Vec::new(),
@@ -821,6 +860,11 @@ mod tests {
         let (_, summary) = markdown.split_once("## 6. Итог").unwrap();
         let (summary, _) = summary.split_once("## 7.").unwrap();
         assert!(summary.contains("**Не готово.**"));
+        assert!(
+            summary.contains("Подтверждённых критичных дефектов — 1 ([critical](#finding-4)).")
+        );
+        assert!(!summary.contains("unverified"));
+        assert!(!markdown.contains("Находок с ответами — 0"));
         assert_eq!(
             summary
                 .lines()
@@ -832,10 +876,20 @@ mod tests {
                 "- [high-single](#finding-1) — высокая важность, затронуто требований — 1. Описание high-single",
                 "- [medium](#finding-2) — средняя важность, затронуто требований — 0. Описание medium",
                 "- [orphan](#finding-7) — средняя важность, затронуто требований — 0. Описание orphan",
+                "- [extra-1](#finding-8) — средняя важность, затронуто требований — 0. Описание extra-1",
+                "- [extra-2](#finding-9) — средняя важность, затронуто требований — 0. Описание extra-2",
             ]
         );
-        for index in [1, 2, 3, 4, 7] {
+        for index in [1, 2, 3, 4, 7, 8, 9, 10] {
             assert!(markdown.contains(&format!("<a name=\"finding-{index}\"></a>")));
         }
+
+        let mut report = report;
+        report.findings[3].severity = Severity::High;
+        let markdown = MarkdownRenderer.render(&report).unwrap();
+        assert!(
+            markdown
+                .contains("**Не готово.**\n\nПодтверждённых дефектов средней важности и выше — 8.")
+        );
     }
 }

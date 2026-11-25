@@ -42,13 +42,13 @@ fn check_rule(left: FactData, right: FactData, expected: Option<&str>) {
     assert_eq!(
         group
             .compare(&left, &right, &conversions)
-            .map(|(name, _)| name),
+            .map(|(name, _, _)| name),
         expected
     );
     assert_eq!(
         group
             .compare(&right, &left, &conversions)
-            .map(|(name, _)| name),
+            .map(|(name, _, _)| name),
         expected
     );
 }

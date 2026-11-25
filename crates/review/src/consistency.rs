@@ -89,7 +89,8 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 if quotes[0] == quotes[1] {
                     continue;
                 }
-                if let Some((rule, explanation)) = group.compare(left, right, &conversions)
+                if let Some((rule, severity, explanation)) =
+                    group.compare(left, right, &conversions)
                     && seen_rules.insert((rule, quotes))
                 {
                     findings.push(Finding {
@@ -97,7 +98,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                         scope: Scope::Set,
                         criterion: Criterion::Consistent,
                         additional_criteria: Vec::new(),
-                        severity: Severity::High,
+                        severity,
                         evidence: vec![left.evidence.clone(), right.evidence.clone()],
                         explanation,
                         suggestion: None,
@@ -186,7 +187,7 @@ impl Group<'_> {
         left: &Fact,
         right: &Fact,
         conversions: &BTreeSet<(String, String)>,
-    ) -> Option<(&'static str, String)> {
+    ) -> Option<(&'static str, Severity, String)> {
         use FactData::*;
 
         if let (Some(a), Some(b)) = (unit(&left.data), unit(&right.data))
@@ -197,8 +198,14 @@ impl Group<'_> {
             return (!conversions.contains(&units)).then(|| {
                 let first = unit_label(&units.0);
                 let second = unit_label(&units.1);
+                let severity = if units.0 == "kzt" && units.1 == "kzt minor" {
+                    Severity::Critical
+                } else {
+                    Severity::High
+                };
                 (
                     "unit_mismatch",
+                    severity,
                     format!("Для сопоставляемых величин указаны разные единицы ({first} и {second}) без описания преобразования."),
                 )
             });
@@ -216,6 +223,7 @@ impl Group<'_> {
                 },
             ) if a == b && first != second => Some((
                 "field_type_mismatch",
+                Severity::High,
                 format!("Поле «{a}» описано с разными типами."),
             )),
             (HttpMethod { method }, Operation { intent })
@@ -224,6 +232,7 @@ impl Group<'_> {
             {
                 Some((
                     "http_method_mismatch",
+                    Severity::Critical,
                     "Безопасный HTTP-метод используется для операции, меняющей состояние.".into(),
                 ))
             }
@@ -251,6 +260,7 @@ impl Group<'_> {
                 };
                 Some((
                     "status_code_mismatch",
+                    Severity::High,
                     format!(
                         "В заголовке заявлен код HTTP {heading}, а для этого сценария возвращается HTTP {returned}."
                     ),
@@ -279,6 +289,7 @@ impl Group<'_> {
                 },
             ) if same_key(a, b) && status_conflicts(*code, *outcome) => Some((
                 "status_outcome_mismatch",
+                Severity::High,
                 format!("Код HTTP {code} противоречит значению «{value}» в поле «{field}»."),
             )),
             (
@@ -312,7 +323,16 @@ impl Group<'_> {
                     .iter()
                     .find(|candidate| same_key(&candidate.event, event))?
                     .month;
-                months_differ(actual, *expected_month).then(|| ("acceptance_period_mismatch", format!("Критерий приёмки относит событие к другому месяцу, чем правило из требования {}.", requirement.source_id.as_ref().unwrap_or(&requirement.id))))
+                months_differ(actual, *expected_month).then(|| {
+                    (
+                        "acceptance_period_mismatch",
+                        Severity::High,
+                        format!(
+                            "Критерий приёмки относит событие к другому месяцу, чем правило из требования {}.",
+                            requirement.source_id.as_ref().unwrap_or(&requirement.id)
+                        ),
+                    )
+                })
             }
             _ => None,
         }
