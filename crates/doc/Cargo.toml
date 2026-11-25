@@ -1,0 +1,10 @@
+[package]
+name = "doc"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pulldown-cmark.workspace = true
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
