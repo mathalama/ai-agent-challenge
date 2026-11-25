@@ -81,7 +81,7 @@ impl LlmProvider for ReviewProvider {
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
         if request.stage == "segment" {
             let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
-            assert_eq!(input["blocks"].as_array().unwrap().len(), 3);
+            assert!(!input["blocks"].as_array().unwrap().is_empty());
             return MockProvider.generate(request).await;
         }
         let mut findings = Vec::new();
@@ -170,7 +170,7 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
         let document = ParserRegistry::default()
             .parse(
                 Path::new("input.md"),
-                "# Документ требований\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование".as_bytes(),
+                "# Документ требований\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование\n\n## 5. Тестирование и приёмка:\n\nПроверить, что пустой ввод вызывает ошибку.".as_bytes(),
             )
             .unwrap();
         let provider = ReviewProvider(finding);
@@ -193,6 +193,40 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
         };
         let readiness: Readiness = Report::from_run(ctx, passport).readiness;
         assert_eq!(serde_json::to_value(readiness).unwrap(), expected);
+    }
+}
+
+#[tokio::test]
+async fn readiness_requires_testing_section_coverage() {
+    let source = "# Спецификация\n\n* **Ф-1.** Сохранять изменения.";
+    let checks = CheckRegistry::with_builtin_rules();
+    for (path, expected) in [("input.md", "blocked"), ("input.txt", "checks_incomplete")] {
+        let document = ParserRegistry::default()
+            .parse(Path::new(path), source.as_bytes())
+            .unwrap();
+        let provider = ReviewProvider(None);
+        let mut ctx = RunContext::new(document, &provider, &checks);
+        Pipeline::default().run(&mut ctx).await.unwrap();
+        let passport = RunPassport {
+            document_title: ctx.document.title.clone(),
+            date: String::new(),
+            model: provider.model().into(),
+            agent_version: String::new(),
+        };
+        let report = Report::from_run(ctx, passport);
+        assert_eq!(
+            serde_json::to_value(report.readiness).unwrap(),
+            expected,
+            "{path}"
+        );
+        if path == "input.md" {
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.id == "testing-section-missing" && finding.verified)
+            );
+        }
     }
 }
 

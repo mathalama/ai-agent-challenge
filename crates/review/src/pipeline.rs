@@ -133,6 +133,9 @@ pub enum CheckPhase {
 #[async_trait]
 pub trait Check: Send + Sync {
     fn phase(&self) -> CheckPhase;
+    fn applies_to(&self, _ctx: &RunContext<'_>) -> bool {
+        true
+    }
     async fn run(&self, ctx: &RunContext<'_>) -> Result<Vec<Finding>>;
 }
 
@@ -152,13 +155,22 @@ impl CheckRegistry {
         self.checks.push(Box::new(check));
     }
 
-    pub(crate) fn has_checks(&self, phase: CheckPhase) -> bool {
-        self.checks.iter().any(|check| check.phase() == phase)
+    pub(crate) fn can_complete_rules(&self, ctx: &RunContext<'_>) -> bool {
+        let mut rules = self
+            .checks
+            .iter()
+            .filter(|check| check.phase() == CheckPhase::Rules)
+            .peekable();
+        rules.peek().is_some() && rules.all(|check| check.applies_to(ctx))
     }
 
     pub async fn run(&self, phase: CheckPhase, ctx: &RunContext<'_>) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for check in self.checks.iter().filter(|check| check.phase() == phase) {
+        for check in self
+            .checks
+            .iter()
+            .filter(|check| check.phase() == phase && check.applies_to(ctx))
+        {
             findings.extend(check.run(ctx).await?);
         }
         Ok(findings)

@@ -14,24 +14,26 @@ impl Check for TestingSection {
         CheckPhase::Rules
     }
 
+    fn applies_to(&self, ctx: &RunContext<'_>) -> bool {
+        ctx.document
+            .source_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("txt") && !ext.eq_ignore_ascii_case("text"))
+    }
+
     async fn run(&self, ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
         let mut blocks = ctx.document.blocks.iter().peekable();
         let mut findings = Vec::new();
+        let mut found_section = false;
         while let Some(heading) = blocks.next() {
             let BlockContent::Heading { level, text } = &heading.content else {
                 continue;
             };
-            if !matches!(
-                text.trim().to_lowercase().as_str(),
-                "требования к тестированию"
-                    | "тестирование"
-                    | "тестирование требований"
-                    | "testing"
-                    | "testing requirements"
-                    | "test requirements"
-            ) {
+            if !is_testing_heading(text) {
                 continue;
             }
+            found_section = true;
 
             let mut evidence = vec![Evidence {
                 quote: text.clone(),
@@ -62,25 +64,82 @@ impl Check for TestingSection {
                 }
             }
             if !has_content {
-                findings.push(Finding {
-                    id: format!("testing-section-{}", heading.id.0),
-                    scope: Scope::Set,
-                    criterion: Criterion::SetComplete,
-                    severity: Severity::Medium,
+                findings.push(testing_finding(
+                    format!("testing-section-{}", heading.id.0),
                     evidence,
-                    explanation: "Раздел тестирования пуст или содержит только заглушки.".into(),
-                    suggestion: Some(
-                        "Указать сценарии тестирования и ожидаемые результаты.".into(),
-                    ),
-                    detector: Detector::Rule("testing-section".into()),
-                    verified: false,
-                });
+                    "Раздел тестирования пуст или содержит только заглушки.",
+                ));
             }
+        }
+        if !found_section {
+            let evidence = ctx.document.blocks.iter().find_map(|block| {
+                let quote = match &block.content {
+                    BlockContent::Heading { text, .. }
+                    | BlockContent::Paragraph { text }
+                    | BlockContent::ListItem { text }
+                    | BlockContent::Code { text, .. } => text,
+                    BlockContent::Table { rows, .. } => {
+                        rows.iter().flatten().find(|cell| !cell.trim().is_empty())?
+                    }
+                };
+                (!quote.trim().is_empty()).then(|| Evidence {
+                    quote: quote.clone(),
+                    location: block.location,
+                })
+            });
+            findings.push(testing_finding(
+                "testing-section-missing".into(),
+                evidence.into_iter().collect(),
+                "В документе отсутствует раздел тестирования.",
+            ));
         }
         Ok(findings)
     }
 }
 
+fn is_testing_heading(text: &str) -> bool {
+    let title = text
+        .trim_start_matches(|c: char| {
+            c.is_whitespace()
+                || c.is_ascii_digit()
+                || c.is_ascii_punctuation()
+                || matches!(c, '—' | '–' | '«')
+        })
+        .trim_end_matches(|c: char| {
+            c.is_whitespace() || c.is_ascii_punctuation() || matches!(c, '—' | '–' | '»' | '…')
+        })
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .replace('ё', "е");
+    matches!(
+        title.as_str(),
+        "требования к тестированию"
+            | "тестирование"
+            | "тестирование требований"
+            | "тестирование и приемка"
+            | "требования к тестированию и приемке"
+            | "testing"
+            | "testing requirements"
+            | "test requirements"
+            | "testing and acceptance"
+    )
+}
+
+fn testing_finding(id: String, evidence: Vec<Evidence>, explanation: &str) -> Finding {
+    Finding {
+        id,
+        scope: Scope::Set,
+        criterion: Criterion::SetComplete,
+        severity: Severity::Medium,
+        evidence,
+        explanation: explanation.into(),
+        suggestion: Some("Указать сценарии тестирования и ожидаемые результаты.".into()),
+        detector: Detector::Rule("testing-section".into()),
+        verified: false,
+    }
+}
 fn is_placeholder(text: &str) -> bool {
     text.lines().all(|line| {
         let normalized = line.trim().trim_end_matches(['.', '!', '…']).to_lowercase();
@@ -131,7 +190,10 @@ mod tests {
                 "## Test requirements\n\n| Input | Expected |\n| --- | --- |\n| 0 | Error |",
                 0,
             ),
-            ("## Общие сведения\n\nTODO", 0),
+            ("## 5. Требования к тестированию\n\nTBD", 1),
+            ("## Тестирование:\n\nTBD", 1),
+            ("## 3.2) Тестирование и приёмка\n\nTBD", 1),
+            ("## Общие сведения\n\nПороги задаются в тенге.", 1),
         ] {
             let document = ParserRegistry::default()
                 .parse(Path::new("input.md"), source.as_bytes())
