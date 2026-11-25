@@ -141,7 +141,7 @@ fn decode_gemini_response(body: &Value, model: &str) -> Result<LlmResponse> {
     })
 }
 
-fn retry_after_header(value: &HeaderValue) -> Option<Duration> {
+pub(crate) fn retry_after_header(value: &HeaderValue) -> Option<Duration> {
     let value = value.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse() {
         return Some(Duration::from_secs(seconds));

@@ -33,9 +33,9 @@ cargo run -p cli -- check samples/requirements.md -o reports/report.md --provide
 Команда создаёт `reports/report.md`. Файл `samples/requirements.md` взят из репозитория задания. [Исходный документ организаторов](https://github.com/BCC-HUB/ai-requirements-validator-task/blob/main/docs/requirements.md)
 
 ```text
-rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|mock] [--no-cache] [--trace <PATH>]
-rs ask <INPUT> [-o <PATH>] [--provider gemini|mock] [--no-cache]
-rs eval [--golden eval/] [--provider gemini|mock] [--no-cache]
+rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|openai|mock] [--no-cache] [--trace <PATH>]
+rs ask <INPUT> [-o <PATH>] [--provider gemini|openai|mock] [--no-cache]
+rs eval [--golden eval/] [--provider gemini|openai|mock] [--no-cache]
 ```
 
 По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команда `eval` рассчитывает precision, recall и список пропусков по эталонным разметкам в `eval/` (формат описан в [eval/README.md](eval/README.md)).
@@ -49,6 +49,19 @@ rs eval [--golden eval/] [--provider gemini|mock] [--no-cache]
 
 `LLM_REQUESTS_PER_MINUTE` задаёт локальный темп запросов к Gemini и по умолчанию равен 5. Сверьте значение с активной квотой проекта и модели. При HTTP 429 агент учитывает задержку из ответа Gemini и ждёт 60 секунд, если сервер её не указал. `RUST_LOG` управляет уровнем логов и по умолчанию равен `warn`. [Лимиты Gemini API](https://ai.google.dev/gemini-api/docs/rate-limits) · [Активные квоты в AI Studio](https://aistudio.google.com/rate-limit)
 
+## Другие модели (API, совместимый с OpenAI)
+
+`--provider openai` подключает любой сервис с API OpenAI Chat Completions: OpenAI, OpenRouter, Groq, DeepSeek и другие. Задайте в `.env` адрес, ключ и модель.
+
+| Переменная | Значение |
+| --- | --- |
+| `OPENAI_API_KEY` | Ключ сервиса, обязательно |
+| `OPENAI_MODEL` | Имя модели в каталоге сервиса, обязательно |
+| `OPENAI_BASE_URL` | Адрес API без `/chat/completions`, по умолчанию `https://api.openai.com/v1` |
+| `OPENAI_RESPONSE_FORMAT` | `json_schema` (по умолчанию) или `json_object` для сервисов без строгой схемы, например DeepSeek |
+
+Адреса API: OpenRouter — `https://openrouter.ai/api/v1`, Groq — `https://api.groq.com/openai/v1`, DeepSeek — `https://api.deepseek.com`. Лимит `LLM_REQUESTS_PER_MINUTE`, повторы и кэш работают так же, как для Gemini. Название модели попадает в паспорт прогона.
+
 ## Конвейер
 
 ```text
@@ -59,7 +72,7 @@ segment → facts → rules → requirement_checks → set_checks
 | Крейт | Назначение |
 | --- | --- |
 | `doc` | Модель документа, координаты блоков, реестр парсеров |
-| `llm` | Контракт провайдера, mock, HTTP-клиент Gemini, кэш, повторы, лимит и трасса |
+| `llm` | Контракт провайдера, mock, HTTP-клиенты Gemini и OpenAI-совместимых API, кэш, повторы, лимит и трасса |
 | `review` | Доменные типы, стадии и проверки, сводка и форматы отчёта |
 | `cli` | Конфигурация, команды `rs`, чтение и запись файлов |
 

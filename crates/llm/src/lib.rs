@@ -1,8 +1,10 @@
 mod decorators;
 mod mock_review;
+mod openai;
 mod providers;
 
 pub use decorators::{CachedProvider, RateLimitedProvider, RetryProvider, TraceEntry, TraceLog};
+pub use openai::OpenAiProvider;
 pub use providers::{GeminiProvider, MockProvider};
 
 use async_trait::async_trait;
@@ -64,17 +66,17 @@ pub enum LlmError {
         message: String,
         retry_after: Option<std::time::Duration>,
     },
-    #[error("Ошибка запроса к Gemini: {0}")]
+    #[error("Ошибка запроса к LLM: {0}")]
     Transport(#[from] reqwest::Error),
     #[error(
-        "Ответ Gemini не содержит полного результата (finishReason={finish_reason}, promptFeedback.blockReason={block_reason})"
+        "Ответ LLM не содержит полного результата (finishReason={finish_reason}, promptFeedback.blockReason={block_reason})"
     )]
     MissingCandidate {
         finish_reason: String,
         block_reason: String,
         usage: Option<Usage>,
     },
-    #[error("Ошибка обработки JSON ответа Gemini: {source}")]
+    #[error("Ошибка обработки JSON ответа LLM: {source}")]
     ResponseJson {
         #[source]
         source: serde_json::Error,
