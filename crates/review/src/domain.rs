@@ -1,9 +1,18 @@
-use doc::SourceSpan;
+use doc::{BlockId, SourceSpan};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub type RequirementId = String;
 pub type FindingId = String;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TableRef {
+    pub block_id: BlockId,
+    pub index: usize,
+    pub row: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Requirement {
@@ -13,6 +22,10 @@ pub struct Requirement {
     pub quote: String,
     pub location: SourceSpan,
     pub part: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<TableRef>,
 }
 
 macro_rules! criteria {

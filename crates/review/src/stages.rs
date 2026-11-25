@@ -6,7 +6,9 @@ use tracing::warn;
 
 use crate::{
     CheckPhase, Criterion, Detector, Evidence, Finding, Question, RelatedId, RunContext, Scope,
-    Severity, Stage, pipeline::Result,
+    Severity, Stage,
+    pipeline::Result,
+    segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
 };
 
 const DOMAIN_CONTEXT: &str = include_str!("../../../prompts/domain_context.md");
@@ -94,12 +96,18 @@ impl Stage for ScaffoldStage {
         let name = self.name();
         match self {
             Self::Segment => {
-                let prompt = self.llm_prompt();
-                let input = serde_json::to_string(&serde_json::json!({
-                    "title": ctx.document.title,
-                    "blocks": ctx.document.blocks,
-                }))?;
-                ctx.requirements = generate_typed(ctx.provider, name, &prompt, input).await?;
+                let drafts = if has_non_table_content(&ctx.document) {
+                    let prompt = self.llm_prompt();
+                    let input = serde_json::to_string(&serde_json::json!({
+                        "title": ctx.document.title,
+                        "blocks": non_table_blocks(&ctx.document),
+                    }))?;
+                    generate_typed::<Vec<RequirementDraft>>(ctx.provider, name, &prompt, input)
+                        .await?
+                } else {
+                    Vec::new()
+                };
+                ctx.requirements = merge_requirements(&ctx.document, drafts);
             }
             Self::Facts => {
                 let prompt = self.llm_prompt();

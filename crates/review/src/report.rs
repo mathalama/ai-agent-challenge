@@ -108,13 +108,14 @@ impl ReportRenderer for MarkdownRenderer {
             markdown(&passport.model),
             markdown(&passport.agent_version),
         );
-        output.push_str("\n## 2. Нарезка требований\n\n| ID в отчёте | ID в документе | Краткая формулировка |\n| --- | --- | --- |\n");
+        output.push_str("\n## 2. Нарезка требований\n\n| ID в отчёте | ID в документе | Раздел | Краткая формулировка |\n| --- | --- | --- | --- |\n");
         for requirement in &report.requirements {
             writeln!(
                 output,
-                "| {} | {} | {} |",
+                "| {} | {} | {} | {} |",
                 markdown(&requirement.id),
                 markdown(requirement.source_id.as_deref().unwrap_or("—")),
+                markdown(&requirement_section(requirement)),
                 markdown(&requirement.text),
             )
             .expect("запись в строку");
@@ -127,7 +128,7 @@ impl ReportRenderer for MarkdownRenderer {
                 "\n### {}\n\n> {}\n\n{}\n",
                 markdown(&requirement.id),
                 markdown(&requirement.quote),
-                location(requirement.location)
+                requirement_location(requirement)
             )
             .expect("запись в строку");
             write_findings(&mut output, report.findings.iter().enumerate().filter(|(_, finding)| {
@@ -306,6 +307,39 @@ fn write_findings<'a>(output: &mut String, findings: impl Iterator<Item = (usize
     }
 }
 
+fn requirement_section(requirement: &Requirement) -> String {
+    match (requirement.part.as_deref(), requirement.section.as_deref()) {
+        (Some(part), Some(section)) => format!("{part} / {section}"),
+        (Some(part), None) => part.to_owned(),
+        (None, Some(section)) => section.to_owned(),
+        (None, None) => "—".to_owned(),
+    }
+}
+
+fn requirement_location(requirement: &Requirement) -> String {
+    let mut parts = Vec::new();
+    if let Some(part) = requirement.part.as_deref() {
+        parts.push(markdown(part));
+    }
+    if let Some(section) = requirement.section.as_deref() {
+        parts.push(markdown(section));
+    }
+    if let Some(table) = &requirement.table {
+        let label = match table.title.as_deref() {
+            Some(title) => format!(
+                "таблица {} «{}», строка {}",
+                table.index,
+                markdown(title),
+                table.row
+            ),
+            None => format!("таблица {}, строка {}", table.index, table.row),
+        };
+        parts.push(label);
+    }
+    parts.push(location(requirement.location));
+    parts.join(" · ")
+}
+
 fn location(span: doc::SourceSpan) -> String {
     let lines = format!("строки {}–{}", span.start_line, span.end_line);
     match span.page {
@@ -401,6 +435,8 @@ mod tests {
                         page,
                     },
                     part: None,
+                    section: None,
+                    table: None,
                 }
             });
         let mut high_single = finding("high-single", Severity::High, true);
