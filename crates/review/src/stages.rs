@@ -271,6 +271,7 @@ impl ScaffoldStage {
                     detector: Detector::Llm(format!("{}:{}", self.name(), ctx.provider.model())),
                     additional_detectors: Vec::new(),
                     merged_ids: Vec::new(),
+                    fallback_evidence: false,
                     verified: false,
                 }
             }));

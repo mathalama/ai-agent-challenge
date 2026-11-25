@@ -40,10 +40,10 @@ fn should_merge(left: &Finding, right: &Finding) -> bool {
         return false;
     }
 
-    // На уровне документа находки с запасной якорной цитатой (например, *-missing -> H1)
+    // На уровне документа находки с запасной якорной цитатой (например, заголовок H1)
     // сливаем только при совпадении критерия.
     if matches!(left.scope, Scope::Set)
-        && (uses_fallback_anchor(left) || uses_fallback_anchor(right))
+        && (left.fallback_evidence || right.fallback_evidence)
         && !same_criteria
     {
         return false;
@@ -69,13 +69,6 @@ fn is_pure_rule(finding: &Finding) -> bool {
         .all_detectors()
         .into_iter()
         .all(|detector| matches!(detector, Detector::Rule(_)))
-}
-
-fn uses_fallback_anchor(finding: &Finding) -> bool {
-    finding
-        .all_ids()
-        .into_iter()
-        .any(|id| id.ends_with("-missing"))
 }
 
 fn finding_stages(finding: &Finding) -> HashSet<String> {
@@ -229,6 +222,7 @@ fn merge_into(target: &mut Finding, other: Finding) {
         _ => {}
     }
 
+    target.fallback_evidence = target.fallback_evidence && other.fallback_evidence;
     target.verified = target.verified && other.verified;
 }
 
@@ -289,6 +283,7 @@ mod tests {
             detector,
             additional_detectors: Vec::new(),
             merged_ids: Vec::new(),
+            fallback_evidence: false,
             verified: false,
         }
     }
@@ -487,6 +482,7 @@ mod tests {
             1,
             Detector::Rule("testing-section".into()),
         );
+        testing_missing.fallback_evidence = true;
         testing_missing.verified = true;
 
         let mut version_missing = make_finding(
@@ -498,6 +494,7 @@ mod tests {
             1,
             Detector::Rule("document-version-date".into()),
         );
+        version_missing.fallback_evidence = true;
         version_missing.verified = true;
 
         let mut unrelated_set = make_finding(

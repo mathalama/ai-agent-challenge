@@ -34,6 +34,7 @@ fn rule_finding(
         detector: Detector::Rule(rule_id.into()),
         additional_detectors: Vec::new(),
         merged_ids: Vec::new(),
+        fallback_evidence: false,
         verified: false,
     }
 }
@@ -278,16 +279,46 @@ fn is_unselected_choice(cell: &str) -> bool {
 }
 
 fn is_checklist_status_header(cell: &str) -> bool {
-    let norm = normalize_title(cell);
-    norm.contains("создано")
+    let norm = normalize_title(cell)
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, '*' | '_' | ':' | ' '))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    norm == "статус"
+        || norm == "status"
+        || norm.contains("создано или доступно")
         || norm.contains("проверено")
-        || norm.contains("статус")
         || norm.contains("выполнено")
         || norm.contains("отметка")
         || norm.contains("checked")
-        || norm.contains("status")
         || norm.contains("done")
         || norm.contains("verified")
+}
+
+fn is_checklist_cell_value(cell: &str) -> bool {
+    if is_unselected_choice(cell) || is_placeholder(cell) {
+        return true;
+    }
+    let norm = normalize_title(cell)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    matches!(
+        norm.as_str(),
+        "да" | "нет"
+            | "не требуется"
+            | "н/п"
+            | "yes"
+            | "no"
+            | "not required"
+            | "pass"
+            | "fail"
+            | "ok"
+            | "+"
+            | "[x]"
+            | "☑"
+    )
 }
 
 pub(crate) fn is_review_checklist_table(rows: &[Vec<String>]) -> bool {
@@ -304,11 +335,29 @@ pub(crate) fn is_review_checklist_table(rows: &[Vec<String>]) -> bool {
             || norm.contains("checklist")
             || norm.contains("критерий")
     });
-    let status_count = header
+    let status_cols: Vec<usize> = header
         .iter()
-        .filter(|cell| is_checklist_status_header(cell))
-        .count();
-    (has_item_header && status_count >= 1) || status_count >= 2
+        .enumerate()
+        .filter(|(_, cell)| is_checklist_status_header(cell))
+        .map(|(idx, _)| idx)
+        .collect();
+    let has_created_and_verified = header
+        .iter()
+        .any(|c| normalize_title(c).contains("создано или доступно"))
+        && header
+            .iter()
+            .any(|c| normalize_title(c).contains("проверено"));
+    if !((has_item_header && !status_cols.is_empty()) || has_created_and_verified) {
+        return false;
+    }
+    // Дополнительно проверяем, что в статусных столбцах действительно стоят отметки чек-листа,
+    // а не произвольные бизнес-статусы.
+    rows.iter().skip(1).any(|row| {
+        status_cols
+            .iter()
+            .filter_map(|&col| row.get(col))
+            .any(|cell| is_checklist_cell_value(cell))
+    })
 }
 
 fn is_approvers_table(rows: &[Vec<String>]) -> bool {
@@ -432,7 +481,7 @@ impl Check for TestingSection {
                 _ => false,
             });
         if !found_section {
-            findings.push(rule_finding(
+            let mut finding = rule_finding(
                 "testing-section",
                 "testing-section-missing".into(),
                 Scope::Set,
@@ -440,7 +489,9 @@ impl Check for TestingSection {
                 first_document_evidence(ctx),
                 "В документе отсутствует раздел тестирования.",
                 "Указать сценарии тестирования и ожидаемые результаты.",
-            ));
+            );
+            finding.fallback_evidence = true;
+            findings.push(finding);
         }
         Ok(findings)
     }
@@ -547,11 +598,11 @@ impl Check for DocumentVersionDate {
                         continue;
                     }
                     // Проверяем колоночную таблицу истории версий (столбцы «Версия» и «Дата»).
-                    // Столбец «Дата» без «Версии» учитываем только в разделе метаданных/истории документа.
+                    // Внутри таблицы со столбцом версии или в разделе метаданных подходит любая подпись с «дата» / «date».
                     if let Some(header) = rows.first() {
                         let version_col = header.iter().position(|c| is_version_label(c));
                         let date_col = if version_col.is_some() || in_metadata_section.is_some() {
-                            header.iter().position(|c| is_date_label(c))
+                            header.iter().position(|c| is_any_date_label(c))
                         } else {
                             None
                         };
@@ -598,7 +649,11 @@ impl Check for DocumentVersionDate {
                             let key = &row[0];
                             let value = &row[1];
                             let version_key = is_version_label(key);
-                            let date_key = is_date_label(key);
+                            let date_key = if in_metadata_section.is_some() {
+                                is_any_date_label(key)
+                            } else {
+                                is_date_label(key)
+                            };
                             if version_key {
                                 if !is_placeholder(value) && contains_version_number(value) {
                                     has_version = true;
@@ -680,6 +735,7 @@ impl Check for DocumentVersionDate {
             return Ok(Vec::new());
         }
 
+        let used_fallback = explicit_missing_evidence.is_none();
         let evidence = explicit_missing_evidence
             .map(|ev| vec![ev])
             .unwrap_or_else(|| first_document_evidence(ctx));
@@ -703,7 +759,7 @@ impl Check for DocumentVersionDate {
             (true, true) => unreachable!(),
         };
 
-        Ok(vec![rule_finding(
+        let mut finding = rule_finding(
             "document-version-date",
             id.into(),
             Scope::Set,
@@ -711,7 +767,9 @@ impl Check for DocumentVersionDate {
             evidence,
             explanation,
             suggestion,
-        )])
+        );
+        finding.fallback_evidence = used_fallback;
+        Ok(vec![finding])
     }
 }
 
@@ -737,36 +795,62 @@ fn is_version_label(text: &str) -> bool {
         && !norm.contains("версионност")
 }
 
+fn is_any_date_label(text: &str) -> bool {
+    let norm = normalize_title(text);
+    norm.contains("дата") || title_words(text).iter().any(|word| word == "date")
+}
+
 fn is_date_label(text: &str) -> bool {
     let norm = normalize_title(text)
         .trim()
-        .trim_matches(|ch: char| matches!(ch, '*' | '_' | ':' | ' '))
+        .trim_matches(|ch: char| matches!(ch, '*' | '_' | ':' | '—' | '–' | '-' | ' '))
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    matches!(
-        norm.as_str(),
-        "дата"
-            | "дата документа"
-            | "дата создания"
-            | "дата обновления"
-            | "дата редакции"
-            | "дата утверждения"
-            | "дата выпуска"
-            | "дата актуализации"
-            | "дата изменения"
-            | "версия/дата"
-            | "версия / дата"
-            | "версия и дата"
-            | "документ (версия/дата)"
-            | "date"
-            | "document date"
-            | "created"
-            | "updated"
-            | "last updated"
-            | "revision date"
-            | "version/date"
-    )
+    if norm.is_empty() || norm.split_whitespace().count() > 4 {
+        return false;
+    }
+    let business_qualifiers = [
+        "операц",
+        "покупк",
+        "платеж",
+        "транзакц",
+        "рождени",
+        "выдач",
+        "списан",
+        "зачислен",
+        "открыт",
+        "закрыт",
+        "истечен",
+        "окончан",
+        "начал",
+        "доставк",
+        "отправк",
+        "transaction",
+        "payment",
+        "purchase",
+        "birth",
+        "expiry",
+        "start",
+        "end",
+    ];
+    if business_qualifiers.iter().any(|kw| norm.contains(kw)) {
+        return false;
+    }
+    norm.starts_with("дата")
+        || norm.starts_with("date")
+        || norm.ends_with(" date")
+        || matches!(
+            norm.as_str(),
+            "версия/дата"
+                | "версия / дата"
+                | "версия и дата"
+                | "документ (версия/дата)"
+                | "version/date"
+                | "created"
+                | "updated"
+                | "last updated"
+        )
 }
 
 fn mentions_missing_version_or_date(line: &str) -> bool {
@@ -820,20 +904,27 @@ fn line_has_document_version(line: &str) -> bool {
 }
 
 fn line_has_document_date(line: &str) -> bool {
-    let norm = normalize_title(line);
-    // Не считаем датой документа произвольные ссылки вида «Приказ № 5 от 01.02.2024».
-    let has_date_context = norm.contains("дата документа")
-        || norm.contains("дата создания")
-        || norm.contains("дата обновления")
-        || norm.contains("дата редакции")
-        || norm.contains("дата выпуска")
-        || norm.contains("дата:")
-        || norm.contains("date:")
-        || norm.contains("document date")
-        || norm.contains("last updated")
-        || norm.contains("updated:")
-        || line_has_document_version(line);
-    has_date_context && contains_date_value(&norm)
+    if line_has_document_version(line) && contains_date_value(line) {
+        return true;
+    }
+    // Проверяем подписи вида «Дата изменения: 15.03.2026», «Дата утверждения — 2026-04-01»
+    // единой функцией is_date_label, что и для таблиц.
+    for segment in line.split([';', '|', ',']) {
+        let trimmed = segment.trim();
+        let split = trimmed
+            .split_once(':')
+            .or_else(|| trimmed.split_once(" — "))
+            .or_else(|| trimmed.split_once(" – "))
+            .or_else(|| trimmed.split_once(" - "));
+        if let Some((label, value)) = split
+            && is_date_label(label)
+            && !is_placeholder(value)
+            && contains_date_value(value)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn contains_date_value(text: &str) -> bool {
@@ -1226,6 +1317,10 @@ impl Check for AcceptanceCriteria {
             let body = section_slice(blocks, idx, *level);
             let has_content = body.iter().any(block_has_non_placeholder_content);
             if !has_content {
+                // Пустой объединённый раздел «Тестирование и приёмка» уже фиксирует TestingSection.
+                if is_testing_title(text) {
+                    continue;
+                }
                 let mut evidence = vec![Evidence {
                     quote: text.clone(),
                     location: block.location,
@@ -1531,7 +1626,11 @@ fn check_key_value_table(
         }
         let key = row[0].trim();
         let value = row[1].trim();
-        if key.is_empty() || is_optional_field_name(key) {
+        if key.is_empty()
+            || is_optional_field_name(key)
+            || is_version_label(key)
+            || is_date_label(key)
+        {
             continue;
         }
         let quote = row_quote(row);
@@ -1859,6 +1958,30 @@ mod tests {
         let present_inline = "# Регламент переводов (версия 1.4 от 15.05.2026)\n\nТекст.\n";
         let findings = run_single_rule(present_inline, DocumentVersionDate).await;
         assert!(findings.is_empty(), "{findings:#?}");
+
+        let present_paragraph_change_date = concat!(
+            "# Регламент переводов\n\n",
+            "**Версия:** 1.1\n\n",
+            "**Дата изменения:** 15.03.2026\n"
+        );
+        let findings = run_single_rule(present_paragraph_change_date, DocumentVersionDate).await;
+        assert!(findings.is_empty(), "{findings:#?}");
+
+        let present_paragraph_approval_date = concat!(
+            "# Регламент переводов\n\n",
+            "Версия: 1.1; Дата утверждения: 10.04.2026\n"
+        );
+        let findings = run_single_rule(present_paragraph_approval_date, DocumentVersionDate).await;
+        assert!(findings.is_empty(), "{findings:#?}");
+
+        let present_history_table = concat!(
+            "# Регламент переводов\n\n",
+            "| Версия | Дата публикации | Автор |\n",
+            "| --- | --- | --- |\n",
+            "| 1.0 | 2026-03-15 | Иванов И.И. |\n"
+        );
+        let findings = run_single_rule(present_history_table, DocumentVersionDate).await;
+        assert!(findings.is_empty(), "{findings:#?}");
     }
 
     #[tokio::test]
@@ -1931,6 +2054,24 @@ mod tests {
         );
         let findings = run_single_rule(boolean_field_table, ReviewChecklist).await;
         assert!(findings.is_empty(), "{findings:#?}");
+
+        // Таблица с двумя статусными столбцами («HTTP-статус | Статус операции») не является чек-листом
+        // и не должна пропускаться проверкой размытых формулировок.
+        let status_mapping_table = concat!(
+            "# Контракт API (версия 1.0 от 2026-03-10)\n\n",
+            "## Коды ответов\n\n",
+            "| HTTP-статус | Статус операции |\n",
+            "| --- | --- |\n",
+            "| 200 | Операция выполняется быстро |\n"
+        );
+        let checklist_findings = run_single_rule(status_mapping_table, ReviewChecklist).await;
+        assert!(checklist_findings.is_empty(), "{checklist_findings:#?}");
+        let vague_findings = run_single_rule(
+            status_mapping_table,
+            crate::vague::VagueTermsCheck::default(),
+        )
+        .await;
+        assert_eq!(vague_findings.len(), 1, "{vague_findings:#?}");
     }
 
     #[tokio::test]
@@ -1965,6 +2106,32 @@ mod tests {
         );
         let findings = run_single_rule(present, AcceptanceCriteria).await;
         assert!(findings.is_empty(), "{findings:#?}");
+
+        // Пустой объединённый раздел «Тестирование и приёмка» и строка «Версия | —»
+        // не должны давать дубли от двух разных правил.
+        let combined_doc = concat!(
+            "# Сервис квитанций\n\n",
+            "| Поле | Значение |\n| --- | --- |\n| Версия | — |\n| Дата | 2026-03-15 |\n\n",
+            "## Тестирование и приёмка\n\n",
+            "TBD\n"
+        );
+        let document = ParserRegistry::default()
+            .parse(Path::new("spec.md"), combined_doc.as_bytes())
+            .unwrap();
+        let registry = CheckRegistry::with_builtin_rules();
+        let ctx = RunContext::new(document, &MockProvider, &registry);
+        let all_findings = registry.run(CheckPhase::Rules, &ctx).await.unwrap();
+        assert_eq!(all_findings.len(), 2, "{all_findings:#?}");
+        assert!(
+            all_findings
+                .iter()
+                .any(|f| matches!(&f.detector, Detector::Rule(id) if id == "testing-section"))
+        );
+        assert!(
+            all_findings.iter().any(
+                |f| matches!(&f.detector, Detector::Rule(id) if id == "document-version-date")
+            )
+        );
     }
 
     #[tokio::test]

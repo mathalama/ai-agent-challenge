@@ -45,6 +45,7 @@ impl Check for SampleCheck {
             detector: Detector::Rule("sample".into()),
             additional_detectors: Vec::new(),
             merged_ids: Vec::new(),
+            fallback_evidence: false,
             verified: true,
         })
         .collect())
@@ -111,6 +112,7 @@ impl LlmProvider for ReviewProvider {
                 detector: Detector::Llm(self.model().into()),
                 additional_detectors: Vec::new(),
                 merged_ids: Vec::new(),
+                fallback_evidence: false,
                 verified: true,
             });
         }
@@ -280,6 +282,7 @@ impl Check for LanguageCheck {
                 detector: Detector::Rule("lang".into()),
                 additional_detectors: Vec::new(),
                 merged_ids: Vec::new(),
+                fallback_evidence: false,
                 verified: false,
             },
             Finding {
@@ -294,6 +297,7 @@ impl Check for LanguageCheck {
                 detector: Detector::Rule("lang".into()),
                 additional_detectors: Vec::new(),
                 merged_ids: Vec::new(),
+                fallback_evidence: false,
                 verified: false,
             },
         ])

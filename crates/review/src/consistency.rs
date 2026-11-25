@@ -89,6 +89,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                         detector: Detector::Rule(rule.into()),
                         additional_detectors: Vec::new(),
                         merged_ids: Vec::new(),
+                        fallback_evidence: false,
                         verified: false,
                     });
                 }
@@ -144,6 +145,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 detector: Detector::Llm(format!("consistency:{}", ctx.provider.model())),
                 additional_detectors: Vec::new(),
                 merged_ids: Vec::new(),
+                fallback_evidence: false,
                 verified: false,
             });
         }

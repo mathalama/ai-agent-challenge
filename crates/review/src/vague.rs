@@ -555,6 +555,7 @@ fn vague_finding(id: String, scope: Scope, evidence: Evidence, found: &VagueMatc
         detector: Detector::Rule("vague-terms".into()),
         additional_detectors: Vec::new(),
         merged_ids: Vec::new(),
+        fallback_evidence: false,
         verified: false,
     }
 }

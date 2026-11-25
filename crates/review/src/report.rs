@@ -415,6 +415,7 @@ mod tests {
             detector: Detector::Rule("test".into()),
             additional_detectors: Vec::new(),
             merged_ids: Vec::new(),
+            fallback_evidence: false,
         }
     }
 

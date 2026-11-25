@@ -142,6 +142,8 @@ pub struct Finding {
     pub additional_detectors: Vec<Detector>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merged_ids: Vec<FindingId>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback_evidence: bool,
     pub verified: bool,
 }
 
