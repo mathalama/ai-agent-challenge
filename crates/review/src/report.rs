@@ -22,6 +22,8 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub summary: ReportSummary,
     pub readiness: Readiness,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_stages: Vec<String>,
     pub questions: Vec<Question>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub finding_answers: BTreeMap<FindingId, Vec<Answer>>,
@@ -136,6 +138,7 @@ impl Report {
             findings: ctx.findings,
             summary,
             readiness,
+            incomplete_stages: ctx.incomplete_stages,
             questions: ctx.questions,
             finding_answers,
             unmatched_answers,
@@ -238,6 +241,19 @@ impl ReportRenderer for MarkdownRenderer {
                 "**Готово.** По результатам проверки можно начинать разработку и тестирование.\n"
             }
         });
+        if !report.incomplete_stages.is_empty() {
+            let stages = report
+                .incomplete_stages
+                .iter()
+                .map(|stage| markdown(stage))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(
+                output,
+                "\nПроверка неполная. Стадии, ограниченные длиной ответа модели — {stages}."
+            )
+            .expect("запись в строку");
+        }
         write_priority_fixes(&mut output, report);
         if passport.model == "mock" {
             output.push_str(
@@ -638,6 +654,7 @@ mod tests {
                 critical_findings: Vec::new(),
             },
             readiness: Readiness::ChecksIncomplete,
+            incomplete_stages: Vec::new(),
             questions,
             finding_answers: BTreeMap::new(),
             unmatched_answers: BTreeMap::new(),
@@ -794,6 +811,7 @@ mod tests {
                 critical_findings: Vec::new(),
             },
             readiness: Readiness::Blocked,
+            incomplete_stages: Vec::new(),
             questions: Vec::new(),
             finding_answers: BTreeMap::new(),
             unmatched_answers: BTreeMap::new(),

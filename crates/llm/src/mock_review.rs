@@ -56,7 +56,13 @@ const SCENARIOS: &[Scenario] = &[
 ];
 
 pub(crate) fn findings(input: &str) -> serde_json::Result<Value> {
-    let requirements: Vec<Value> = serde_json::from_str(input)?;
+    #[derive(serde::Deserialize)]
+    struct SetInput {
+        requirements: Vec<Value>,
+        context: Vec<Value>,
+    }
+    let input: SetInput = serde_json::from_str(input)?;
+    let sources: Vec<_> = input.requirements.iter().chain(&input.context).collect();
     let findings: Vec<_> = SCENARIOS
         .iter()
         .filter_map(|scenario| {
@@ -64,7 +70,7 @@ pub(crate) fn findings(input: &str) -> serde_json::Result<Value> {
                 .quotes
                 .iter()
                 .map(|fragment| {
-                    let source = requirements.iter().find(|requirement| {
+                    let source = sources.iter().find(|requirement| {
                         requirement["quote"]
                             .as_str()
                             .is_some_and(|quote| quote.contains(fragment))

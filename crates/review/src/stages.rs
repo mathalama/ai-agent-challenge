@@ -5,12 +5,13 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::{
-    CheckPhase, Criterion, Detector, Evidence, Finding, RunContext, Scope, Severity, Stage,
-    clarify, consistency,
+    CheckPhase, ContextItem, Criterion, Detector, Evidence, Finding, Requirement, RunContext,
+    Scope, Severity, Stage, clarify, consistency, facts,
     pipeline::Result,
-    segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
+    segment::{RequirementDraft, merge_requirements, segment_blocks},
 };
 
+const REVIEW_BATCH_SIZE: usize = 12;
 const DOMAIN_CONTEXT: &str = include_str!("../../../prompts/domain_context.md");
 
 #[derive(Deserialize, JsonSchema)]
@@ -88,31 +89,41 @@ impl Stage for ScaffoldStage {
         let name = self.name();
         match self {
             Self::Segment => {
-                let drafts = if has_non_table_content(&ctx.document) {
+                let blocks = segment_blocks(&ctx.document);
+                let drafts = if blocks.iter().any(|block| {
+                    matches!(
+                        block.content,
+                        doc::BlockContent::Paragraph { .. } | doc::BlockContent::ListItem { .. }
+                    )
+                }) {
                     let prompt = self.llm_prompt();
                     let input = serde_json::to_string(&serde_json::json!({
                         "title": ctx.document.title,
-                        "blocks": non_table_blocks(&ctx.document),
+                        "blocks": blocks,
                     }))?;
-                    generate_typed::<Vec<RequirementDraft>>(ctx.provider, name, &prompt, input)
-                        .await?
-                } else {
-                    Vec::new()
-                };
-                ctx.requirements = merge_requirements(&ctx.document, drafts);
-            }
-            Self::Facts => {
-                ctx.facts = if ctx.requirements.is_empty() {
-                    Vec::new()
-                } else {
-                    generate_typed(
+                    match generate_typed::<Vec<RequirementDraft>>(
                         ctx.provider,
                         name,
-                        &self.llm_prompt(),
-                        serde_json::to_string(&ctx.requirements)?,
+                        &prompt,
+                        input,
                     )
-                    .await?
+                    .await
+                    {
+                        Ok(drafts) => drafts,
+                        Err(error) if error.is_output_limit() => {
+                            (ctx.requirements, ctx.context_items) =
+                                merge_requirements(&ctx.document, Vec::new());
+                            return Err(error.into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                } else {
+                    Vec::new()
                 };
+                (ctx.requirements, ctx.context_items) = merge_requirements(&ctx.document, drafts);
+            }
+            Self::Facts => {
+                facts::extract(ctx, &self.llm_prompt(), REVIEW_BATCH_SIZE).await?;
             }
             Self::Rules => {
                 let findings = ctx.checks.run(CheckPhase::Rules, ctx).await?;
@@ -122,20 +133,25 @@ impl Stage for ScaffoldStage {
             Self::RequirementChecks => {
                 let findings = ctx.checks.run(CheckPhase::Requirement, ctx).await?;
                 ctx.findings.extend(findings);
-                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
-                    .await?;
+                let before = ctx.findings.len();
+                for start in (0..ctx.requirements.len()).step_by(REVIEW_BATCH_SIZE) {
+                    let end = (start + REVIEW_BATCH_SIZE).min(ctx.requirements.len());
+                    let input = serde_json::to_string(&ctx.requirements[start..end])?;
+                    self.find_with_model(ctx, input, ctx.findings.len() - before)
+                        .await?;
+                }
             }
             Self::SetChecks => {
                 let findings = ctx.checks.run(CheckPhase::Set, ctx).await?;
                 ctx.findings.extend(findings);
-                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
+                self.find_with_model(ctx, set_input(&ctx.requirements, &ctx.context_items)?, 0)
                     .await?;
             }
             Self::Consistency => {
                 consistency::check(ctx, &self.llm_prompt()).await?;
             }
             Self::Ambiguity => {
-                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
+                self.find_with_model(ctx, set_input(&ctx.requirements, &ctx.context_items)?, 0)
                     .await?;
             }
             Self::Verify => {
@@ -176,8 +192,15 @@ impl Stage for ScaffoldStage {
 }
 
 impl ScaffoldStage {
-    async fn find_with_model(self, ctx: &mut RunContext<'_>, input: String) -> Result<()> {
-        if ctx.requirements.is_empty() {
+    async fn find_with_model(
+        self,
+        ctx: &mut RunContext<'_>,
+        input: String,
+        offset: usize,
+    ) -> Result<()> {
+        if ctx.requirements.is_empty()
+            && (matches!(self, Self::RequirementChecks) || ctx.context_items.is_empty())
+        {
             return Ok(());
         }
         let prompt = self.llm_prompt();
@@ -213,7 +236,7 @@ impl ScaffoldStage {
                     }
                 });
                 Finding {
-                    id: format!("{}-{:03}", self.name(), index + 1),
+                    id: format!("{}-{:03}", self.name(), offset + index + 1),
                     scope,
                     criterion: draft.criterion,
                     additional_criteria: Vec::new(),
@@ -230,6 +253,12 @@ impl ScaffoldStage {
             }));
         Ok(())
     }
+}
+
+fn set_input(requirements: &[Requirement], context: &[ContextItem]) -> Result<String> {
+    Ok(serde_json::to_string(
+        &serde_json::json!({ "requirements": requirements, "context": context }),
+    )?)
 }
 
 pub(crate) fn has_cyrillic(text: &str) -> bool {

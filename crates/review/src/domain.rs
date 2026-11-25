@@ -28,6 +28,28 @@ pub struct Requirement {
     pub table: Option<TableRef>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextKind {
+    ApiPassport,
+    ApiParameter,
+    StatusExample,
+    StatusHeading,
+    CodeExample,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextItem {
+    pub id: String,
+    pub kind: ContextKind,
+    pub quote: String,
+    pub location: SourceSpan,
+    pub part: Option<String>,
+    pub section: Option<String>,
+    pub heading: Option<String>,
+    pub table: Option<TableRef>,
+}
+
 macro_rules! criteria {
     ($($criterion:ident => ($name:literal, $reference:expr)),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

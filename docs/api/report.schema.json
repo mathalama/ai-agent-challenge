@@ -24,6 +24,12 @@
         "$ref": "#/$defs/Finding"
       }
     },
+    "incomplete_stages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "passport": {
       "$ref": "#/$defs/RunPassport"
     },

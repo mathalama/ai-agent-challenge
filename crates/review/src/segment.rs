@@ -1,14 +1,23 @@
-use doc::{Block, BlockContent, Document, SourceSpan};
+use std::collections::HashSet;
+
+use doc::{Block, BlockContent, BlockId, Document, SourceSpan};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::{Requirement, TableRef};
+use crate::{ContextItem, ContextKind, Requirement, TableRef};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct RequirementDraft {
-    pub(crate) text: String,
-    pub(crate) quote: String,
-    pub(crate) location: SourceSpan,
+    block_id: BlockId,
+    start_line: usize,
+    end_line: usize,
+    kind: DraftKind,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum DraftKind {
+    Requirement,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -16,6 +25,8 @@ struct BlockContext {
     part: Option<String>,
     section: Option<String>,
     heading: Option<String>,
+    http_status_list: bool,
+    http_status_scenario: bool,
 }
 
 /// Детерминированно извлекает идентификатор требования из текста блока, заголовка или ячейки
@@ -337,132 +348,366 @@ fn is_technical_acronym(prefix: &str) -> bool {
     )
 }
 
-/// Детерминированно превращает строки таблиц документа (критерии приёмки, параметры API,
-/// статусы и т.п.) в отдельные требования со ссылкой на таблицу, строку, часть и раздел.
+/// Извлекает требования из таблиц без обращения к модели.
 pub fn extract_table_requirements(document: &Document) -> Vec<Requirement> {
-    let contexts = index_block_contexts(document);
+    let mut requirements = extract_tables(document, &index_block_contexts(document)).0;
+    assign_requirement_ids(&mut requirements);
+    requirements
+}
+
+fn extract_tables(
+    document: &Document,
+    contexts: &[BlockContext],
+) -> (Vec<Requirement>, Vec<ContextItem>) {
     let mut requirements = Vec::new();
-    let mut table_index = 0usize;
-    for (block, context) in document.blocks.iter().zip(contexts.iter()) {
+    let mut items = Vec::new();
+    let mut table_index = 0;
+    for (block, context) in document.blocks.iter().zip(contexts) {
         let BlockContent::Table { rows, row_lines } = &block.content else {
             continue;
         };
         table_index += 1;
-        if rows.len() < 2 || is_non_requirement_table(context, &rows[0], &rows[1..]) {
+        if rows.len() < 2 {
             continue;
         }
         let headers = &rows[0];
-        for (row_index, row) in rows.iter().enumerate().skip(1) {
-            if row.iter().all(|cell| cell.trim().is_empty()) {
-                continue;
-            }
-            let quote = format_row_quote(row);
-            let text = format_row_text(headers, row);
-            let source_id = row
-                .first()
-                .and_then(|cell| extract_source_id(cell))
-                .or_else(|| extract_source_id(&quote));
-            let location = row_lines
-                .get(row_index)
+        let passport = is_api_passport(headers, &rows[1..]);
+        let kind = if passport {
+            Some(ContextKind::ApiPassport)
+        } else if is_api_parameter_table(context, headers) {
+            Some(ContextKind::ApiParameter)
+        } else if is_non_requirement_table(context, headers, &rows[1..]) {
+            continue;
+        } else {
+            None
+        };
+        let row_location = |index: usize| {
+            row_lines
+                .get(index)
                 .map_or(block.location, |&line| SourceSpan {
                     start_line: line,
                     end_line: line,
                     page: block.location.page,
-                });
-            requirements.push(Requirement {
-                id: format!("R-{:03}", requirements.len() + 1),
-                source_id,
+                })
+        };
+        let table_ref = |row| TableRef {
+            block_id: block.id,
+            index: table_index,
+            row,
+            title: context.heading.clone(),
+        };
+        let mut descriptions = Vec::new();
+        for (index, row) in rows.iter().enumerate().skip(1) {
+            if row.iter().all(|cell| cell.trim().is_empty()) {
+                continue;
+            }
+            let quote = format_row_quote(row);
+            let location = row_location(index);
+            if passport
+                && row.first().is_some_and(|cell| {
+                    matches!(
+                        normalize_heading_title(cell).as_str(),
+                        "description" | "описание"
+                    )
+                })
+                && row.get(1).is_some_and(|cell| {
+                    !cell.trim().is_empty() && !matches!(cell.trim(), "—" | "-")
+                })
+            {
+                descriptions.push(index);
+            } else if let Some(kind) = kind {
+                items.push(context_item(
+                    kind,
+                    quote,
+                    location,
+                    context,
+                    Some(table_ref(index)),
+                ));
+            } else {
+                let source_id = row
+                    .first()
+                    .and_then(|cell| extract_source_id(cell))
+                    .or_else(|| extract_source_id(&quote));
+                requirements.push(requirement(
+                    format_row_text(headers, row),
+                    quote,
+                    location,
+                    source_id,
+                    context,
+                    Some(table_ref(index)),
+                ));
+            }
+        }
+        if let (Some(&first), Some(&last)) = (descriptions.first(), descriptions.last()) {
+            let text = descriptions
+                .iter()
+                .map(|&index| rows[index][1].trim())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let quote = rows[first..=last]
+                .iter()
+                .map(|row| format_row_quote(row))
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let location = SourceSpan {
+                end_line: row_location(last).end_line,
+                ..row_location(first)
+            };
+            requirements.push(requirement(
                 text,
                 quote,
                 location,
-                part: context.part.clone(),
-                section: context.section.clone(),
-                table: Some(TableRef {
-                    block_id: block.id,
-                    index: table_index,
-                    row: row_index,
-                    title: context.heading.clone(),
-                }),
-            });
+                None,
+                context,
+                Some(table_ref(first)),
+            ));
         }
     }
-    requirements
+    (requirements, items)
 }
 
-pub(crate) fn non_table_blocks(document: &Document) -> Vec<&Block> {
+fn requirement(
+    text: String,
+    quote: String,
+    location: SourceSpan,
+    source_id: Option<String>,
+    context: &BlockContext,
+    table: Option<TableRef>,
+) -> Requirement {
+    Requirement {
+        id: String::new(),
+        source_id,
+        text,
+        quote,
+        location,
+        table,
+        part: context.part.clone(),
+        section: context.section.clone(),
+    }
+}
+
+fn context_item(
+    kind: ContextKind,
+    quote: String,
+    location: SourceSpan,
+    context: &BlockContext,
+    table: Option<TableRef>,
+) -> ContextItem {
+    ContextItem {
+        id: String::new(),
+        kind,
+        quote,
+        location,
+        table,
+        part: context.part.clone(),
+        section: context.section.clone(),
+        heading: context.heading.clone(),
+    }
+}
+
+pub(crate) fn segment_blocks(document: &Document) -> Vec<&Block> {
     document
         .blocks
         .iter()
-        .filter(|block| !matches!(block.content, BlockContent::Table { .. }))
+        .zip(index_block_contexts(document))
+        .filter(|(block, context)| {
+            !matches!(block.content, BlockContent::Table { .. })
+                && api_context_kind(block, context).is_none()
+        })
+        .map(|(block, _)| block)
         .collect()
-}
-
-pub(crate) fn has_non_table_content(document: &Document) -> bool {
-    document.blocks.iter().any(|block| {
-        matches!(
-            block.content,
-            BlockContent::Paragraph { .. }
-                | BlockContent::ListItem { .. }
-                | BlockContent::Code { .. }
-        )
-    })
 }
 
 pub(crate) fn merge_requirements(
     document: &Document,
     drafts: Vec<RequirementDraft>,
-) -> Vec<Requirement> {
+) -> (Vec<Requirement>, Vec<ContextItem>) {
     let contexts = index_block_contexts(document);
-    let table_requirements = extract_table_requirements(document);
-
-    let mut merged = Vec::with_capacity(drafts.len() + table_requirements.len());
-    for draft in drafts {
-        if draft.text.trim().is_empty() && draft.quote.trim().is_empty() {
+    let (mut requirements, mut items) = extract_tables(document, &contexts);
+    let mut seen_spans = HashSet::new();
+    let mut heading_ids = HashSet::new();
+    for (block, context) in document.blocks.iter().zip(&contexts) {
+        if let Some(kind) = api_context_kind(block, context)
+            && let Some(quote) = block_plain_text(&block.content)
+            && !quote.trim().is_empty()
+        {
+            items.push(context_item(
+                kind,
+                quote.trim().to_owned(),
+                block.location,
+                context,
+                None,
+            ));
             continue;
         }
-        if is_duplicate_table_draft(document, &draft) {
+        let (BlockContent::Paragraph { text } | BlockContent::ListItem { text }) = &block.content
+        else {
             continue;
-        }
-        let matched = find_matching_block(document, draft.location, &draft.quote);
-        let context = matched
-            .or_else(|| find_preceding_block(document, draft.location))
-            .map(|index| &contexts[index]);
-        let source_id = extract_source_id(&draft.quote)
-            .or_else(|| extract_source_id(&draft.text))
-            .or_else(|| {
-                matched.and_then(|index| {
-                    extract_source_id_from_block(&document.blocks[index], draft.location)
-                })
-            })
-            .or_else(|| {
-                context
-                    .and_then(|ctx| ctx.heading.as_deref())
-                    .and_then(extract_source_id)
+        };
+        let explicit_id = extract_source_id(text);
+        let heading_id = context.heading.as_deref().and_then(extract_source_id);
+        let full_span = block.location;
+        let is_method_rule = matches!(block.content, BlockContent::ListItem { .. })
+            && context.heading.as_deref().is_some_and(|heading| {
+                matches!(
+                    normalize_heading_title(heading).as_str(),
+                    "логика работы метода" | "особые правила" | "request body" | "тело запроса"
+                )
             });
-        merged.push(Requirement {
-            id: String::new(),
-            source_id,
-            text: draft.text,
-            quote: draft.quote,
-            location: draft.location,
-            part: context.and_then(|ctx| ctx.part.clone()),
-            section: context.and_then(|ctx| ctx.section.clone()),
-            table: None,
-        });
+        // PDF может склеить физические строки, сохранив диапазон всего абзаца.
+        let keep_whole_block = heading_id.is_some()
+            || text.lines().count() != full_span.end_line - full_span.start_line + 1;
+        let spans = if explicit_id.is_some() || is_method_rule {
+            vec![full_span]
+        } else {
+            drafts
+                .iter()
+                .filter_map(|draft| {
+                    (matches!(draft.kind, DraftKind::Requirement)
+                        && block.id == draft.block_id
+                        && draft.start_line >= full_span.start_line
+                        && draft.start_line <= draft.end_line
+                        && draft.end_line <= full_span.end_line)
+                        .then_some(if keep_whole_block {
+                            full_span
+                        } else {
+                            SourceSpan {
+                                start_line: draft.start_line,
+                                end_line: draft.end_line,
+                                ..full_span
+                            }
+                        })
+                })
+                .collect()
+        };
+        for span in spans {
+            if !seen_spans.insert((block.id.0, span.start_line, span.end_line)) {
+                continue;
+            }
+            let quote = if span == full_span {
+                text.trim().to_owned()
+            } else {
+                text.lines()
+                    .skip(span.start_line - full_span.start_line)
+                    .take(span.end_line - span.start_line + 1)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim()
+                    .to_owned()
+            };
+            if quote.is_empty() || quote.starts_with('{') {
+                continue;
+            }
+            let source_id = explicit_id
+                .clone()
+                .or_else(|| extract_source_id(&quote))
+                .or_else(|| {
+                    heading_id.clone().filter(|id| {
+                        heading_ids.insert((full_span.page, context.heading.clone(), id.clone()))
+                    })
+                });
+            requirements.push(requirement(
+                clean_requirement_text(&quote),
+                quote,
+                span,
+                source_id,
+                context,
+                None,
+            ));
+        }
     }
+    assign_requirement_ids(&mut requirements);
+    items.sort_by_key(|item| location_key(item.location));
+    for (index, item) in items.iter_mut().enumerate() {
+        item.id = format!("C-{:03}", index + 1);
+    }
+    (requirements, items)
+}
 
-    merged.extend(table_requirements);
-    merged.sort_by_key(|requirement| {
-        (
-            requirement.location.page.unwrap_or(0),
-            requirement.location.start_line,
-            requirement.location.end_line,
-        )
-    });
-    for (index, requirement) in merged.iter_mut().enumerate() {
-        requirement.id = format!("R-{:03}", index + 1);
+fn location_key(span: SourceSpan) -> (Option<usize>, usize, usize) {
+    (span.page, span.start_line, span.end_line)
+}
+
+fn assign_requirement_ids(requirements: &mut [Requirement]) {
+    requirements.sort_by_key(|item| location_key(item.location));
+    for (index, item) in requirements.iter_mut().enumerate() {
+        item.id = format!("R-{:03}", index + 1);
     }
-    merged
+}
+
+fn clean_requirement_text(quote: &str) -> String {
+    let text = strip_list_bullet(quote).unwrap_or(quote).trim_start();
+    let text = strip_leading_numbering(text).unwrap_or(text).trim_start();
+    let Some(id) = extract_source_id(text) else {
+        return text.to_owned();
+    };
+    for (offset, _) in text.char_indices() {
+        if let Some((candidate, rest)) = scan_id_token(&text[offset..])
+            && candidate == id
+        {
+            return rest
+                .trim_start_matches(|ch: char| {
+                    ch.is_whitespace()
+                        || matches!(
+                            ch,
+                            '.' | ':' | ')' | ']' | '-' | '–' | '—' | '*' | '`' | '_'
+                        )
+                })
+                .to_owned();
+        }
+    }
+    text.to_owned()
+}
+
+fn api_context_kind(block: &Block, context: &BlockContext) -> Option<ContextKind> {
+    match &block.content {
+        BlockContent::Heading { text, .. }
+            if starts_with_http_status(text, context.http_status_list) =>
+        {
+            Some(ContextKind::StatusHeading)
+        }
+        BlockContent::Code { language, text } => {
+            let is_json = language
+                .as_deref()
+                .is_some_and(|lang| lang.eq_ignore_ascii_case("json"))
+                || matches!(text.trim_start().chars().next(), Some('{' | '['));
+            Some(if is_json || context.http_status_scenario {
+                ContextKind::StatusExample
+            } else {
+                ContextKind::CodeExample
+            })
+        }
+        BlockContent::Paragraph { text } | BlockContent::ListItem { text }
+            if context.http_status_scenario
+                || (context.http_status_list && starts_with_http_status(text, true)) =>
+        {
+            Some(ContextKind::StatusExample)
+        }
+        _ => None,
+    }
+}
+
+fn starts_with_http_status(text: &str, in_status_list: bool) -> bool {
+    let text = text.trim();
+    let prefixed = strip_case_insensitive_prefix(text, "HTTP ");
+    let text = prefixed.unwrap_or(text);
+    let Some((code, suffix)) = text.get(..3).zip(text.get(3..)) else {
+        return false;
+    };
+    if !code
+        .parse::<u16>()
+        .is_ok_and(|code| (100..600).contains(&code))
+    {
+        return false;
+    }
+    let whitespace_boundary = in_status_list || prefixed.is_some();
+    match suffix.chars().next() {
+        None | Some('.' | ':' | '–' | '—') => {
+            !suffix.chars().nth(1).is_some_and(|ch| ch.is_ascii_digit())
+        }
+        Some(ch) => whitespace_boundary && ch.is_whitespace(),
+    }
 }
 
 fn index_block_contexts(document: &Document) -> Vec<BlockContext> {
@@ -507,6 +752,22 @@ fn build_block_context(stack: &[(u8, String)], title: &str) -> BlockContext {
         .map(|(_, (_, text))| text.as_str())
         .collect();
 
+    let mut http_status_list = false;
+    let mut http_status_scenario = false;
+    for heading in &section_parts {
+        http_status_list |= matches!(
+            normalize_heading_title(heading).as_str(),
+            "статусы"
+                | "коды статусов"
+                | "коды ответа"
+                | "коды ответов"
+                | "http-статусы"
+                | "status codes"
+                | "http status codes"
+        );
+        http_status_scenario |= starts_with_http_status(heading, http_status_list);
+    }
+
     let heading = section_parts
         .last()
         .copied()
@@ -518,6 +779,8 @@ fn build_block_context(stack: &[(u8, String)], title: &str) -> BlockContext {
         part,
         section,
         heading,
+        http_status_list,
+        http_status_scenario,
     }
 }
 
@@ -664,6 +927,55 @@ fn is_non_requirement_table(
     is_changelog_heading || is_changelog_headers
 }
 
+fn is_api_passport(headers: &[String], rows: &[Vec<String>]) -> bool {
+    is_key_value_headers(headers)
+        && rows.iter().filter_map(|row| row.first()).any(|key| {
+            matches!(
+                normalize_heading_title(key).as_str(),
+                "author"
+                    | "developer"
+                    | "swagger"
+                    | "gitlab project"
+                    | "framework"
+                    | "url type"
+                    | "controller"
+                    | "rest type"
+                    | "request url"
+            )
+        })
+}
+
+fn is_api_parameter_table(context: &BlockContext, headers: &[String]) -> bool {
+    let heading = context
+        .section
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    let parameter_section = [
+        "параметры запроса",
+        "параметры ответа",
+        "query-параметры",
+        "path-параметры",
+        "request parameters",
+        "response parameters",
+        "request body",
+    ]
+    .iter()
+    .any(|label| heading.contains(label));
+    let parameter_headers = headers.iter().any(|header| {
+        matches!(
+            header.trim().to_lowercase().as_str(),
+            "parameter" | "параметр" | "поле" | "field"
+        )
+    }) && headers.iter().any(|header| {
+        matches!(
+            header.trim().to_lowercase().as_str(),
+            "format" | "формат" | "тип" | "type"
+        )
+    });
+    parameter_section || parameter_headers
+}
+
 fn is_key_value_headers(headers: &[String]) -> bool {
     if headers.len() != 2 {
         return false;
@@ -678,6 +990,9 @@ fn is_key_value_headers(headers: &[String]) -> bool {
             | "атрибут"
             | "свойство"
             | "field"
+            | "parameter"
+            | "наименование"
+            | "реквизит"
             | "key"
             | "name"
             | "property"
@@ -725,154 +1040,12 @@ fn format_row_text(headers: &[String], row: &[String]) -> String {
     parts.join("; ")
 }
 
-fn is_duplicate_table_draft(document: &Document, draft: &RequirementDraft) -> bool {
-    if matches_non_table_block(document, draft.location, &draft.quote) {
-        return false;
-    }
-    document.blocks.iter().any(|block| {
-        if !matches!(block.content, BlockContent::Table { .. })
-            || block.location.page != draft.location.page
-            || block.location.start_line > draft.location.end_line
-            || draft.location.start_line > block.location.end_line
-        {
-            return false;
-        }
-        let strictly_inside = block.location.start_line <= draft.location.start_line
-            && draft.location.end_line <= block.location.end_line;
-        strictly_inside || table_block_contains_quote(block, draft.location, &draft.quote)
-    })
-}
-
-fn matches_non_table_block(document: &Document, span: SourceSpan, quote: &str) -> bool {
-    let normalized = normalize(quote);
-    if normalized.is_empty() {
-        return false;
-    }
-    document.blocks.iter().any(|block| {
-        block.location.page == span.page
-            && block.location.start_line <= span.end_line
-            && span.start_line <= block.location.end_line
-            && block_plain_text(&block.content)
-                .is_some_and(|text| normalize(&text).contains(&normalized))
-    })
-}
-
-fn table_block_contains_quote(block: &Block, span: SourceSpan, quote: &str) -> bool {
-    let normalized = normalize(quote);
-    if normalized.is_empty() {
-        return false;
-    }
-    let BlockContent::Table { rows, row_lines } = &block.content else {
-        return false;
-    };
-    let includes = |line| (span.start_line..=span.end_line).contains(&line);
-    let covers_block = includes(block.location.start_line) && includes(block.location.end_line);
-    let matches = |text: &str| normalize(text).contains(&normalized);
-    rows.iter().enumerate().any(|(index, row)| {
-        let non_empty: Vec<_> = row
-            .iter()
-            .map(|cell| cell.trim())
-            .filter(|cell| !cell.is_empty())
-            .collect();
-        (covers_block || row_lines.get(index).is_some_and(|line| includes(*line)))
-            && (row.iter().any(|cell| matches(cell))
-                || matches(&row.join(" "))
-                || matches(&row.join(" | "))
-                || matches(&non_empty.join(" | ")))
-    })
-}
-
-fn find_matching_block(document: &Document, span: SourceSpan, quote: &str) -> Option<usize> {
-    let mut best: Option<(bool, usize, usize)> = None;
-    let normalized_quote = normalize(quote);
-
-    for (index, block) in document.blocks.iter().enumerate() {
-        if matches!(block.content, BlockContent::Table { .. })
-            || block.location.page != span.page
-            || block.location.start_line > span.end_line
-            || span.start_line > block.location.end_line
-        {
-            continue;
-        }
-        let block_text = block_plain_text(&block.content);
-        let quote_matches = !normalized_quote.is_empty()
-            && block_text
-                .as_deref()
-                .is_some_and(|text| normalize(text).contains(&normalized_quote));
-        let span_len = block
-            .location
-            .end_line
-            .saturating_sub(block.location.start_line);
-
-        let is_better = match best {
-            None => true,
-            Some((best_match, best_len, _)) => {
-                (quote_matches && !best_match)
-                    || (quote_matches == best_match && span_len < best_len)
-            }
-        };
-        if is_better {
-            best = Some((quote_matches, span_len, index));
-        }
-    }
-    best.map(|(_, _, index)| index)
-}
-
-fn find_preceding_block(document: &Document, span: SourceSpan) -> Option<usize> {
-    document
-        .blocks
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, block)| {
-            block.location.page == span.page && block.location.start_line <= span.start_line
-        })
-        .map(|(index, _)| index)
-}
-
-fn extract_source_id_from_block(block: &Block, span: SourceSpan) -> Option<String> {
-    let text = match &block.content {
-        BlockContent::Paragraph { text } | BlockContent::ListItem { text } => text,
-        _ => return None,
-    };
-    let line_count = block
-        .location
-        .end_line
-        .saturating_sub(block.location.start_line)
-        + 1;
-    if text.lines().count() == line_count
-        && (span.start_line > block.location.start_line || span.end_line < block.location.end_line)
-    {
-        let selected: Vec<&str> = text
-            .lines()
-            .enumerate()
-            .filter(|(offset, _)| {
-                let line = block.location.start_line + offset;
-                (span.start_line..=span.end_line).contains(&line)
-            })
-            .map(|(_, line)| line)
-            .collect();
-        if let Some(first) = selected.first() {
-            return extract_source_id(first);
-        }
-    }
-    extract_source_id(text)
-}
-
-fn block_plain_text(content: &BlockContent) -> Option<String> {
+fn block_plain_text(content: &BlockContent) -> Option<&str> {
     match content {
         BlockContent::Heading { text, .. }
         | BlockContent::Paragraph { text }
         | BlockContent::ListItem { text }
-        | BlockContent::Code { text, .. } => Some(text.clone()),
+        | BlockContent::Code { text, .. } => Some(text),
         BlockContent::Table { .. } => None,
     }
-}
-
-fn normalize(text: &str) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace(['«', '»', '“', '”', '„', '‟', '‹', '›'], "\"")
-        .replace(['‘', '’', '‚', '‛'], "'")
 }

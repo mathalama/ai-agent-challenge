@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::{
-    Finding, Question, QuestionTopic, RelatedId, RunContext, pipeline::Result, stages::has_cyrillic,
+    Finding, ProgressEvent, Question, QuestionTopic, RelatedId, RunContext, pipeline::Result,
+    stages::has_cyrillic,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -33,14 +34,40 @@ pub(crate) async fn ask_questions(ctx: &mut RunContext<'_>, prompt: &str) -> Res
     if verified.is_empty() {
         return Ok(());
     }
-    let drafts = generate_typed(
-        ctx.provider,
-        "clarify",
-        prompt,
-        serde_json::to_string(&verified)?,
-    )
-    .await?;
+    let mut pending = vec![verified.as_slice()];
+    let mut drafts = Vec::new();
+    let mut skipped_finding = false;
+    while let Some(batch) = pending.pop() {
+        let input = serde_json::to_string(batch)?;
+        match generate_typed::<Vec<QuestionDraft>>(ctx.provider, "clarify", prompt, input).await {
+            Ok(response) => drafts.extend(response.into_iter().map(|mut draft| {
+                draft
+                    .finding_ids
+                    .retain(|id| batch.iter().any(|finding| finding.id == *id));
+                draft
+            })),
+            Err(error) if error.is_output_limit() => {
+                if batch.len() > 1 {
+                    let (left, right) = batch.split_at(batch.len() / 2);
+                    ctx.emit(|| ProgressEvent::ClarifyBatchSplit {
+                        finding_ids: batch.iter().map(|finding| finding.id.clone()).collect(),
+                    });
+                    pending.push(right);
+                    pending.push(left);
+                } else {
+                    skipped_finding = true;
+                    ctx.emit(|| ProgressEvent::ClarifyFindingSkipped {
+                        finding_id: batch[0].id.clone(),
+                    });
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     ctx.questions = build_questions(drafts, &verified)?;
+    if skipped_finding {
+        ctx.mark_incomplete("clarify");
+    }
     Ok(())
 }
 
