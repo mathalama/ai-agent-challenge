@@ -33,8 +33,9 @@ impl LlmProvider for GroupedMock {
                 let ids = |group: &Value| -> Vec<String> { group["requirements"].as_object().unwrap().keys().cloned().collect() };
                 assert!(groups.iter().all(|group| ids(group).len() == 2));
                 let group = &groups[0];
+                let entity = format!(" {} ", group["entity"].as_str().unwrap().to_uppercase());
                 json!([
-                    {"entity": group["entity"], "requirement_ids": ids(group), "explanation": "Условия конфликтуют.", "severity": "high", "suggestion": null},
+                    {"entity": entity, "requirement_ids": ids(group), "explanation": "Условия конфликтуют.", "severity": "high", "suggestion": null},
                     {"entity": group["entity"], "requirement_ids": [ids(group)[0].clone(), ids(&groups[1])[0].clone()], "explanation": "Пара из разных групп.", "severity": "high", "suggestion": null}
                 ])
             }

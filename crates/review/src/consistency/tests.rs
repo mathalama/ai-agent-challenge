@@ -1,4 +1,7 @@
-use doc::SourceSpan;
+use std::path::Path;
+
+use doc::{ParserRegistry, SourceSpan};
+use llm::MockProvider;
 
 use super::*;
 use crate::{Bound, EventMonth, FieldType, HttpMethod};
@@ -35,8 +38,19 @@ fn check_rule(left: FactData, right: FactData, expected: Option<&str>) {
         facts: vec![&left, &right],
         ..Group::default()
     };
-    assert_eq!(group.compare(&left, &right).map(|(name, _)| name), expected);
-    assert_eq!(group.compare(&right, &left).map(|(name, _)| name), expected);
+    let conversions = BTreeSet::new();
+    assert_eq!(
+        group
+            .compare(&left, &right, &conversions)
+            .map(|(name, _)| name),
+        expected
+    );
+    assert_eq!(
+        group
+            .compare(&right, &left, &conversions)
+            .map(|(name, _)| name),
+        expected
+    );
 }
 
 #[test]
@@ -64,6 +78,93 @@ fn quantity_and_range_must_use_matching_units() {
 }
 
 #[test]
+fn fixed_duration_units_do_not_need_a_document_conversion() {
+    check_rule(
+        FactData::Quantity {
+            value: Some(30.0),
+            unit: "секунд".into(),
+        },
+        FactData::Quantity {
+            value: Some(1.0),
+            unit: "min".into(),
+        },
+        None,
+    );
+}
+
+#[tokio::test]
+async fn verified_conversion_applies_across_entities() {
+    let source = [
+        "Комиссия передаётся в тенге.",
+        "Комиссия хранится в тиынах.",
+        "1 ₸ = 100 тиынов",
+    ];
+    let markdown = source.join("\n\n");
+    let document = ParserRegistry::default()
+        .parse(Path::new("input.md"), markdown.as_bytes())
+        .unwrap();
+    let checks = crate::CheckRegistry::default();
+    let mut ctx = RunContext::new(document, &MockProvider, &checks);
+    ctx.requirements = source
+        .iter()
+        .zip(&ctx.document.blocks)
+        .enumerate()
+        .map(|(i, (&quote, block))| Requirement {
+            id: format!("R-{i}"),
+            source_id: None,
+            text: quote.into(),
+            quote: quote.into(),
+            location: block.location,
+            part: None,
+            section: None,
+            table: None,
+        })
+        .collect();
+    ctx.facts = [
+        (
+            "комиссия",
+            FactData::Quantity {
+                value: None,
+                unit: "KZT".into(),
+            },
+        ),
+        (
+            "комиссия",
+            FactData::Quantity {
+                value: None,
+                unit: "KZT minor".into(),
+            },
+        ),
+        (
+            "валюта",
+            FactData::UnitConversion {
+                from: "тиынов".into(),
+                to: "₸".into(),
+            },
+        ),
+    ]
+    .into_iter()
+    .zip(&ctx.requirements)
+    .map(|((entity, data), requirement)| Fact {
+        entity: entity.into(),
+        requirement_id: requirement.id.clone(),
+        evidence: Evidence {
+            quote: requirement.quote.clone(),
+            location: requirement.location,
+        },
+        data,
+    })
+    .collect();
+
+    check(&mut ctx, "").await.unwrap();
+    assert!(ctx.findings.is_empty());
+
+    ctx.facts[2].evidence.quote = "Вымышленное соотношение".into();
+    check(&mut ctx, "").await.unwrap();
+    assert!(matches!(&ctx.findings[0].detector, Detector::Rule(rule) if rule == "unit_mismatch"));
+}
+
+#[test]
 fn field_type_must_agree_for_the_same_field() {
     for (name, field_type, expected) in [
         ("weight", FieldType::String, Some("field_type_mismatch")),
@@ -85,7 +186,7 @@ fn field_type_must_agree_for_the_same_field() {
 }
 
 #[test]
-fn http_method_must_match_operation_intent() {
+fn safe_http_methods_must_not_change_state() {
     for (method, intent, expected) in [
         (
             HttpMethod::Get,
@@ -93,11 +194,24 @@ fn http_method_must_match_operation_intent() {
             Some("http_method_mismatch"),
         ),
         (
-            HttpMethod::Post,
-            OperationIntent::Read,
+            HttpMethod::Head,
+            OperationIntent::Create,
             Some("http_method_mismatch"),
         ),
+        (
+            HttpMethod::Options,
+            OperationIntent::Delete,
+            Some("http_method_mismatch"),
+        ),
+        (
+            HttpMethod::Trace,
+            OperationIntent::Update,
+            Some("http_method_mismatch"),
+        ),
+        (HttpMethod::Post, OperationIntent::Read, None),
         (HttpMethod::Get, OperationIntent::Read, None),
+        (HttpMethod::Head, OperationIntent::Read, None),
+        (HttpMethod::Options, OperationIntent::Read, None),
         (HttpMethod::Put, OperationIntent::Update, None),
     ] {
         check_rule(
@@ -111,7 +225,7 @@ fn http_method_must_match_operation_intent() {
 #[test]
 fn response_status_heading_must_match_returned_code_within_its_scenario() {
     for (scenario, code, expected) in [
-        ("locked", 429, Some("status_code_mismatch")),
+        (" LOCKED ", 429, Some("status_code_mismatch")),
         ("locked", 423, None),
         ("rate_limit", 429, None),
     ] {
@@ -135,7 +249,7 @@ fn response_status_heading_must_match_returned_code_within_its_scenario() {
 fn response_status_must_match_body_outcome_within_its_scenario() {
     for (scenario, code, outcome, expected) in [
         (
-            "created",
+            " CREATED ",
             202,
             Outcome::Error,
             Some("status_outcome_mismatch"),
@@ -196,7 +310,7 @@ fn acceptance_must_use_the_period_of_the_event_named_by_the_rule() {
                         },
                     },
                     EventMonth {
-                        event: "dispatch".into(),
+                        event: " Dispatch ".into(),
                         month: CalendarMonth {
                             year: Some(2032),
                             month: 6,

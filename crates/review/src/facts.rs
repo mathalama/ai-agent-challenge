@@ -101,6 +101,12 @@ pub enum HttpMethod {
     Connect,
 }
 
+impl HttpMethod {
+    pub(crate) fn is_safe(self) -> bool {
+        matches!(self, Self::Get | Self::Head | Self::Options | Self::Trace)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationIntent {

@@ -97,17 +97,13 @@ impl Stage for ScaffoldStage {
         match self {
             Self::Segment => {
                 let drafts = if has_non_table_content(&ctx.document) {
+                    let prompt = self.llm_prompt();
                     let input = serde_json::to_string(&serde_json::json!({
                         "title": ctx.document.title,
                         "blocks": non_table_blocks(&ctx.document),
                     }))?;
-                    generate_typed::<Vec<RequirementDraft>>(
-                        ctx.provider,
-                        name,
-                        &self.llm_prompt(),
-                        input,
-                    )
-                    .await?
+                    generate_typed::<Vec<RequirementDraft>>(ctx.provider, name, &prompt, input)
+                        .await?
                 } else {
                     Vec::new()
                 };

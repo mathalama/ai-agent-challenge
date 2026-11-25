@@ -14,8 +14,6 @@ struct Group<'a> {
     entity: String,
     requirements: BTreeMap<&'a str, &'a Requirement>,
     facts: Vec<&'a Fact>,
-    #[serde(skip)]
-    conversions: BTreeSet<(String, String)>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -35,19 +33,25 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
         .map(|r| (r.id.as_str(), r))
         .collect();
     let mut groups = BTreeMap::<_, Group<'_>>::new();
+    let mut conversions = BTreeSet::new();
     for fact in &ctx.facts {
         let Some(&requirement) = requirements.get(fact.requirement_id.as_str()) else {
             continue;
         };
         let span = fact.evidence.location;
         let parent = requirement.location;
-        let entity = normalized(&fact.entity);
-        if entity.is_empty()
-            || span.page != parent.page
+        if span.page != parent.page
             || span.start_line < parent.start_line
             || span.end_line > parent.end_line
             || !ctx.document.contains_quote(span, &fact.evidence.quote)
         {
+            continue;
+        }
+        if let FactData::UnitConversion { from, to } = &fact.data {
+            conversions.insert(ordered_pair(normalized_unit(from), normalized_unit(to)));
+        }
+        let entity = normalized(&fact.entity);
+        if entity.is_empty() {
             continue;
         }
         let group = groups.entry(entity.clone()).or_insert_with(|| Group {
@@ -57,11 +61,6 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
         group
             .requirements
             .insert(requirement.id.as_str(), requirement);
-        if let FactData::UnitConversion { from, to } = &fact.data {
-            group
-                .conversions
-                .insert(ordered_pair(normalized(from), normalized(to)));
-        }
         group.facts.push(fact);
     }
 
@@ -75,7 +74,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 if quotes[0] == quotes[1] {
                     continue;
                 }
-                if let Some((rule, explanation)) = group.compare(left, right)
+                if let Some((rule, explanation)) = group.compare(left, right, &conversions)
                     && seen_rules.insert((rule, quotes))
                 {
                     findings.push(Finding {
@@ -110,7 +109,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
         for draft in drafts {
             let [first, second] = draft.requirement_ids;
             let pair = ordered_pair(first, second);
-            let Some(group) = groups.get(&draft.entity) else {
+            let Some(group) = groups.get(&normalized(&draft.entity)) else {
                 continue;
             };
             let (Some(left), Some(right)) = (
@@ -148,14 +147,20 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
 }
 
 impl Group<'_> {
-    fn compare(&self, left: &Fact, right: &Fact) -> Option<(&'static str, String)> {
+    fn compare(
+        &self,
+        left: &Fact,
+        right: &Fact,
+        conversions: &BTreeSet<(String, String)>,
+    ) -> Option<(&'static str, String)> {
         use FactData::*;
 
         if let (Some(a), Some(b)) = (unit(&left.data), unit(&right.data))
             && a != b
+            && !(fixed_duration(&a) && fixed_duration(&b))
         {
             let units = ordered_pair(a, b);
-            return (!self.conversions.contains(&units)).then(|| ("unit_mismatch", format!("Для сопоставляемых величин указаны разные единицы ({} и {}) без описания преобразования.", units.0, units.1)));
+            return (!conversions.contains(&units)).then(|| ("unit_mismatch", format!("Для сопоставляемых величин указаны разные единицы ({} и {}) без описания преобразования.", units.0, units.1)));
         }
 
         match (&left.data, &right.data) {
@@ -174,11 +179,11 @@ impl Group<'_> {
             )),
             (HttpMethod { method }, Operation { intent })
             | (Operation { intent }, HttpMethod { method })
-                if (*method == crate::HttpMethod::Get) != (*intent == OperationIntent::Read) =>
+                if method.is_safe() && *intent != OperationIntent::Read =>
             {
                 Some((
                     "http_method_mismatch",
-                    "HTTP-метод не соответствует описанному действию операции.".into(),
+                    "Безопасный HTTP-метод используется для операции, меняющей состояние.".into(),
                 ))
             }
             (
@@ -192,7 +197,7 @@ impl Group<'_> {
                     code: second,
                     role: second_role,
                 },
-            ) if same_scenario(a, b)
+            ) if same_key(a, b)
                 && valid_status(*first)
                 && valid_status(*second)
                 && first != second
@@ -231,7 +236,7 @@ impl Group<'_> {
                 StatusCode {
                     scenario: a, code, ..
                 },
-            ) if same_scenario(a, b) && status_conflicts(*code, *outcome) => Some((
+            ) if same_key(a, b) && status_conflicts(*code, *outcome) => Some((
                 "status_outcome_mismatch",
                 format!("Код HTTP {code} противоречит значению «{value}» в поле «{field}»."),
             )),
@@ -264,7 +269,7 @@ impl Group<'_> {
                 }
                 let actual = event_months
                     .iter()
-                    .find(|candidate| candidate.event == *event)?
+                    .find(|candidate| same_key(&candidate.event, event))?
                     .month;
                 months_differ(actual, *expected_month).then(|| ("acceptance_period_mismatch", format!("Критерий приёмки относит событие к другому месяцу, чем правило из требования {}.", requirement.source_id.as_ref().unwrap_or(&requirement.id))))
             }
@@ -281,7 +286,7 @@ fn evidence_key(evidence: &Evidence) -> (Option<usize>, usize, usize, &str) {
 fn unit(data: &FactData) -> Option<String> {
     match data {
         FactData::Quantity { unit, .. } | FactData::Range { unit, .. } => {
-            let unit = normalized(unit);
+            let unit = normalized_unit(unit);
             (!unit.is_empty()).then_some(unit)
         }
         _ => None,
@@ -292,6 +297,34 @@ fn normalized(text: &str) -> String {
     text.trim().to_lowercase()
 }
 
+fn normalized_unit(text: &str) -> String {
+    let unit = normalized(text);
+    match unit.as_str() {
+        "₸" | "тенге" | "теңге" => "kzt".into(),
+        "тиын" | "тиына" | "тиыны" | "тиынов" | "тиынах" | "тиыне" => {
+            "kzt minor".into()
+        }
+        "ms"
+        | "мс"
+        | "millisecond"
+        | "milliseconds"
+        | "миллисекунда"
+        | "миллисекунды"
+        | "миллисекунд"
+        | "миллисекунду" => "ms".into(),
+        "s" | "с" | "сек" | "сек." | "second" | "seconds" | "секунда" | "секунды" | "секунд"
+        | "секунду" => "s".into(),
+        "min" | "мин" | "мин." | "minute" | "minutes" | "минута" | "минуты" | "минут"
+        | "минуту" => "min".into(),
+        "h" | "ч" | "ч." | "hour" | "hours" | "час" | "часа" | "часов" => "h".into(),
+        _ => unit,
+    }
+}
+
+fn fixed_duration(unit: &str) -> bool {
+    matches!(unit, "ms" | "s" | "min" | "h")
+}
+
 fn ordered_pair<T: Ord>(left: T, right: T) -> (T, T) {
     if left <= right {
         (left, right)
@@ -300,8 +333,9 @@ fn ordered_pair<T: Ord>(left: T, right: T) -> (T, T) {
     }
 }
 
-fn same_scenario(a: &str, b: &str) -> bool {
-    !a.trim().is_empty() && a == b
+fn same_key(a: &str, b: &str) -> bool {
+    let first = normalized(a);
+    !first.is_empty() && first == normalized(b)
 }
 
 fn valid_status(code: u16) -> bool {
