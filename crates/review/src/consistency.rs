@@ -81,11 +81,14 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                         id: format!("consistency-rule-{:03}", findings.len() + 1),
                         scope: Scope::Set,
                         criterion: Criterion::Consistent,
+                        additional_criteria: Vec::new(),
                         severity: Severity::High,
                         evidence: vec![left.evidence.clone(), right.evidence.clone()],
                         explanation,
                         suggestion: None,
                         detector: Detector::Rule(rule.into()),
+                        additional_detectors: Vec::new(),
+                        merged_ids: Vec::new(),
                         verified: false,
                     });
                 }
@@ -127,6 +130,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 id: format!("consistency-{:03}", findings.len() + 1),
                 scope: Scope::Set,
                 criterion: Criterion::Consistent,
+                additional_criteria: Vec::new(),
                 severity: draft.severity,
                 evidence: [left, right]
                     .into_iter()
@@ -137,7 +141,9 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                     .collect(),
                 explanation: draft.explanation,
                 suggestion: draft.suggestion,
-                detector: Detector::Llm(ctx.provider.model().into()),
+                detector: Detector::Llm(format!("consistency:{}", ctx.provider.model())),
+                additional_detectors: Vec::new(),
+                merged_ids: Vec::new(),
                 verified: false,
             });
         }

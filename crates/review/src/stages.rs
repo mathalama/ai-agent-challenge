@@ -169,6 +169,9 @@ impl Stage for ScaffoldStage {
                         );
                         finding.suggestion = None;
                     }
+                }
+                ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
+                for finding in &mut ctx.findings {
                     finding.verified = !finding.evidence.is_empty()
                         && finding.evidence.iter().all(|evidence| {
                             ctx.document
@@ -262,11 +265,14 @@ impl ScaffoldStage {
                     id: format!("{}-{:03}", self.name(), index + 1),
                     scope,
                     criterion: draft.criterion,
+                    additional_criteria: Vec::new(),
                     severity: draft.severity,
                     evidence: draft.evidence,
                     explanation: draft.explanation,
                     suggestion,
-                    detector: Detector::Llm(ctx.provider.model().into()),
+                    detector: Detector::Llm(format!("{}:{}", self.name(), ctx.provider.model())),
+                    additional_detectors: Vec::new(),
+                    merged_ids: Vec::new(),
                     verified: false,
                 }
             }));

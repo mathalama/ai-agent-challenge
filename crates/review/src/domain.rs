@@ -70,7 +70,7 @@ criteria! {
     Traceable => ("Трассируемость", IEEE_830),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "id")]
 pub enum Scope {
     Requirement(RequirementId),
@@ -105,7 +105,7 @@ pub struct Evidence {
     pub location: SourceSpan,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "source")]
 pub enum Detector {
     Rule(String),
@@ -113,17 +113,68 @@ pub enum Detector {
     Solver,
 }
 
+impl Detector {
+    pub fn display_label(&self) -> String {
+        match self {
+            Self::Rule(id) => format!("правило {id}"),
+            Self::Llm(source) => match source.split_once(':') {
+                Some((stage, model)) => format!("стадия {stage} ({model})"),
+                None => format!("LLM ({source})"),
+            },
+            Self::Solver => "решатель".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Finding {
     pub id: FindingId,
     pub scope: Scope,
     pub criterion: Criterion,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_criteria: Vec<Criterion>,
     pub severity: Severity,
     pub evidence: Vec<Evidence>,
     pub explanation: String,
     pub suggestion: Option<String>,
     pub detector: Detector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_detectors: Vec<Detector>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged_ids: Vec<FindingId>,
     pub verified: bool,
+}
+
+impl Finding {
+    pub fn all_criteria(&self) -> Vec<Criterion> {
+        let mut criteria = vec![self.criterion];
+        for &criterion in &self.additional_criteria {
+            if !criteria.contains(&criterion) {
+                criteria.push(criterion);
+            }
+        }
+        criteria
+    }
+
+    pub fn all_detectors(&self) -> Vec<&Detector> {
+        let mut detectors = vec![&self.detector];
+        for detector in &self.additional_detectors {
+            if !detectors.contains(&detector) {
+                detectors.push(detector);
+            }
+        }
+        detectors
+    }
+
+    pub fn all_ids(&self) -> Vec<&str> {
+        let mut ids = vec![self.id.as_str()];
+        for id in &self.merged_ids {
+            if !ids.contains(&id.as_str()) {
+                ids.push(id.as_str());
+            }
+        }
+        ids
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
