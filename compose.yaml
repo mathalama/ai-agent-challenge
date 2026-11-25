@@ -4,11 +4,11 @@ services:
     image: requirements-review
     # Внутри контейнера сервер слушает все адреса, наружу порт открыт только для localhost.
     ports:
-      - "127.0.0.1:${PORT:-3000}:3000"
+      - "127.0.0.1:${PORT:-3333}:3333"
     env_file:
       - path: .env
         required: false
-    command: ["serve", "--listen", "0.0.0.0:3000", "--provider", "${PROVIDER:-mock}"]
+    command: ["serve", "--listen", "0.0.0.0:3333", "--provider", "${PROVIDER:-mock}"]
     volumes:
       - llm-cache:/app/.cache
       - ./reports:/app/reports

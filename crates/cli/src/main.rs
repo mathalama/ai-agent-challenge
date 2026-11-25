@@ -52,7 +52,7 @@ enum Command {
         provider: Provider,
         #[arg(long)]
         no_cache: bool,
-        #[arg(long, default_value = "127.0.0.1:3000")]
+        #[arg(long, default_value = "127.0.0.1:3333")]
         listen: SocketAddr,
         #[arg(long, default_value = "web/dist")]
         web_dir: PathBuf,

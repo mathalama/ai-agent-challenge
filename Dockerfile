@@ -33,6 +33,6 @@ COPY eval eval
 RUN mkdir -p .cache reports && chown app:app .cache reports
 USER app
 ENV RUST_LOG=warn
-EXPOSE 3000
+EXPOSE 3333
 ENTRYPOINT ["rs"]
-CMD ["serve", "--listen", "0.0.0.0:3000", "--provider", "mock"]
+CMD ["serve", "--listen", "0.0.0.0:3333", "--provider", "mock"]
