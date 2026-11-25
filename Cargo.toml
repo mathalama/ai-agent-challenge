@@ -14,6 +14,7 @@ dotenvy = "0.15"
 httpdate = "1"
 jsonschema = { version = "0.46", default-features = false }
 pulldown-cmark = { version = "0.13", default-features = false }
+quick-xml = "0.42"
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +25,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 doc = { path = "crates/doc" }
 llm = { path = "crates/llm" }
 review = { path = "crates/review" }
