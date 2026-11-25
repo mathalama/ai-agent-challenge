@@ -123,6 +123,7 @@ impl LlmProvider for LimitedFacts {
         self.requests.lock().unwrap().push(ids.clone());
         if ids.len() > 1 || ids[0] == "R-002" {
             return Err(LlmError::MissingCandidate {
+                reasoning: None,
                 finish_reason: self.finish_reason.into(),
                 block_reason: "—".into(),
                 usage: Some(Usage {
@@ -132,6 +133,7 @@ impl LlmProvider for LimitedFacts {
             });
         }
         Ok(LlmResponse {
+            reasoning: None,
             json: json!([{
                 "entity": format!("источник {}", ids[0]),
                 "requirement_id": ids[0],
@@ -227,6 +229,7 @@ struct OverflowReview {
 
 fn output_limit() -> LlmError {
     LlmError::MissingCandidate {
+        reasoning: None,
         finish_reason: "length".into(),
         block_reason: "—".into(),
         usage: None,
@@ -281,6 +284,7 @@ impl LlmProvider for OverflowReview {
             _ => return MockProvider.generate(request).await,
         };
         Ok(LlmResponse {
+            reasoning: None,
             json,
             usage: Usage::default(),
             model: self.model().into(),

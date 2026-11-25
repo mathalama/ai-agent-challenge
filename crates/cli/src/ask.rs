@@ -5,7 +5,7 @@ use std::{
 
 use review::RelatedId;
 
-use crate::{Provider, Result, RunPaths, answers_path, read_answers, review, write_output};
+use crate::{Provider, Result, RunOptions, answers_path, read_answers, review, write_output};
 
 pub(crate) async fn run(
     input: &Path,
@@ -15,7 +15,7 @@ pub(crate) async fn run(
 ) -> Result<()> {
     let path = answers_path(input, output)?;
     let mut answers = read_answers(&path)?;
-    let report = review(input, provider, no_cache, RunPaths::default(), &answers).await?;
+    let report = review(input, provider, no_cache, RunOptions::default(), &answers).await?;
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
     if report.questions.is_empty() {

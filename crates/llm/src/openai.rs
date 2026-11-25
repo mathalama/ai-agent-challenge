@@ -216,27 +216,45 @@ impl LlmProvider for OpenAiProvider {
             });
         }
         let body = serde_json::from_slice(&response.bytes().await?)?;
-        decode_chat_response(&body, self.model())
+        decode_chat_response(&body, self.model(), request.include_reasoning)
     }
 }
 
-fn decode_chat_response(body: &Value, model: &str) -> Result<LlmResponse> {
+fn decode_chat_response(body: &Value, model: &str, include_reasoning: bool) -> Result<LlmResponse> {
     let choice = &body["choices"][0];
     let finish_reason = choice["finish_reason"].as_str();
     let usage = body.get("usage").map(|usage| Usage {
         input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
         output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
     });
-    let content = choice["message"]["content"]
+    let message = &choice["message"];
+    let reasoning = if include_reasoning {
+        ["reasoning_content", "reasoning"]
+            .into_iter()
+            .filter_map(|field| message[field].as_str())
+            .find(|text| !text.is_empty())
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(content) = message["content"]
         .as_str()
         .filter(|_| finish_reason == Some("stop"))
-        .ok_or_else(|| LlmError::MissingCandidate {
+    else {
+        return Err(LlmError::MissingCandidate {
             finish_reason: finish_reason.unwrap_or("—").into(),
             block_reason: "—".into(),
             usage,
-        })?;
-    let mut json: Value = serde_json::from_str(strip_code_fence(content))
-        .map_err(|source| LlmError::ResponseJson { source, usage })?;
+            reasoning,
+        });
+    };
+    let mut json: Value = serde_json::from_str(strip_code_fence(content)).map_err(|source| {
+        LlmError::ResponseJson {
+            source,
+            usage,
+            reasoning: reasoning.clone(),
+        }
+    })?;
     // Модель иногда отвечает без обёртки; тогда ответ проверит валидатор схемы.
     if let Some(result) = json.as_object_mut().and_then(|object| {
         (object.len() == 1)
@@ -249,6 +267,7 @@ fn decode_chat_response(body: &Value, model: &str) -> Result<LlmResponse> {
         json,
         usage: usage.unwrap_or_default(),
         model: body["model"].as_str().unwrap_or(model).into(),
+        reasoning,
     })
 }
 
@@ -265,6 +284,33 @@ fn strip_code_fence(content: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_decodes_optional_reasoning_fields() {
+        for (fields, expected) in [
+            (json!({"reasoning_content": "DeepSeek"}), Some("DeepSeek")),
+            (json!({"reasoning": "Ollama"}), Some("Ollama")),
+            (
+                json!({"reasoning_content": null, "reasoning": "OpenRouter"}),
+                Some("OpenRouter"),
+            ),
+            (json!({"reasoning_content": "", "reasoning": null}), None),
+            (json!({}), None),
+        ] {
+            let mut message = fields;
+            message["content"] = json!("{\"result\": 42}");
+            let body = json!({"choices": [{"finish_reason": "stop", "message": message}]});
+            let response = decode_chat_response(&body, "test", true).unwrap();
+            assert_eq!(response.json, 42);
+            assert_eq!(response.reasoning.as_deref(), expected);
+            assert_eq!(
+                decode_chat_response(&body, "test", false)
+                    .unwrap()
+                    .reasoning,
+                None
+            );
+        }
+    }
 
     fn provider(format: ResponseFormat) -> OpenAiProvider {
         OpenAiProvider {
@@ -344,7 +390,7 @@ mod tests {
             "choices": [{"finish_reason": "stop", "message": {"content": "```json\n{\"result\": [1, 2]}\n```"}}],
             "usage": {"prompt_tokens": 7, "completion_tokens": 3}
         });
-        let response = decode_chat_response(&body, "fallback").unwrap();
+        let response = decode_chat_response(&body, "fallback", false).unwrap();
         assert_eq!(response.json, json!([1, 2]));
         assert_eq!(response.model, "gpt-test");
         assert_eq!(
@@ -355,7 +401,7 @@ mod tests {
         let bare =
             json!({"choices": [{"finish_reason": "stop", "message": {"content": "{\"id\": 1}"}}]});
         assert_eq!(
-            decode_chat_response(&bare, "fallback").unwrap().json,
+            decode_chat_response(&bare, "fallback", false).unwrap().json,
             json!({"id": 1})
         );
     }
@@ -366,7 +412,7 @@ mod tests {
             "choices": [{"finish_reason": "length", "message": {"content": "{\"result\": ["}}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 9}
         });
-        let Err(error) = decode_chat_response(&body, "test") else {
+        let Err(error) = decode_chat_response(&body, "test", false) else {
             panic!("Обрезанный ответ принят");
         };
         assert!(error.to_string().contains("finishReason=length"));

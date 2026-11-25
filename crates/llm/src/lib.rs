@@ -15,12 +15,14 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LlmRequest {
     pub stage: String,
     pub system_prompt: String,
     pub user_text: String,
     pub response_schema: Value,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub include_reasoning: bool,
     #[serde(skip)]
     validate_shape: fn(&Value) -> serde_json::Result<()>,
 }
@@ -36,6 +38,7 @@ impl LlmRequest {
             system_prompt: system_prompt.into(),
             user_text,
             response_schema: serde_json::to_value(schemars::schema_for!(T))?,
+            include_reasoning: false,
             validate_shape: |value| T::deserialize(value).map(drop),
         })
     }
@@ -56,6 +59,7 @@ pub struct LlmResponse {
     pub json: Value,
     pub usage: Usage,
     pub model: String,
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -77,12 +81,14 @@ pub enum LlmError {
         finish_reason: String,
         block_reason: String,
         usage: Option<Usage>,
+        reasoning: Option<String>,
     },
     #[error("Ошибка обработки JSON ответа LLM: {source}")]
     ResponseJson {
         #[source]
         source: serde_json::Error,
         usage: Option<Usage>,
+        reasoning: Option<String>,
     },
     #[error("Некорректная схема ответа LLM")]
     InvalidSchema,
@@ -103,6 +109,15 @@ impl LlmError {
     pub(crate) fn usage(&self) -> Option<Usage> {
         match self {
             Self::MissingCandidate { usage, .. } | Self::ResponseJson { usage, .. } => *usage,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn reasoning(&self) -> Option<&str> {
+        match self {
+            Self::MissingCandidate { reasoning, .. } | Self::ResponseJson { reasoning, .. } => {
+                reasoning.as_deref()
+            }
             _ => None,
         }
     }

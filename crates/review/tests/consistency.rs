@@ -84,6 +84,7 @@ impl LlmProvider for GroupedMock {
             _ => return MockProvider.generate(request).await,
         };
         Ok(LlmResponse {
+            reasoning: None,
             json,
             usage: Usage::default(),
             model: self.model().into(),
@@ -184,6 +185,7 @@ impl LlmProvider for SampleMock {
             _ => return MockProvider.generate(request).await,
         };
         Ok(LlmResponse {
+            reasoning: None,
             json,
             usage: Usage::default(),
             model: self.model().into(),

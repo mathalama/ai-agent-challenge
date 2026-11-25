@@ -61,6 +61,25 @@ impl GeminiProvider {
     }
 }
 
+fn gemini_request_body(request: &LlmRequest) -> Value {
+    let mut schema = request.response_schema.clone();
+    if let Some(object) = schema.as_object_mut() {
+        object.remove("$schema");
+    }
+    let mut body = json!({
+        "systemInstruction": {"parts": [{"text": request.system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": request.user_text}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": schema
+        },
+    });
+    if request.include_reasoning {
+        body["generationConfig"]["thinkingConfig"] = json!({"includeThoughts": true});
+    }
+    body
+}
+
 #[async_trait]
 impl LlmProvider for GeminiProvider {
     fn model(&self) -> &str {
@@ -68,22 +87,11 @@ impl LlmProvider for GeminiProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
-        let mut schema = request.response_schema.clone();
-        if let Some(object) = schema.as_object_mut() {
-            object.remove("$schema");
-        }
         let response = self
             .client
             .post(&self.endpoint)
             .header("x-goog-api-key", self.api_key.clone())
-            .json(&json!({
-                "systemInstruction": {"parts": [{"text": request.system_prompt}]},
-                "contents": [{"role": "user", "parts": [{"text": request.user_text}]}],
-                "generationConfig": {
-                    "responseMimeType": "application/json",
-                    "responseJsonSchema": schema
-                },
-            }))
+            .json(&gemini_request_body(request))
             .send()
             .await?;
         let status = response.status();
@@ -104,11 +112,15 @@ impl LlmProvider for GeminiProvider {
             });
         }
         let body = serde_json::from_slice(&response.bytes().await?)?;
-        decode_gemini_response(&body, self.model())
+        decode_gemini_response(&body, self.model(), request.include_reasoning)
     }
 }
 
-fn decode_gemini_response(body: &Value, model: &str) -> Result<LlmResponse> {
+fn decode_gemini_response(
+    body: &Value,
+    model: &str,
+    include_reasoning: bool,
+) -> Result<LlmResponse> {
     let candidate = &body["candidates"][0];
     let finish_reason = candidate["finishReason"].as_str();
     let block_reason = body["promptFeedback"]["blockReason"].as_str();
@@ -119,25 +131,41 @@ fn decode_gemini_response(body: &Value, model: &str) -> Result<LlmResponse> {
             .unwrap_or(0)
             .saturating_add(metadata["thoughtsTokenCount"].as_u64().unwrap_or(0)),
     });
-    let missing_candidate = || LlmError::MissingCandidate {
-        finish_reason: finish_reason.unwrap_or("—").into(),
-        block_reason: block_reason.unwrap_or("—").into(),
-        usage,
+    let parts = candidate["content"]["parts"].as_array();
+    let reasoning = include_reasoning
+        .then(|| {
+            parts
+                .into_iter()
+                .flatten()
+                .filter(|part| part["thought"] == true)
+                .filter_map(|part| part["text"].as_str())
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|text| !text.is_empty());
+    let Some(parts) = parts.filter(|_| finish_reason == Some("STOP")) else {
+        return Err(LlmError::MissingCandidate {
+            finish_reason: finish_reason.unwrap_or("—").into(),
+            block_reason: block_reason.unwrap_or("—").into(),
+            usage,
+            reasoning,
+        });
     };
-    let parts = candidate["content"]["parts"]
-        .as_array()
-        .filter(|_| finish_reason == Some("STOP"))
-        .ok_or_else(missing_candidate)?;
     let text: String = parts
         .iter()
         .filter(|part| part["thought"] != true)
         .filter_map(|part| part["text"].as_str())
         .collect();
     Ok(LlmResponse {
-        json: serde_json::from_str(&text)
-            .map_err(|source| LlmError::ResponseJson { source, usage })?,
+        json: serde_json::from_str(&text).map_err(|source| LlmError::ResponseJson {
+            source,
+            usage,
+            reasoning: reasoning.clone(),
+        })?,
         usage: usage.unwrap_or_default(),
         model: body["modelVersion"].as_str().unwrap_or(model).into(),
+        reasoning,
     })
 }
 
@@ -216,6 +244,7 @@ impl LlmProvider for MockProvider {
             },
             json,
             model: self.model().into(),
+            reasoning: None,
         })
     }
 }
@@ -285,6 +314,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gemini_requests_thoughts_only_when_enabled() {
+        let mut request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        assert!(
+            gemini_request_body(&request)["generationConfig"]
+                .get("thinkingConfig")
+                .is_none()
+        );
+        request.include_reasoning = true;
+        assert_eq!(
+            gemini_request_body(&request)["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
+    }
+
+    #[test]
+    fn gemini_keeps_thought_parts_separate_from_the_result() {
+        let body = json!({"candidates": [{"finishReason": "STOP", "content": {"parts": [
+            {"text": "Первый шаг", "thought": true},
+            {"text": "[1,"},
+            {"thought": true, "thoughtSignature": "signature"},
+            {"text": "Второй шаг", "thought": true},
+            {"text": "2]", "thought": false}
+        ]}}]});
+        let response = decode_gemini_response(&body, "test", true).unwrap();
+        assert_eq!(response.json, json!([1, 2]));
+        assert_eq!(
+            response.reasoning.as_deref(),
+            Some("Первый шаг\nВторой шаг")
+        );
+        assert_eq!(
+            decode_gemini_response(&body, "test", false)
+                .unwrap()
+                .reasoning,
+            None
+        );
+    }
+
+    #[test]
     fn incomplete_gemini_response_reports_finish_and_block_reasons() {
         for (body, expected) in [
             (
@@ -296,7 +363,7 @@ mod tests {
                 "finishReason=—, promptFeedback.blockReason=SAFETY",
             ),
         ] {
-            let Err(error) = decode_gemini_response(&body, "test") else {
+            let Err(error) = decode_gemini_response(&body, "test", false) else {
                 panic!("Неполный ответ Gemini принят");
             };
             assert!(error.to_string().contains(expected));
@@ -309,7 +376,7 @@ mod tests {
             "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "{"}]}}],
             "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2, "thoughtsTokenCount": 3}
         });
-        let Err(error) = decode_gemini_response(&body, "test") else {
+        let Err(error) = decode_gemini_response(&body, "test", false) else {
             panic!("Некорректный JSON Gemini принят");
         };
         let usage = error.usage().unwrap();

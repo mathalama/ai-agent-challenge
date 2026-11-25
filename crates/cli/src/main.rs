@@ -57,6 +57,9 @@ enum Command {
         no_cache: bool,
         #[arg(long)]
         trace: Option<PathBuf>,
+        /// Сохранять рассуждения LLM в кэше и трассе.
+        #[arg(long)]
+        reasoning: bool,
         /// Писать события прогресса в JSON Lines по мере выполнения.
         #[arg(long)]
         events: Option<PathBuf>,
@@ -173,13 +176,15 @@ async fn run(cli: Cli) -> Result<()> {
             provider,
             no_cache,
             trace,
+            reasoning,
             events,
         } => {
-            let paths = RunPaths {
+            let options = RunOptions {
                 trace: trace.as_deref(),
+                reasoning,
                 events: events.as_deref(),
             };
-            check(&input, output, format, provider, no_cache, paths).await
+            check(&input, output, format, provider, no_cache, options).await
         }
         Command::Ask {
             input,
@@ -210,7 +215,7 @@ async fn check(
     format: Format,
     provider: Provider,
     no_cache: bool,
-    paths: RunPaths<'_>,
+    options: RunOptions<'_>,
 ) -> Result<()> {
     let output = output.unwrap_or_else(|| {
         PathBuf::from(match format {
@@ -219,7 +224,7 @@ async fn check(
         })
     });
     let answers_path = answers_path(input, &output)?;
-    for (path, label) in [(paths.trace, "трассы"), (paths.events, "событий")] {
+    for (path, label) in [(options.trace, "трассы"), (options.events, "событий")] {
         if let Some(path) = path
             && (same_path(path, input)?
                 || same_path(path, &output)?
@@ -231,14 +236,14 @@ async fn check(
             .into());
         }
     }
-    if let (Some(trace), Some(events)) = (paths.trace, paths.events)
+    if let (Some(trace), Some(events)) = (options.trace, options.events)
         && same_path(trace, events)?
     {
         return Err("Для трассы и событий укажите разные пути".into());
     }
 
     let answers = read_answers(&answers_path)?;
-    let report = review(input, provider, no_cache, paths, &answers).await?;
+    let report = review(input, provider, no_cache, options, &answers).await?;
     let rendered = match format {
         Format::Md => MarkdownRenderer.render(&report)?,
         Format::Json => JsonRenderer.render(&report)?,
@@ -250,10 +255,11 @@ async fn check(
 
 type Answers = BTreeMap<String, String>;
 
-/// Необязательные файлы прогона рядом с отчётом.
+/// Параметры записи трассы и событий прогона.
 #[derive(Clone, Copy, Default)]
-struct RunPaths<'a> {
+struct RunOptions<'a> {
     trace: Option<&'a Path>,
+    reasoning: bool,
     events: Option<&'a Path>,
 }
 
@@ -282,20 +288,20 @@ async fn review(
     input: &Path,
     provider: Provider,
     no_cache: bool,
-    paths: RunPaths<'_>,
+    options: RunOptions<'_>,
     answers: &Answers,
 ) -> Result<Report> {
     let bytes = fs::read(input)
         .map_err(|error| format!("Не удалось прочитать «{}»: {error}", input.display()))?;
     let document = ParserRegistry::default().parse(input, &bytes)?;
-    let sink = progress_sink(paths.events)?;
+    let sink = progress_sink(options.events)?;
     let trace_log = progress_trace(&sink);
-    let provider = build_provider(provider, no_cache, Some(trace_log.clone()))?;
+    let provider = build_provider(provider, no_cache, trace_log.clone(), options.reasoning)?;
     let checks = CheckRegistry::with_builtin_rules();
     let mut ctx = RunContext::new(document, provider.as_ref(), &checks)
         .with_progress(sink.as_ref(), trace_log.clone());
     let result = Pipeline::default().run(&mut ctx).await;
-    if let Some(path) = paths.trace {
+    if let Some(path) = options.trace {
         let json = serde_json::to_string_pretty(&serde_json::json!({
             "stages": ctx.trace,
             "llm_calls": trace_log.entries(),
@@ -329,7 +335,7 @@ async fn eval_golden(golden: &Path, provider_kind: Provider, no_cache: bool) -> 
 
     let sink = progress_sink(None)?;
     let trace_log = progress_trace(&sink);
-    let provider = build_provider(provider_kind, no_cache, Some(trace_log.clone()))?;
+    let provider = build_provider(provider_kind, no_cache, trace_log.clone(), false)?;
     let registry = ParserRegistry::default();
     let checks = CheckRegistry::with_builtin_rules();
     let pipeline = Pipeline::default();
@@ -377,7 +383,8 @@ fn progress_trace(sink: &Arc<dyn ProgressSink>) -> TraceLog {
 fn build_provider(
     provider: Provider,
     no_cache: bool,
-    trace_log: Option<TraceLog>,
+    trace_log: TraceLog,
+    reasoning: bool,
 ) -> Result<Box<dyn LlmProvider>> {
     let base: Box<dyn LlmProvider> = match provider {
         Provider::Mock => Box::new(MockProvider),
@@ -388,10 +395,9 @@ fn build_provider(
             OpenAiProvider::from_env()?,
         ))?),
     };
-    let retry = match trace_log {
-        Some(log) => RetryProvider::new(base).with_trace(log),
-        None => RetryProvider::new(base),
-    };
+    let retry = RetryProvider::new(base)
+        .with_trace(trace_log)
+        .with_reasoning(reasoning);
     Ok(if no_cache {
         Box::new(retry)
     } else {
