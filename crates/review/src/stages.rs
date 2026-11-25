@@ -5,10 +5,10 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::{
-    CheckPhase, Criterion, Detector, Evidence, Finding, RunContext, Scope, Severity, Stage,
-    clarify, consistency,
+    CheckPhase, Criterion, Detector, Evidence, Fact, FactData, Finding, RunContext, Scope,
+    Severity, Stage, clarify, consistency,
     pipeline::Result,
-    segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
+    segment::{RequirementDraft, merge_requirements, segment_blocks},
 };
 
 const DOMAIN_CONTEXT: &str = include_str!("../../../prompts/domain_context.md");
@@ -21,6 +21,14 @@ struct FindingDraft {
     evidence: Vec<Evidence>,
     explanation: String,
     suggestion: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FactDraft {
+    entity: String,
+    requirement_id: String,
+    quote: Option<String>,
+    data: FactData,
 }
 
 #[derive(Clone, Copy)]
@@ -88,31 +96,59 @@ impl Stage for ScaffoldStage {
         let name = self.name();
         match self {
             Self::Segment => {
-                let drafts = if has_non_table_content(&ctx.document) {
+                let blocks = segment_blocks(&ctx.document);
+                let drafts = if blocks.iter().any(|block| {
+                    matches!(
+                        block.content,
+                        doc::BlockContent::Paragraph { .. } | doc::BlockContent::ListItem { .. }
+                    )
+                }) {
                     let prompt = self.llm_prompt();
                     let input = serde_json::to_string(&serde_json::json!({
                         "title": ctx.document.title,
-                        "blocks": non_table_blocks(&ctx.document),
+                        "blocks": blocks,
                     }))?;
                     generate_typed::<Vec<RequirementDraft>>(ctx.provider, name, &prompt, input)
                         .await?
                 } else {
                     Vec::new()
                 };
-                ctx.requirements = merge_requirements(&ctx.document, drafts);
+                (ctx.requirements, ctx.context_items) = merge_requirements(&ctx.document, drafts);
             }
             Self::Facts => {
-                ctx.facts = if ctx.requirements.is_empty() {
-                    Vec::new()
-                } else {
-                    generate_typed(
-                        ctx.provider,
-                        name,
-                        &self.llm_prompt(),
-                        serde_json::to_string(&ctx.requirements)?,
-                    )
-                    .await?
-                };
+                if !ctx.requirements.is_empty() || !ctx.context_items.is_empty() {
+                    let drafts: Vec<FactDraft> =
+                        generate_typed(ctx.provider, name, &self.llm_prompt(), set_input(ctx)?)
+                            .await?;
+                    ctx.facts = drafts
+                        .into_iter()
+                        .filter_map(|draft| {
+                            let (source_quote, location) = ctx
+                                .requirements
+                                .iter()
+                                .find(|source| source.id == draft.requirement_id)
+                                .map(|source| (&source.quote, source.location))
+                                .or_else(|| {
+                                    ctx.context_items
+                                        .iter()
+                                        .find(|source| source.id == draft.requirement_id)
+                                        .map(|source| (&source.quote, source.location))
+                                })?;
+                            let quote = draft.quote.unwrap_or_else(|| source_quote.clone());
+                            if !source_quote.contains(&quote)
+                                || !ctx.document.contains_quote(location, &quote)
+                            {
+                                return None;
+                            }
+                            Some(Fact {
+                                entity: draft.entity,
+                                requirement_id: draft.requirement_id,
+                                evidence: Evidence { quote, location },
+                                data: draft.data,
+                            })
+                        })
+                        .collect();
+                }
             }
             Self::Rules => {
                 let findings = ctx.checks.run(CheckPhase::Rules, ctx).await?;
@@ -128,15 +164,13 @@ impl Stage for ScaffoldStage {
             Self::SetChecks => {
                 let findings = ctx.checks.run(CheckPhase::Set, ctx).await?;
                 ctx.findings.extend(findings);
-                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
-                    .await?;
+                self.find_with_model(ctx, set_input(ctx)?).await?;
             }
             Self::Consistency => {
                 consistency::check(ctx, &self.llm_prompt()).await?;
             }
             Self::Ambiguity => {
-                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
-                    .await?;
+                self.find_with_model(ctx, set_input(ctx)?).await?;
             }
             Self::Verify => {
                 ctx.findings.retain(|finding| {
@@ -177,7 +211,9 @@ impl Stage for ScaffoldStage {
 
 impl ScaffoldStage {
     async fn find_with_model(self, ctx: &mut RunContext<'_>, input: String) -> Result<()> {
-        if ctx.requirements.is_empty() {
+        if ctx.requirements.is_empty()
+            && (matches!(self, Self::RequirementChecks) || ctx.context_items.is_empty())
+        {
             return Ok(());
         }
         let prompt = self.llm_prompt();
@@ -230,6 +266,13 @@ impl ScaffoldStage {
             }));
         Ok(())
     }
+}
+
+fn set_input(ctx: &RunContext<'_>) -> Result<String> {
+    Ok(serde_json::to_string(&serde_json::json!({
+        "requirements": ctx.requirements,
+        "context": ctx.context_items,
+    }))?)
 }
 
 pub(crate) fn has_cyrillic(text: &str) -> bool {

@@ -189,15 +189,8 @@ impl LlmProvider for MockProvider {
                         input
                             .blocks
                             .iter()
-                            .filter_map(numbered_item)
-                            .enumerate()
-                            .map(|(index, (block, id, body, quote))| mock_candidate(
-                                index,
-                                block,
-                                Some(id),
-                                body,
-                                quote
-                            ))
+                            .filter(|block| numbered_item(block) || sample_requirement_block(block))
+                            .map(mock_candidate)
                             .collect::<Vec<_>>()
                     )
                 } else {
@@ -227,54 +220,63 @@ impl LlmProvider for MockProvider {
     }
 }
 
-fn numbered_item(block: &Block) -> Option<(&Block, &str, &str, &str)> {
+fn numbered_item(block: &Block) -> bool {
     let BlockContent::ListItem { text } = &block.content else {
-        return None;
+        return false;
     };
-    let (id, body) = text.split_once(". ")?;
-    let (prefix, number) = id.split_once('-')?;
-    if prefix.is_empty()
-        || !prefix.chars().all(char::is_alphabetic)
-        || number.is_empty()
-        || !number.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    Some((block, id, body, text))
+    text.split_once(". ")
+        .and_then(|(id, _)| id.split_once('-'))
+        .is_some_and(|(prefix, number)| {
+            !prefix.is_empty()
+                && prefix.chars().all(char::is_alphabetic)
+                && !number.is_empty()
+                && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn sample_requirement_block(block: &Block) -> bool {
+    let (BlockContent::Paragraph { text } | BlockContent::ListItem { text }) = &block.content
+    else {
+        return false;
+    };
+    [
+        "Сервис передаёт push на отправку",
+        "Хранить идентификатор карты",
+        "Приложение читает и сохраняет настройки",
+        "Проверить пользовательскую сессию",
+        "Проверить принадлежность карты",
+        "Проверить сумму и переключатель",
+        "Заменить настройку и вернуть",
+        "При отклонении суммы вернуть",
+        "Целое число тенге",
+        "Повторное сохранение заменяет",
+        "Изменение порога сохраняет",
+        "Тело не используется",
+        "Если результат 200 или 201",
+    ]
+    .iter()
+    .any(|fragment| text.contains(fragment))
 }
 
 fn first_mock_candidate(blocks: &[Block]) -> Option<Value> {
-    let (block, source_id, body, quote) = blocks
+    blocks
         .iter()
-        .find_map(numbered_item)
-        .map(|(block, id, body, quote)| (block, Some(id), body, quote))
+        .find(|block| numbered_item(block))
         .or_else(|| {
-            blocks.iter().find_map(|block| match &block.content {
-                BlockContent::Paragraph { text } | BlockContent::ListItem { text }
-                    if !text.trim().is_empty() =>
-                {
-                    Some((block, None, text.as_str(), text.as_str()))
-                }
-                _ => None,
-            })
-        })?;
-    Some(mock_candidate(0, block, source_id, body, quote))
+            blocks.iter().find(|block| matches!(
+            &block.content, BlockContent::Paragraph { text } | BlockContent::ListItem { text }
+                if !text.trim().is_empty()
+        ))
+        })
+        .map(mock_candidate)
 }
 
-fn mock_candidate(
-    index: usize,
-    block: &Block,
-    source_id: Option<&str>,
-    body: &str,
-    quote: &str,
-) -> Value {
+fn mock_candidate(block: &Block) -> Value {
     json!({
-        "id": format!("R-{:03}", index + 1),
-        "source_id": source_id,
-        "text": body,
-        "quote": quote,
-        "location": block.location,
-        "part": null,
+        "kind": "requirement",
+        "block_id": block.id,
+        "start_line": block.location.start_line,
+        "end_line": block.location.end_line,
     })
 }
 

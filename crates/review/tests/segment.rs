@@ -119,68 +119,17 @@ fn slices_sample_tables_with_part_section_table_ref_and_verified_quotes() {
     assert!(acceptance[1].quote.contains("Покупка 31 января"));
     assert!(acceptance[1].text.contains("Ожидаемый результат:"));
 
-    // 2. Общие параметры API (часть B): таблица №5, есть Description и REST type.
-    let api_general: Vec<_> = requirements
+    let description = requirements
         .iter()
-        .filter(|req| req.section.as_deref() == Some("Общие параметры"))
-        .collect();
-    assert_eq!(api_general.len(), 12);
-    assert!(
-        api_general
-            .iter()
-            .all(|req| req.part.as_deref() == Some("Часть B. REST API"))
-    );
-    let description = api_general
-        .iter()
-        .find(|req| req.text.starts_with("Description:"))
-        .expect("Нет строки Description");
+        .find(|req| req.section.as_deref() == Some("Общие параметры"))
+        .unwrap();
     assert_eq!(description.location.start_line, 103);
     assert!(description.quote.contains("чтение порога"));
-    let rest_type = api_general
-        .iter()
-        .find(|req| req.text == "REST type: GET")
-        .expect("Нет строки REST type");
-    assert_eq!(rest_type.location.start_line, 104);
-    assert_eq!(rest_type.table.as_ref().unwrap().index, 5);
-    assert_eq!(rest_type.table.as_ref().unwrap().row, 2);
-
-    // 3. Query-параметры API (часть B): таблица №6, cardId, amount, enabled (строки 142–144).
-    let query_params: Vec<_> = requirements
-        .iter()
-        .filter(|req| req.section.as_deref() == Some("Параметры запроса / Query-параметры"))
-        .collect();
-    assert_eq!(query_params.len(), 3);
-    assert_eq!(
-        query_params
+    assert!(
+        requirements
             .iter()
-            .map(|req| req.location.start_line)
-            .collect::<Vec<_>>(),
-        [142, 143, 144]
+            .all(|req| !req.quote.contains("REST type |") && !req.quote.contains("amount |"))
     );
-    assert!(query_params[1].text.contains("Parameter: amount"));
-    assert!(query_params[1].text.contains("Format: integer"));
-    assert_eq!(query_params[1].table.as_ref().unwrap().index, 6);
-    assert_eq!(
-        query_params[1].table.as_ref().unwrap().title.as_deref(),
-        Some("Query-параметры")
-    );
-
-    // 4. Параметры ответа API (часть B): таблица №7, result, amount, enabled, message (строки 155–158).
-    let response_params: Vec<_> = requirements
-        .iter()
-        .filter(|req| req.section.as_deref() == Some("Ответ"))
-        .collect();
-    assert_eq!(response_params.len(), 4);
-    assert_eq!(
-        response_params
-            .iter()
-            .map(|req| req.location.start_line)
-            .collect::<Vec<_>>(),
-        [155, 156, 157, 158]
-    );
-    assert!(response_params[1].text.contains("Parameter: amount"));
-    assert!(response_params[1].text.contains("Format: string"));
-    assert_eq!(response_params[1].table.as_ref().unwrap().index, 7);
 
     // 5. Служебные таблицы (Общие сведения, Ревью требований, Блок согласующих) не попали в требования.
     assert!(requirements.iter().all(|req| !matches!(
@@ -299,44 +248,43 @@ impl LlmProvider for StubSegmentProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
-        let json = if request.stage == "segment" {
-            // Модель возвращает Ф-1..Ф-4 без source_id (для Ф-2 даже без префикса в цитате),
-            // абзац ответа на строке 151 со слегка смещённым диапазоном (151..=153, касающимся таблицы),
-            // и попытку продублировать строку таблицы на строке 63.
-            json!([
-                {
-                    "text": "Держатель активной карты KZT задаёт порог от 1 000 до 1 000 000 ₸.",
-                    "quote": "Ф-1. Держатель активной карты KZT задаёт целый порог от 1 000 до 1 000 000 ₸ включительно. По умолчанию уведомление выключено.",
-                    "location": { "start_line": 37, "end_line": 37, "page": null }
-                },
-                {
-                    "text": "Месяц определяется по дате совершения покупки в Алматы.",
-                    "quote": "Месяц определяется по дате совершения покупки в Алматы.",
-                    "location": { "start_line": 38, "end_line": 38, "page": null }
-                },
-                {
-                    "text": "При достижении порога отправляется максимум один push за календарный месяц.",
-                    "quote": "Ф-3. Когда расходы переходят от суммы ниже порога к сумме, равной порогу или выше, клиент получает push. На карту приходится максимум один такой push за календарный месяц.",
-                    "location": { "start_line": 39, "end_line": 39, "page": null }
-                },
-                {
-                    "text": "При изменении порога накопленная сумма сохраняется.",
-                    "quote": "Ф-4. При изменении порога накопленная сумма сохраняется. Если она ниже нового порога, следующее достижение вызывает push независимо от истории предыдущей настройки.",
-                    "location": { "start_line": 40, "end_line": 40, "page": null }
-                },
-                {
-                    "text": "Дубль строки критериев приёмки от модели",
-                    "quote": "Итог 50 000 ₸ и один push",
-                    "location": { "start_line": 63, "end_line": 63, "page": null }
-                },
-                {
-                    "text": "Успешный ответ — 200 или 201, неуспешный — от 400.",
-                    "quote": "Если результат 200 или 201 — успешный. Если результат 400, 401 и далее — неуспешный.",
-                    "location": { "start_line": 151, "end_line": 153, "page": null }
-                }
-            ])
-        } else {
-            json!([])
+        let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
+        let json = match request.stage.as_str() {
+            "segment" => {
+                let blocks = input["blocks"].as_array().unwrap();
+                let response = blocks
+                    .iter()
+                    .find(|b| b["location"]["start_line"] == 151)
+                    .unwrap();
+                let functional = blocks
+                    .iter()
+                    .find(|b| b["location"]["start_line"] == 38)
+                    .unwrap();
+                json!([
+                    {"block_id": functional["id"], "start_line": 38, "end_line": 38, "kind": "requirement"},
+                    {"block_id": functional["id"], "start_line": 38, "end_line": 38, "kind": "requirement"},
+                    {"block_id": response["id"], "start_line": 63, "end_line": 63, "kind": "requirement"},
+                    {"block_id": response["id"], "start_line": 151, "end_line": 153, "kind": "requirement"},
+                    {"block_id": response["id"], "start_line": 151, "end_line": 151, "kind": "requirement"}
+                ])
+            }
+            "set_checks" => {
+                let example = input["context"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["quote"].as_str().unwrap().contains("Проверьте сумму"))
+                    .unwrap();
+                json!([{
+                    "requirement_id": null,
+                    "criterion": "consistent",
+                    "severity": "high",
+                    "evidence": [{"quote": example["quote"], "location": example["location"]}],
+                    "explanation": "Успешный статус сопровождается ошибкой.",
+                    "suggestion": null
+                }])
+            }
+            _ => json!([]),
         };
         Ok(LlmResponse {
             json,
@@ -398,10 +346,16 @@ async fn segment_stage_fills_source_ids_parts_sections_and_deduplicates_tables()
     assert_eq!(response_intro.part.as_deref(), Some("Часть B. REST API"));
     assert_eq!(response_intro.section.as_deref(), Some("Ответ"));
 
-    // Всего 4 функциональных + 1 абзац ответа + 22 табличных = 27 требований с нумерацией R-001..R-027.
-    assert_eq!(ctx.requirements.len(), 27);
+    assert_eq!(ctx.requirements.len(), 19);
     assert_eq!(ctx.requirements[0].id, "R-001");
-    assert_eq!(ctx.requirements[26].id, "R-027");
+    assert_eq!(ctx.requirements[18].id, "R-019");
+    assert!(ctx.requirements[1].quote.contains("Возврат уменьшает"));
+    assert!(ctx.requirements[1].text.starts_with("Месяц определяется"));
+    assert!(
+        ctx.findings
+            .iter()
+            .any(|f| f.id == "set_checks-001" && f.verified)
+    );
 
     // Отчёт выводит ID из документа, разделы, порядковый номер таблицы и её заголовок (а не внутренний BlockId).
     let passport = RunPassport {
@@ -415,9 +369,10 @@ async fn segment_stage_fills_source_ids_parts_sections_and_deduplicates_tables()
     assert!(rendered.contains("| R-001 | Ф-1 |"));
     assert!(rendered.contains("| R-002 | Ф-2 |"));
     assert!(rendered.contains("Часть B. REST API / Общие параметры"));
-    assert!(rendered.contains("REST type: GET"));
+    assert!(!rendered.contains("REST type: GET"));
+    assert!(rendered.contains("Проверьте сумму"));
     assert!(rendered.contains("таблица 2 «Критерии приемки», строка 1"));
-    assert!(rendered.contains("таблица 5 «Общие параметры», строка 2"));
+    assert!(rendered.contains("таблица 5 «Общие параметры», строка 1"));
     assert!(!rendered.contains("таблица #"));
 }
 
@@ -433,23 +388,13 @@ async fn segment_stage_extracts_id_from_heading_and_mid_sentence() {
 
         async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
             let json = if request.stage == "segment" {
-                json!([
-                    {
-                        "text": "Система рассчитывает лимит по календарному месяцу.",
-                        "quote": "Система рассчитывает лимит по календарному месяцу.",
-                        "location": { "start_line": 5, "end_line": 5, "page": null }
-                    },
-                    {
-                        "text": "Требование Ф-5: сумма не превышает дневной лимит.",
-                        "quote": "Требование Ф-5: сумма не превышает дневной лимит.",
-                        "location": { "start_line": 7, "end_line": 7, "page": null }
-                    },
-                    {
-                        "text": "Лимит применяется аналогично Ф-1 — по календарному месяцу.",
-                        "quote": "Лимит применяется аналогично Ф-1 — по календарному месяцу.",
-                        "location": { "start_line": 11, "end_line": 11, "page": null }
-                    }
-                ])
+                let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
+                json!(input["blocks"].as_array().unwrap().iter().filter_map(|block| {
+                    let line = block["location"]["start_line"].as_u64()?;
+                    [5, 7, 11].contains(&line).then(|| json!({
+                        "block_id": block["id"], "start_line": line, "end_line": line, "kind": "requirement"
+                    }))
+                }).collect::<Vec<_>>())
             } else {
                 json!([])
             };
@@ -512,23 +457,100 @@ async fn segment_stage_handles_table_only_document_without_llm_call() {
     let mut ctx = RunContext::new(document, &FailIfCalledProvider, &checks);
     Pipeline::default().run(&mut ctx).await.unwrap();
 
-    assert_eq!(ctx.requirements.len(), 1);
-    assert_eq!(ctx.requirements[0].id, "R-001");
+    assert!(ctx.requirements.is_empty());
+    assert_eq!(ctx.context_items.len(), 1);
+    assert_eq!(ctx.context_items[0].id, "C-001");
     assert_eq!(
-        ctx.requirements[0].part.as_deref(),
+        ctx.context_items[0].part.as_deref(),
         Some("Часть B. REST API")
     );
     assert_eq!(
-        ctx.requirements[0].section.as_deref(),
+        ctx.context_items[0].section.as_deref(),
         Some("Query-параметры")
     );
-    assert_eq!(ctx.requirements[0].table.as_ref().unwrap().index, 1);
+    assert_eq!(ctx.context_items[0].table.as_ref().unwrap().index, 1);
     assert_eq!(
-        ctx.requirements[0].location,
+        ctx.context_items[0].location,
         SourceSpan {
             start_line: 7,
             end_line: 7,
             page: None,
         }
     );
+}
+
+#[tokio::test]
+async fn sample_mock_keeps_api_context_out_of_the_requirement_count() {
+    let document = ParserRegistry::default()
+        .parse(
+            Path::new("requirements.md"),
+            include_bytes!("../../../samples/requirements.md"),
+        )
+        .unwrap();
+    let checks = CheckRegistry::default();
+    let mut ctx = RunContext::new(document, &llm::MockProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert!(
+        (18..=30).contains(&ctx.requirements.len()),
+        "{}",
+        ctx.requirements.len()
+    );
+    for id in ["Ф-1", "Ф-2", "Ф-3", "Ф-4"] {
+        assert_eq!(
+            ctx.requirements
+                .iter()
+                .filter(|req| req.source_id.as_deref() == Some(id))
+                .count(),
+            1
+        );
+    }
+    assert!(
+        ctx.requirements
+            .iter()
+            .all(|req| !req.text.starts_with('{') && !req.quote.contains("REST type |"))
+    );
+    assert!(
+        ctx.context_items
+            .iter()
+            .any(|item| item.quote.contains("REST type | GET"))
+    );
+    assert!(
+        ctx.context_items
+            .iter()
+            .any(|item| item.quote.contains("\"result\":\"ERROR\""))
+    );
+    assert!(
+        ctx.context_items
+            .iter()
+            .all(|item| ctx.document.contains_quote(item.location, &item.quote))
+    );
+}
+
+#[test]
+fn joins_behavior_rows_in_a_passport_under_an_arbitrary_heading() {
+    let source = concat!(
+        "## Настройка метода\n\n",
+        "| Поле | Значение |\n",
+        "| --- | --- |\n",
+        "| Description | Сохраняет настройку. |\n",
+        "| Author | Команда продукта |\n",
+        "| Description | Возвращает результат. |\n",
+    );
+    let doc = ParserRegistry::default()
+        .parse(Path::new("api.md"), source.as_bytes())
+        .unwrap();
+    let requirements = extract_table_requirements(&doc);
+    assert_eq!(requirements.len(), 1);
+    let req = &requirements[0];
+    assert_eq!(req.text, "Сохраняет настройку.\nВозвращает результат.");
+    assert_eq!((req.location.start_line, req.location.end_line), (5, 7));
+    assert!(doc.contains_quote(req.location, &req.quote));
+    assert!(!doc.contains_quote(
+        SourceSpan {
+            end_line: 6,
+            ..req.location
+        },
+        &req.quote
+    ));
 }

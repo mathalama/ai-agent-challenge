@@ -6,6 +6,11 @@ use llm::{LlmProvider, LlmRequest, LlmResponse, MockProvider, RetryProvider, Tra
 use review::{CheckRegistry, Detector, Pipeline, RunContext};
 use serde_json::{Value, json};
 
+fn segment_ref(block: &Value) -> Value {
+    json!({"block_id": block["id"], "start_line": block["location"]["start_line"],
+        "end_line": block["location"]["end_line"], "kind": "requirement"})
+}
+
 struct GroupedMock;
 
 #[async_trait]
@@ -19,12 +24,12 @@ impl LlmProvider for GroupedMock {
         let json = match request.stage.as_str() {
             "segment" => json!(input["blocks"].as_array().unwrap().iter().filter_map(|block| {
                 let quote = block["text"].as_str()?;
-                Some(json!({"text": quote, "quote": quote, "location": block["location"]}))
+                (!quote.is_empty()).then(|| segment_ref(block))
             }).collect::<Vec<_>>()),
-            "facts" => json!(input.as_array().unwrap().iter().enumerate().map(|(i, row)| json!({
+            "facts" => json!(input["requirements"].as_array().unwrap().iter().enumerate().map(|(i, row)| json!({
                 "entity": if i < 28 { format!("resource-{}", i / 2) } else { format!("isolated-{i}") },
                 "requirement_id": row["id"],
-                "evidence": {"quote": row["quote"], "location": row["location"]},
+                "quote": null,
                 "data": {"kind": "frequency", "maximum": 2, "period": "week"}
             })).collect::<Vec<_>>()),
             "consistency" => {
@@ -92,21 +97,38 @@ impl LlmProvider for SampleMock {
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
         let input: Value = serde_json::from_str(&request.user_text).unwrap();
         let json = match request.stage.as_str() {
-            "segment" => json!(input["blocks"].as_array().unwrap().iter().filter_map(|block| {
-                let quote = block["text"].as_str()?;
-                ["Ф-2.", "Ф-3.", "Ф-4.", "Хранить идентификатор", "200. Successful", "{\"result\":\"ERROR\"", "403. Unsuccessful", "Для чужой карты"].iter()
-                    .any(|start| quote.starts_with(start))
-                    .then(|| json!({"text": quote, "quote": quote, "location": block["location"]}))
-            }).collect::<Vec<_>>()),
+            "segment" => json!(
+                input["blocks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|block| {
+                        let quote = block["text"].as_str()?;
+                        ["Хранить идентификатор"]
+                            .iter()
+                            .any(|start| quote.starts_with(start))
+                            .then(|| segment_ref(block))
+                    })
+                    .collect::<Vec<_>>()
+            ),
             "set_checks" => json!([]),
             "facts" => {
                 let schema = request.response_schema.to_string();
-                assert!(schema.contains("time_zone") && schema.contains("frequency") && schema.contains("range"));
+                assert!(
+                    schema.contains("time_zone")
+                        && schema.contains("frequency")
+                        && schema.contains("range")
+                );
                 assert!(!schema.contains("\"const\""));
                 sample_facts(&input)
             }
             "consistency" => {
-                let group = input["groups"].as_array().unwrap().iter().find(|group| group["entity"] == "push").unwrap();
+                let group = input["groups"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|group| group["entity"] == "push")
+                    .unwrap();
                 let ids: Vec<_> = group["requirements"].as_object().unwrap().keys().collect();
                 json!([{"entity": "push", "requirement_ids": ids, "explanation": "Изменение порога допускает повторный push в том же месяце.", "severity": "high"}])
             }
@@ -121,14 +143,21 @@ impl LlmProvider for SampleMock {
 }
 
 fn sample_facts(input: &Value) -> Value {
-    let rows = input.as_array().unwrap();
+    let rows: Vec<_> = input["requirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(input["context"].as_array().unwrap())
+        .collect();
     let mut facts = Vec::new();
     let mut add = |anchor: &str, quote: &str, entity: &str, data: Value| {
         let row = rows
             .iter()
             .find(|row| row["quote"].as_str().unwrap().contains(anchor))
             .unwrap_or_else(|| panic!("Не найдена цитата {anchor}"));
-        facts.push(json!({"entity": entity, "requirement_id": row["id"], "evidence": {"quote": quote, "location": row["location"]}, "data": data}));
+        facts.push(
+            json!({"entity": entity, "requirement_id": row["id"], "quote": quote, "data": data}),
+        );
     };
     let money = "сопоставление расходов и порога";
     for (quote, unit) in [

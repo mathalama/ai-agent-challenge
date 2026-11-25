@@ -7,7 +7,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    Fact, Finding, ProgressEvent, ProgressSink, Question, Requirement, stages::ScaffoldStage,
+    ContextItem, Fact, Finding, ProgressEvent, ProgressSink, Question, Requirement,
+    stages::ScaffoldStage,
 };
 
 #[derive(Debug, Error)]
@@ -38,6 +39,7 @@ pub struct RunContext<'a> {
     pub provider: &'a dyn LlmProvider,
     pub checks: &'a CheckRegistry,
     pub requirements: Vec<Requirement>,
+    pub context_items: Vec<ContextItem>,
     pub facts: Vec<Fact>,
     pub findings: Vec<Finding>,
     pub questions: Vec<Question>,
@@ -58,6 +60,7 @@ impl<'a> RunContext<'a> {
             provider,
             checks,
             requirements: Vec::new(),
+            context_items: Vec::new(),
             facts: Vec::new(),
             findings: Vec::new(),
             questions: Vec::new(),

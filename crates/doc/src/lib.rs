@@ -46,6 +46,25 @@ impl Document {
             };
             match &block.content {
                 BlockContent::Table { rows, row_lines } => {
+                    let selected_rows = rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| {
+                            covers_block
+                                || row_lines.get(*index).is_some_and(|line| includes(*line))
+                        })
+                        .map(|(_, row)| {
+                            row.iter()
+                                .map(|cell| cell.trim())
+                                .filter(|cell| !cell.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        })
+                        .filter(|row| !row.is_empty())
+                        .collect::<Vec<_>>();
+                    if quote.lines().count() > 1 && matches(&selected_rows.join("\n")) {
+                        return true;
+                    }
                     rows.iter().enumerate().any(|(index, row)| {
                         let non_empty: Vec<_> = row
                             .iter()

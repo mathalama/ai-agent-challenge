@@ -332,17 +332,17 @@ impl LlmProvider for LanguageAndPromptProvider {
                 let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
                 serde_json::json!(input["blocks"].as_array().unwrap().iter()
                     .filter(|block| block["kind"] == "list_item")
-                    .map(|block| serde_json::json!({"text": block["text"], "quote": block["text"], "location": block["location"]}))
+                    .map(|block| serde_json::json!({"block_id": block["id"], "start_line": block["location"]["start_line"], "end_line": block["location"]["end_line"], "kind": "requirement"}))
                     .collect::<Vec<_>>())
             }
             "facts" => {
-                let rows: Vec<serde_json::Value> =
-                    serde_json::from_str(&request.user_text).unwrap();
+                let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
+                let rows = input["requirements"].as_array().unwrap();
                 serde_json::json!(
                     rows.iter()
                         .map(|row| serde_json::json!({
                             "requirement_id": row["id"], "entity": "отчётность",
-                            "evidence": {"quote": row["quote"], "location": row["location"]},
+                            "quote": null,
                             "data": {"kind": "policy", "statement": row["text"]}
                         }))
                         .collect::<Vec<_>>()

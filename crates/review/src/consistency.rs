@@ -5,14 +5,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CalendarMonth, Criterion, Detector, Evidence, Fact, FactData, Finding, OperationIntent,
-    Outcome, Requirement, RunContext, Scope, Severity, StatusRole, pipeline::Result,
+    CalendarMonth, ContextItem, Criterion, Detector, Evidence, Fact, FactData, Finding,
+    OperationIntent, Outcome, Requirement, RunContext, Scope, Severity, StatusRole,
+    pipeline::Result,
 };
 
 #[derive(Default, Serialize)]
 struct Group<'a> {
     entity: String,
     requirements: BTreeMap<&'a str, &'a Requirement>,
+    context: BTreeMap<&'a str, &'a ContextItem>,
     facts: Vec<&'a Fact>,
 }
 
@@ -32,14 +34,25 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
         .filter(|r| ctx.document.contains_quote(r.location, &r.quote))
         .map(|r| (r.id.as_str(), r))
         .collect();
+    let context: BTreeMap<_, _> = ctx
+        .context_items
+        .iter()
+        .filter(|r| ctx.document.contains_quote(r.location, &r.quote))
+        .map(|r| (r.id.as_str(), r))
+        .collect();
     let mut groups = BTreeMap::<_, Group<'_>>::new();
     let mut conversions = BTreeSet::new();
     for fact in &ctx.facts {
-        let Some(&requirement) = requirements.get(fact.requirement_id.as_str()) else {
+        let id = fact.requirement_id.as_str();
+        let requirement = requirements.get(id).copied();
+        let item = context.get(id).copied();
+        let Some(parent) = requirement
+            .map(|r| r.location)
+            .or_else(|| item.map(|r| r.location))
+        else {
             continue;
         };
         let span = fact.evidence.location;
-        let parent = requirement.location;
         if span.page != parent.page
             || span.start_line < parent.start_line
             || span.end_line > parent.end_line
@@ -58,9 +71,11 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
             entity,
             ..Group::default()
         });
-        group
-            .requirements
-            .insert(requirement.id.as_str(), requirement);
+        if let Some(requirement) = requirement {
+            group.requirements.insert(id, requirement);
+        } else if let Some(item) = item {
+            group.context.insert(id, item);
+        }
         group.facts.push(fact);
     }
 
@@ -99,7 +114,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
 
     let shared: Vec<_> = groups
         .values()
-        .filter(|g| g.requirements.len() > 1)
+        .filter(|g| g.requirements.len() + g.context.len() > 1)
         .collect();
     if !shared.is_empty() {
         let drafts: Vec<ConflictDraft> = generate_typed(
@@ -117,8 +132,8 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 continue;
             };
             let (Some(left), Some(right)) = (
-                group.requirements.get(pair.0.as_str()),
-                group.requirements.get(pair.1.as_str()),
+                group.evidence(pair.0.as_str()),
+                group.evidence(pair.1.as_str()),
             ) else {
                 continue;
             };
@@ -133,13 +148,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                 criterion: Criterion::Consistent,
                 additional_criteria: Vec::new(),
                 severity: draft.severity,
-                evidence: [left, right]
-                    .into_iter()
-                    .map(|r| Evidence {
-                        quote: r.quote.clone(),
-                        location: r.location,
-                    })
-                    .collect(),
+                evidence: vec![left, right],
                 explanation: draft.explanation,
                 suggestion: draft.suggestion,
                 detector: Detector::Llm(format!("consistency:{}", ctx.provider.model())),
@@ -155,6 +164,19 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
 }
 
 impl Group<'_> {
+    fn evidence(&self, id: &str) -> Option<Evidence> {
+        let (quote, location) = if let Some(requirement) = self.requirements.get(id) {
+            (&requirement.quote, requirement.location)
+        } else {
+            let item = self.context.get(id)?;
+            (&item.quote, item.location)
+        };
+        Some(Evidence {
+            quote: quote.clone(),
+            location,
+        })
+    }
+
     fn compare(
         &self,
         left: &Fact,
