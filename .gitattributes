@@ -1,0 +1,2 @@
+* text=auto eol=lf
+samples/requirements.md -text whitespace=-blank-at-eol
