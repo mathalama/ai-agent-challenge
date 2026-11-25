@@ -1,0 +1,9 @@
+/target/
+/.cache/
+.env
+.env.*
+!.env.example
+/reports/*
+!/reports/.gitkeep
+.claude/
+.codex/
