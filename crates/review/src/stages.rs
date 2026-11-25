@@ -5,7 +5,9 @@ use serde::Deserialize;
 
 use crate::{
     CheckPhase, Criterion, Detector, Evidence, Finding, Question, RelatedId, RunContext, Scope,
-    Severity, Stage, pipeline::Result,
+    Severity, Stage,
+    pipeline::Result,
+    segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -88,11 +90,17 @@ impl Stage for ScaffoldStage {
         let prompt = self.prompt();
         match self {
             Self::Segment => {
-                let input = serde_json::to_string(&serde_json::json!({
-                    "title": ctx.document.title,
-                    "blocks": ctx.document.blocks,
-                }))?;
-                ctx.requirements = generate_typed(ctx.provider, name, prompt, input).await?;
+                let drafts = if has_non_table_content(&ctx.document) {
+                    let input = serde_json::to_string(&serde_json::json!({
+                        "title": ctx.document.title,
+                        "blocks": non_table_blocks(&ctx.document),
+                    }))?;
+                    generate_typed::<Vec<RequirementDraft>>(ctx.provider, name, prompt, input)
+                        .await?
+                } else {
+                    Vec::new()
+                };
+                ctx.requirements = merge_requirements(&ctx.document, drafts);
             }
             Self::Facts => {
                 ctx.facts = generate_typed(
