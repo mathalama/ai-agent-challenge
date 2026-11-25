@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use llm::generate_typed;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::{
     CheckPhase, Criterion, Detector, Evidence, Finding, Question, RelatedId, RunContext, Scope,
@@ -9,6 +10,8 @@ use crate::{
     pipeline::Result,
     segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
 };
+
+const DOMAIN_CONTEXT: &str = include_str!("../../../prompts/domain_context.md");
 
 #[derive(Deserialize, JsonSchema)]
 struct FindingDraft {
@@ -67,6 +70,10 @@ impl ScaffoldStage {
             Self::Clarify => include_str!("../../../prompts/clarify.md"),
         }
     }
+
+    fn llm_prompt(self) -> String {
+        format!("{}\n\n{}", self.prompt().trim(), DOMAIN_CONTEXT.trim())
+    }
 }
 
 #[async_trait]
@@ -87,7 +94,6 @@ impl Stage for ScaffoldStage {
 
     async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
         let name = self.name();
-        let prompt = self.prompt();
         match self {
             Self::Segment => {
                 let drafts = if has_non_table_content(&ctx.document) {
@@ -95,8 +101,13 @@ impl Stage for ScaffoldStage {
                         "title": ctx.document.title,
                         "blocks": non_table_blocks(&ctx.document),
                     }))?;
-                    generate_typed::<Vec<RequirementDraft>>(ctx.provider, name, prompt, input)
-                        .await?
+                    generate_typed::<Vec<RequirementDraft>>(
+                        ctx.provider,
+                        name,
+                        &self.llm_prompt(),
+                        input,
+                    )
+                    .await?
                 } else {
                     Vec::new()
                 };
@@ -109,7 +120,7 @@ impl Stage for ScaffoldStage {
                     generate_typed(
                         ctx.provider,
                         name,
-                        prompt,
+                        &self.llm_prompt(),
                         serde_json::to_string(&ctx.requirements)?,
                     )
                     .await?
@@ -133,14 +144,35 @@ impl Stage for ScaffoldStage {
                     .await?;
             }
             Self::Consistency => {
-                consistency::check(ctx, prompt).await?;
+                consistency::check(ctx, &self.llm_prompt()).await?;
             }
             Self::Ambiguity => {
                 self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
                     .await?;
             }
             Self::Verify => {
+                ctx.findings.retain(|finding| {
+                    if !has_cyrillic(&finding.explanation) {
+                        warn!(
+                            finding_id = %finding.id,
+                            "Отброшена находка без кириллицы в пояснении"
+                        );
+                        return false;
+                    }
+                    true
+                });
                 for finding in &mut ctx.findings {
+                    if finding
+                        .suggestion
+                        .as_deref()
+                        .is_some_and(|suggestion| !has_cyrillic(suggestion))
+                    {
+                        warn!(
+                            finding_id = %finding.id,
+                            "Удалена рекомендация без кириллицы"
+                        );
+                        finding.suggestion = None;
+                    }
                     finding.verified = !finding.evidence.is_empty()
                         && finding.evidence.iter().all(|evidence| {
                             ctx.document
@@ -158,14 +190,19 @@ impl Stage for ScaffoldStage {
                 if verified.is_empty() {
                     return Ok(());
                 }
+                let prompt = self.llm_prompt();
                 let questions: Vec<QuestionDraft> = generate_typed(
                     ctx.provider,
                     name,
-                    prompt,
+                    &prompt,
                     serde_json::to_string(&verified)?,
                 )
                 .await?;
                 for question in questions {
+                    if !has_cyrillic(&question.text) || !has_cyrillic(&question.why) {
+                        warn!("Отброшен уточняющий вопрос без кириллицы");
+                        continue;
+                    }
                     let related: Vec<_> = question
                         .finding_ids
                         .into_iter()
@@ -193,14 +230,22 @@ impl ScaffoldStage {
         if ctx.requirements.is_empty() {
             return Ok(());
         }
-        let prompt = format!(
-            "{} Сохрани координаты и дословные цитаты из входных данных. Для замечания к отдельному требованию скопируй его id в requirement_id, для замечания к набору верни null. При отсутствии замечаний верни пустой массив.",
-            self.prompt()
-        );
+        let prompt = self.llm_prompt();
         let findings: Vec<FindingDraft> =
             generate_typed(ctx.provider, self.name(), &prompt, input).await?;
+        let accepted = findings.into_iter().filter(|draft| {
+            if has_cyrillic(&draft.explanation) {
+                true
+            } else {
+                warn!(
+                    stage = self.name(),
+                    "Отброшена находка без кириллицы в пояснении"
+                );
+                false
+            }
+        });
         ctx.findings
-            .extend(findings.into_iter().enumerate().map(|(index, draft)| {
+            .extend(accepted.enumerate().map(|(index, draft)| {
                 let scope = draft
                     .requirement_id
                     .filter(|id| {
@@ -209,6 +254,14 @@ impl ScaffoldStage {
                             .any(|requirement| requirement.id == *id)
                     })
                     .map_or(Scope::Set, Scope::Requirement);
+                let suggestion = draft.suggestion.filter(|suggestion| {
+                    if has_cyrillic(suggestion) {
+                        true
+                    } else {
+                        warn!(stage = self.name(), "Удалена рекомендация без кириллицы");
+                        false
+                    }
+                });
                 Finding {
                     id: format!("{}-{:03}", self.name(), index + 1),
                     scope,
@@ -216,11 +269,33 @@ impl ScaffoldStage {
                     severity: draft.severity,
                     evidence: draft.evidence,
                     explanation: draft.explanation,
-                    suggestion: draft.suggestion,
+                    suggestion,
                     detector: Detector::Llm(ctx.provider.model().into()),
                     verified: false,
                 }
             }));
         Ok(())
+    }
+}
+
+pub(crate) fn has_cyrillic(text: &str) -> bool {
+    text.chars().any(|character| {
+        ('\u{0400}'..='\u{04FF}').contains(&character) && character.is_alphabetic()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_cyrillic;
+
+    #[test]
+    fn cyrillic_detection_handles_mixed_and_non_cyrillic_text() {
+        assert!(has_cyrillic("Замечание по требованию"));
+        assert!(has_cyrillic("Метод GET /loans/create изменяет состояние"));
+        assert!(has_cyrillic("Теңге"));
+        assert!(!has_cyrillic("Requirement is ambiguous"));
+        assert!(!has_cyrillic("HTTP 200 / ERROR"));
+        assert!(!has_cyrillic("12345 — !?"));
+        assert!(!has_cyrillic(""));
     }
 }
