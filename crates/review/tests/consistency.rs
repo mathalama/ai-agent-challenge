@@ -26,12 +26,14 @@ impl LlmProvider for GroupedMock {
                 let quote = block["text"].as_str()?;
                 (!quote.is_empty()).then(|| segment_ref(block))
             }).collect::<Vec<_>>()),
-            "facts" => json!(input["requirements"].as_array().unwrap().iter().enumerate().map(|(i, row)| json!({
+            "facts" => json!(input["requirements"].as_array().unwrap().iter().map(|row| {
+                let i = row["id"].as_str().unwrap()[2..].parse::<usize>().unwrap() - 1;
+                json!({
                 "entity": if i < 28 { format!("resource-{}", i / 2) } else { format!("isolated-{i}") },
                 "requirement_id": row["id"],
                 "quote": null,
                 "data": {"kind": "frequency", "maximum": 2, "period": "week"}
-            })).collect::<Vec<_>>()),
+            })}).collect::<Vec<_>>()),
             "consistency" => {
                 let groups = input["groups"].as_array().unwrap();
                 assert_eq!(groups.len(), 14);
@@ -71,6 +73,17 @@ async fn consistency_batches_shared_entities_for_thirty_requirements() {
 
     assert_eq!(ctx.requirements.len(), 30);
     let calls = serde_json::to_value(trace.entries()).unwrap();
+    for stage in ["facts", "requirement_checks"] {
+        assert_eq!(
+            calls
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|call| call["stage"] == stage)
+                .count(),
+            3
+        );
+    }
     assert_eq!(
         calls
             .as_array()
@@ -151,10 +164,12 @@ fn sample_facts(input: &Value) -> Value {
         .collect();
     let mut facts = Vec::new();
     let mut add = |anchor: &str, quote: &str, entity: &str, data: Value| {
-        let row = rows
+        let Some(row) = rows
             .iter()
             .find(|row| row["quote"].as_str().unwrap().contains(anchor))
-            .unwrap_or_else(|| panic!("Не найдена цитата {anchor}"));
+        else {
+            return;
+        };
         facts.push(
             json!({"entity": entity, "requirement_id": row["id"], "quote": quote, "data": data}),
         );

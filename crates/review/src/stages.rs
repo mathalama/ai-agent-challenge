@@ -5,12 +5,13 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::{
-    CheckPhase, Criterion, Detector, Evidence, Fact, FactData, Finding, RunContext, Scope,
-    Severity, Stage, clarify, consistency,
+    CheckPhase, ContextItem, Criterion, Detector, Evidence, Fact, FactData, Finding, Requirement,
+    RunContext, Scope, Severity, Stage, clarify, consistency,
     pipeline::Result,
     segment::{RequirementDraft, merge_requirements, segment_blocks},
 };
 
+const REVIEW_BATCH_SIZE: usize = 12;
 const DOMAIN_CONTEXT: &str = include_str!("../../../prompts/domain_context.md");
 
 #[derive(Deserialize, JsonSchema)]
@@ -116,39 +117,47 @@ impl Stage for ScaffoldStage {
                 (ctx.requirements, ctx.context_items) = merge_requirements(&ctx.document, drafts);
             }
             Self::Facts => {
-                if !ctx.requirements.is_empty() || !ctx.context_items.is_empty() {
+                let prompt = self.llm_prompt();
+                let batches = ctx
+                    .requirements
+                    .chunks(REVIEW_BATCH_SIZE)
+                    .map(|batch| (batch, &[][..]))
+                    .chain(
+                        ctx.context_items
+                            .chunks(REVIEW_BATCH_SIZE)
+                            .map(|batch| (&[][..], batch)),
+                    );
+                let mut facts = Vec::new();
+                for (requirements, context) in batches {
+                    let input = set_input(requirements, context)?;
                     let drafts: Vec<FactDraft> =
-                        generate_typed(ctx.provider, name, &self.llm_prompt(), set_input(ctx)?)
-                            .await?;
-                    ctx.facts = drafts
-                        .into_iter()
-                        .filter_map(|draft| {
-                            let (source_quote, location) = ctx
-                                .requirements
-                                .iter()
-                                .find(|source| source.id == draft.requirement_id)
-                                .map(|source| (&source.quote, source.location))
-                                .or_else(|| {
-                                    ctx.context_items
-                                        .iter()
-                                        .find(|source| source.id == draft.requirement_id)
-                                        .map(|source| (&source.quote, source.location))
-                                })?;
-                            let quote = draft.quote.unwrap_or_else(|| source_quote.clone());
-                            if !source_quote.contains(&quote)
-                                || !ctx.document.contains_quote(location, &quote)
-                            {
-                                return None;
-                            }
-                            Some(Fact {
-                                entity: draft.entity,
-                                requirement_id: draft.requirement_id,
-                                evidence: Evidence { quote, location },
-                                data: draft.data,
-                            })
+                        generate_typed(ctx.provider, name, &prompt, input).await?;
+                    facts.extend(drafts.into_iter().filter_map(|draft| {
+                        let (source_quote, location) = requirements
+                            .iter()
+                            .find(|source| source.id == draft.requirement_id)
+                            .map(|source| (&source.quote, source.location))
+                            .or_else(|| {
+                                context
+                                    .iter()
+                                    .find(|source| source.id == draft.requirement_id)
+                                    .map(|source| (&source.quote, source.location))
+                            })?;
+                        let quote = draft.quote.unwrap_or_else(|| source_quote.clone());
+                        if !source_quote.contains(&quote)
+                            || !ctx.document.contains_quote(location, &quote)
+                        {
+                            return None;
+                        }
+                        Some(Fact {
+                            entity: draft.entity,
+                            requirement_id: draft.requirement_id,
+                            evidence: Evidence { quote, location },
+                            data: draft.data,
                         })
-                        .collect();
+                    }));
                 }
+                ctx.facts = facts;
             }
             Self::Rules => {
                 let findings = ctx.checks.run(CheckPhase::Rules, ctx).await?;
@@ -158,19 +167,26 @@ impl Stage for ScaffoldStage {
             Self::RequirementChecks => {
                 let findings = ctx.checks.run(CheckPhase::Requirement, ctx).await?;
                 ctx.findings.extend(findings);
-                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
-                    .await?;
+                let before = ctx.findings.len();
+                for start in (0..ctx.requirements.len()).step_by(REVIEW_BATCH_SIZE) {
+                    let end = (start + REVIEW_BATCH_SIZE).min(ctx.requirements.len());
+                    let input = serde_json::to_string(&ctx.requirements[start..end])?;
+                    self.find_with_model(ctx, input, ctx.findings.len() - before)
+                        .await?;
+                }
             }
             Self::SetChecks => {
                 let findings = ctx.checks.run(CheckPhase::Set, ctx).await?;
                 ctx.findings.extend(findings);
-                self.find_with_model(ctx, set_input(ctx)?).await?;
+                self.find_with_model(ctx, set_input(&ctx.requirements, &ctx.context_items)?, 0)
+                    .await?;
             }
             Self::Consistency => {
                 consistency::check(ctx, &self.llm_prompt()).await?;
             }
             Self::Ambiguity => {
-                self.find_with_model(ctx, set_input(ctx)?).await?;
+                self.find_with_model(ctx, set_input(&ctx.requirements, &ctx.context_items)?, 0)
+                    .await?;
             }
             Self::Verify => {
                 ctx.findings.retain(|finding| {
@@ -210,7 +226,12 @@ impl Stage for ScaffoldStage {
 }
 
 impl ScaffoldStage {
-    async fn find_with_model(self, ctx: &mut RunContext<'_>, input: String) -> Result<()> {
+    async fn find_with_model(
+        self,
+        ctx: &mut RunContext<'_>,
+        input: String,
+        offset: usize,
+    ) -> Result<()> {
         if ctx.requirements.is_empty()
             && (matches!(self, Self::RequirementChecks) || ctx.context_items.is_empty())
         {
@@ -249,7 +270,7 @@ impl ScaffoldStage {
                     }
                 });
                 Finding {
-                    id: format!("{}-{:03}", self.name(), index + 1),
+                    id: format!("{}-{:03}", self.name(), offset + index + 1),
                     scope,
                     criterion: draft.criterion,
                     additional_criteria: Vec::new(),
@@ -268,11 +289,10 @@ impl ScaffoldStage {
     }
 }
 
-fn set_input(ctx: &RunContext<'_>) -> Result<String> {
-    Ok(serde_json::to_string(&serde_json::json!({
-        "requirements": ctx.requirements,
-        "context": ctx.context_items,
-    }))?)
+fn set_input(requirements: &[Requirement], context: &[ContextItem]) -> Result<String> {
+    Ok(serde_json::to_string(
+        &serde_json::json!({ "requirements": requirements, "context": context }),
+    )?)
 }
 
 pub(crate) fn has_cyrillic(text: &str) -> bool {
