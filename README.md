@@ -57,6 +57,27 @@ cargo run -p cli -- serve --provider mock
 и выключается командой `/reasoning off`. OpenAI-совместимые модели могут передавать рассуждение по частям.
 Gemini и кэшированные ответы передают его после запроса.
 
+### Запуск в Docker
+
+Образ собирает веб-интерфейс и бинарь `rs`, Rust и Node на машине не нужны.
+
+```sh
+docker compose up --build
+```
+
+Веб-чат откроется на [localhost:3000](http://127.0.0.1:3000) с провайдером `mock`. Для настоящей модели
+заполните `.env` по образцу `.env.example` и укажите провайдер: `PROVIDER=gemini docker compose up`
+или строку `PROVIDER=openai` в `.env`. Порт открыт только для localhost, другой порт задаётся
+переменной `PORT`, например `PORT=8080 docker compose up`. Отчёты пишутся в `reports/`,
+кэш ответов модели хранится в томе `llm-cache`.
+
+Чат в терминале и разовые команды запускаются в том же образе. Примеры из `samples/` и разметка `eval/` уже внутри.
+
+```sh
+docker compose run --rm app chat --provider mock
+docker compose run --rm app check samples/requirements.md -o reports/report.md --provider mock
+```
+
 ### Команды для скриптов
 
 ```text

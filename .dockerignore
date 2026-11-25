@@ -1,0 +1,13 @@
+.git
+.github
+.claude
+.codex
+target
+.cache
+reports
+.env
+.env.*
+**/node_modules
+web/dist
+Dockerfile
+compose.yaml
