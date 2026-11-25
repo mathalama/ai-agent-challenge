@@ -178,6 +178,15 @@ fn check_reports_saved_answers_that_no_longer_match_any_question() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("Q-old"));
     let report: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(reports.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["schema_version"], "1");
+    let input = workspace.join("samples/requirements.md");
+    let document = doc::ParserRegistry::default()
+        .parse(&input, &fs::read(&input).unwrap())
+        .unwrap();
+    assert_eq!(
+        report["blocks"],
+        serde_json::to_value(document.blocks).unwrap()
+    );
     assert_eq!(
         report["unmatched_answers"]["Q-old"],
         "Ранее записанный ответ"
