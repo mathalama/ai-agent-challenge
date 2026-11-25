@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use doc::{ParserRegistry, SourceSpan};
 use llm::{LlmProvider, LlmRequest, LlmResponse, MockProvider, Usage};
 use review::{
-    Check, CheckPhase, CheckRegistry, Criterion, Detector, Evidence, Finding, Pipeline, Readiness,
-    Report, RunContext, RunPassport, Scope, Severity, StageResult,
+    Check, CheckPhase, CheckRegistry, Criterion, Detector, Evidence, Finding, MarkdownRenderer,
+    Pipeline, Readiness, Report, ReportRenderer, RunContext, RunPassport, Scope, Severity,
+    StageResult,
 };
 
 struct SampleCheck;
@@ -29,6 +30,7 @@ impl Check for SampleCheck {
             id: id.into(),
             scope: Scope::Set,
             criterion: Criterion::Consistent,
+            additional_criteria: Vec::new(),
             severity: Severity::Critical,
             evidence: vec![Evidence {
                 quote: quote.into(),
@@ -41,6 +43,9 @@ impl Check for SampleCheck {
             explanation: "Замечание для проверки доказательств".into(),
             suggestion: None,
             detector: Detector::Rule("sample".into()),
+            additional_detectors: Vec::new(),
+            merged_ids: Vec::new(),
+            fallback_evidence: false,
             verified: true,
         })
         .collect())
@@ -92,6 +97,7 @@ impl LlmProvider for ReviewProvider {
                 id: "F-1".into(),
                 scope: Scope::Set,
                 criterion: Criterion::Consistent,
+                additional_criteria: Vec::new(),
                 severity,
                 evidence: vec![Evidence {
                     quote: quote.into(),
@@ -104,6 +110,9 @@ impl LlmProvider for ReviewProvider {
                 explanation: "Замечание".into(),
                 suggestion: None,
                 detector: Detector::Llm(self.model().into()),
+                additional_detectors: Vec::new(),
+                merged_ids: Vec::new(),
+                fallback_evidence: false,
                 verified: true,
             });
         }
@@ -170,7 +179,7 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
         let document = ParserRegistry::default()
             .parse(
                 Path::new("input.md"),
-                "# Документ требований\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование\n\n## 5. Тестирование и приёмка:\n\nПроверить, что пустой ввод вызывает ошибку.".as_bytes(),
+                "# Документ требований (версия 1.0 от 2026-03-10)\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование\n\n## 5. Тестирование и приёмка:\n\nПроверить, что пустой ввод вызывает ошибку.".as_bytes(),
             )
             .unwrap();
         let provider = ReviewProvider(finding, 5);
@@ -265,22 +274,30 @@ impl Check for LanguageCheck {
                 id: "RULE-EN".into(),
                 scope: Scope::Set,
                 criterion: Criterion::Unambiguous,
+                additional_criteria: Vec::new(),
                 severity: Severity::High,
                 evidence: evidence.clone(),
                 explanation: "English explanation without Cyrillic".into(),
                 suggestion: Some("Rewrite clearly".into()),
                 detector: Detector::Rule("lang".into()),
+                additional_detectors: Vec::new(),
+                merged_ids: Vec::new(),
+                fallback_evidence: false,
                 verified: false,
             },
             Finding {
                 id: "RULE-RU".into(),
                 scope: Scope::Set,
                 criterion: Criterion::Appropriate,
+                additional_criteria: Vec::new(),
                 severity: Severity::Medium,
                 evidence,
                 explanation: "В методе GET переданы лишние детали реализации".into(),
                 suggestion: Some("Move HTTP details to technical spec".into()),
                 detector: Detector::Rule("lang".into()),
+                additional_detectors: Vec::new(),
+                merged_ids: Vec::new(),
+                fallback_evidence: false,
                 verified: false,
             },
         ])
@@ -512,4 +529,194 @@ async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_conte
         .1;
     assert!(set_prompt.contains("ISO/IEC/IEEE 29148:2018 § 5.2.6"));
     assert!(set_prompt.contains("IEEE Std 830-1998 § 4.3"));
+}
+struct DuplicateStagesProvider;
+
+#[async_trait]
+impl LlmProvider for DuplicateStagesProvider {
+    fn model(&self) -> &str {
+        "test-dedup"
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == "segment" {
+            return MockProvider.generate(request).await;
+        }
+        let json = match request.stage.as_str() {
+            "requirement_checks" => serde_json::json!([
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "complete",
+                    "severity": "medium",
+                    "evidence": [{
+                        "quote": "Повторная отправка сохраняет прежний статус операции.",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Не указан код ответа при повторной отправке.",
+                    "suggestion": "Зафиксировать идемпотентный ответ HTTP 200."
+                }
+            ]),
+            "ambiguity" => serde_json::json!([
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "unambiguous",
+                    "severity": "high",
+                    "evidence": [{
+                        "quote": "сохраняет прежний статус операции",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Фраза допускает два прочтения: статус до ошибки или последний сохранённый статус.",
+                    "suggestion": "Явно описать, какой именно статус возвращается."
+                }
+            ]),
+            _ => serde_json::json!([]),
+        };
+        Ok(LlmResponse {
+            json,
+            usage: Usage::default(),
+            model: self.model().into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn pipeline_merges_duplicate_cross_stage_findings_before_verify_and_renders_sources() {
+    let source = concat!(
+        "# Спецификация (версия 1.0 от 2026-03-10)\n\n",
+        "* **Ф-1.** Повторная отправка сохраняет прежний статус операции.\n\n",
+        "## Тестирование и приёмка\n\n",
+        "Проверить повторную доставку одного и того же события.\n"
+    );
+    let document = ParserRegistry::default()
+        .parse(Path::new("spec.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &DuplicateStagesProvider, &checks);
+
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert_eq!(ctx.findings.len(), 1, "{:#?}", ctx.findings);
+    let merged = &ctx.findings[0];
+    assert!(merged.verified);
+    assert_eq!(merged.severity, Severity::High);
+    assert_eq!(
+        merged.all_criteria(),
+        vec![Criterion::Complete, Criterion::Unambiguous]
+    );
+    assert_eq!(merged.all_detectors().len(), 2);
+    assert_eq!(
+        merged.all_ids(),
+        vec!["requirement_checks-001", "ambiguity-001"]
+    );
+
+    let passport = RunPassport {
+        document_title: ctx.document.title.clone(),
+        date: "2026-03-10".into(),
+        model: "test-dedup".into(),
+        agent_version: "0.1.0".into(),
+    };
+    let report = Report::from_run(ctx, passport);
+    let md = MarkdownRenderer.render(&report).unwrap();
+    assert!(md.contains("Источники —"));
+    assert!(md.contains("requirement\\_checks"));
+    assert!(md.contains("ambiguity"));
+    assert!(md.contains("Полнота требования"));
+    assert!(md.contains("Однозначность"));
+}
+
+struct UnverifiedParaphraseProvider;
+
+#[async_trait]
+impl LlmProvider for UnverifiedParaphraseProvider {
+    fn model(&self) -> &str {
+        "test-paraphrase"
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == "segment" {
+            return MockProvider.generate(request).await;
+        }
+        let json = match request.stage.as_str() {
+            "ambiguity" => serde_json::json!([
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "unambiguous",
+                    "severity": "high",
+                    "evidence": [{
+                        "quote": "Сервис отвечает быстро на запросы клиентов",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Формулировка «быстро» не задаёт измеримого SLA.",
+                    "suggestion": "Указать предельное время ответа в миллисекундах."
+                }
+            ]),
+            _ => serde_json::json!([]),
+        };
+        Ok(LlmResponse {
+            json,
+            usage: Usage::default(),
+            model: self.model().into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn unverified_llm_paraphrase_does_not_poison_verified_rule_finding() {
+    let source = concat!(
+        "# Спецификация (версия 1.0 от 2026-03-10)\n\n",
+        "* **Ф-1.** Сервис отвечает быстро на запросы пользователя.\n\n",
+        "## Тестирование и приёмка\n\n",
+        "Проверить время ответа сервиса под нагрузкой.\n"
+    );
+    let document = ParserRegistry::default()
+        .parse(Path::new("spec.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &UnverifiedParaphraseProvider, &checks);
+
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    // Подтверждённое правило vague-terms и неподтверждённый пересказ ambiguity не сливаются.
+    assert_eq!(ctx.findings.len(), 2, "{:#?}", ctx.findings);
+    let rule_finding = ctx
+        .findings
+        .iter()
+        .find(|f| matches!(&f.detector, Detector::Rule(id) if id == "vague-terms"))
+        .expect("ожидалась находка правила vague-terms");
+    assert!(rule_finding.verified);
+    assert_eq!(rule_finding.severity, Severity::Medium);
+
+    let llm_finding = ctx
+        .findings
+        .iter()
+        .find(|f| matches!(&f.detector, Detector::Llm(_)))
+        .expect("ожидалась находка LLM ambiguity");
+    assert!(!llm_finding.verified);
+
+    let passport = RunPassport {
+        document_title: ctx.document.title.clone(),
+        date: "2026-03-10".into(),
+        model: "test-paraphrase".into(),
+        agent_version: "0.1.0".into(),
+    };
+    let report = Report::from_run(ctx, passport);
+    assert!(matches!(report.readiness, Readiness::Blocked));
+}
+
+#[tokio::test]
+async fn weak_document_keeps_separate_missing_section_and_version_findings() {
+    let source = "# Спецификация\n\n* **Ф-1.** Сохранять настройки профиля.\n";
+    let document = ParserRegistry::default()
+        .parse(Path::new("spec.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &MockProvider, &checks);
+
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    let ids: Vec<&str> = ctx.findings.iter().map(|f| f.id.as_str()).collect();
+    assert!(ids.contains(&"testing-section-missing"), "{ids:?}");
+    assert!(ids.contains(&"document-version-date-missing"), "{ids:?}");
+    assert!(ids.contains(&"acceptance-criteria-missing"), "{ids:?}");
+    assert!(ctx.findings.iter().all(|f| f.verified));
 }

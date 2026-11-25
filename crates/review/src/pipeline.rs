@@ -148,6 +148,13 @@ impl CheckRegistry {
     pub fn with_builtin_rules() -> Self {
         let mut registry = Self::default();
         registry.register(crate::rules::TestingSection);
+        registry.register(crate::rules::EmptySection);
+        registry.register(crate::rules::DocumentVersionDate);
+        registry.register(crate::rules::ApproversSection);
+        registry.register(crate::rules::ReviewChecklist);
+        registry.register(crate::rules::AcceptanceCriteria);
+        registry.register(crate::rules::RequiredTableFields);
+        registry.register(crate::vague::VagueTermsCheck::default());
         registry
     }
 

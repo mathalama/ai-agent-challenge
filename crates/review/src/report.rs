@@ -378,17 +378,44 @@ fn write_findings<'a>(
         output.push_str("Замечания в этом прогоне отсутствуют.\n");
     }
     for (index, finding) in findings {
+        let criteria = finding
+            .all_criteria()
+            .into_iter()
+            .map(|criterion| format!("{} ({})", criterion.russian_name(), criterion.reference()))
+            .collect::<Vec<_>>()
+            .join(", ");
         writeln!(
             output,
-            "- <a name=\"finding-{}\"></a>**{}** — {} ({}), {}. {}",
+            "- <a name=\"finding-{}\"></a>**{}** — {}, {}. {}",
             index + 1,
             markdown(&finding.id),
-            finding.criterion.russian_name(),
-            finding.criterion.reference(),
+            criteria,
             finding.severity.russian_name(),
             markdown(&finding.explanation),
         )
         .expect("запись в строку");
+        let detectors = finding.all_detectors();
+        if detectors.len() > 1 || !finding.merged_ids.is_empty() {
+            let sources = detectors
+                .into_iter()
+                .map(|detector| markdown(&detector.display_label()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ids = finding
+                .all_ids()
+                .into_iter()
+                .map(markdown)
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(output, "  Источники — {sources} (находки: {ids}).").expect("запись в строку");
+        } else {
+            writeln!(
+                output,
+                "  Источник — {}.",
+                markdown(&finding.detector.display_label())
+            )
+            .expect("запись в строку");
+        }
         if let Some(answers) = report.finding_answers.get(&finding.id) {
             for answer in answers {
                 writeln!(
@@ -531,10 +558,14 @@ mod tests {
             verified,
             scope: Scope::Set,
             criterion: Criterion::Consistent,
+            additional_criteria: Vec::new(),
             evidence: Vec::new(),
             explanation: format!("Описание {id}"),
             suggestion: None,
             detector: Detector::Rule("test".into()),
+            additional_detectors: Vec::new(),
+            merged_ids: Vec::new(),
+            fallback_evidence: false,
         }
     }
 
