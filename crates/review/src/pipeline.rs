@@ -2,11 +2,13 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use doc::Document;
-use llm::LlmProvider;
+use llm::{LlmProvider, TraceLog};
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::{Fact, Finding, Question, Requirement, stages::ScaffoldStage};
+use crate::{
+    Fact, Finding, ProgressEvent, ProgressSink, Question, Requirement, stages::ScaffoldStage,
+};
 
 #[derive(Debug, Error)]
 pub enum StageError {
@@ -40,6 +42,7 @@ pub struct RunContext<'a> {
     pub findings: Vec<Finding>,
     pub questions: Vec<Question>,
     pub trace: Vec<StageTrace>,
+    progress: Option<(&'a dyn ProgressSink, TraceLog)>,
     pub(crate) rules_completed: bool,
     pub(crate) checks_complete: bool,
 }
@@ -59,9 +62,29 @@ impl<'a> RunContext<'a> {
             findings: Vec::new(),
             questions: Vec::new(),
             trace: Vec::new(),
+            progress: None,
             rules_completed: false,
             checks_complete: false,
         }
+    }
+
+    /// Включает события прогресса. Расход токенов по стадиям берётся из `llm_trace`,
+    /// поэтому это должна быть та же трасса, что передана в `RetryProvider`.
+    pub fn with_progress(mut self, sink: &'a dyn ProgressSink, llm_trace: TraceLog) -> Self {
+        self.progress = Some((sink, llm_trace));
+        self
+    }
+
+    fn emit(&self, event: impl FnOnce() -> ProgressEvent) {
+        if let Some((sink, _)) = &self.progress {
+            sink.emit(&event());
+        }
+    }
+
+    fn llm_mark(&self) -> usize {
+        self.progress
+            .as_ref()
+            .map_or(0, |(_, trace)| trace.entry_count())
     }
 }
 
@@ -99,18 +122,60 @@ impl Pipeline {
     pub async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
         ctx.rules_completed = false;
         ctx.checks_complete = false;
-        for stage in &self.stages {
+        let run_started = Instant::now();
+        let total = self.stages.len();
+        ctx.emit(|| ProgressEvent::RunStarted {
+            document: ctx.document.title.clone(),
+            model: ctx.provider.model().into(),
+            stages: self.stages.iter().map(|stage| stage.name()).collect(),
+        });
+        for (position, stage) in self.stages.iter().enumerate() {
+            let index = position + 1;
+            ctx.emit(|| ProgressEvent::StageStarted {
+                stage: stage.name(),
+                index,
+                total,
+            });
             let started = Instant::now();
+            let mark = ctx.llm_mark();
             let result = stage.run(ctx).await;
+            let duration_ms = elapsed_ms(started);
             ctx.trace.push(StageTrace {
                 stage: stage.name(),
-                duration_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                duration_ms,
                 succeeded: result.is_ok(),
             });
-            result.map_err(|source| StageError::Stage {
-                stage: stage.name(),
-                source: Box::new(source),
-            })?;
+            ctx.emit(|| {
+                let (usage, llm_calls, cached_calls) = ctx
+                    .progress
+                    .as_ref()
+                    .map(|(_, trace)| trace.usage_since(mark))
+                    .unwrap_or_default();
+                ProgressEvent::StageFinished {
+                    stage: stage.name(),
+                    index,
+                    total,
+                    duration_ms,
+                    succeeded: result.is_ok(),
+                    llm_calls,
+                    cached_calls,
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    requirements: ctx.requirements.len(),
+                    findings: ctx.findings.len(),
+                    questions: ctx.questions.len(),
+                }
+            });
+            if let Err(source) = result {
+                ctx.emit(|| ProgressEvent::RunFinished {
+                    duration_ms: elapsed_ms(run_started),
+                    succeeded: false,
+                });
+                return Err(StageError::Stage {
+                    stage: stage.name(),
+                    source: Box::new(source),
+                });
+            }
         }
         ctx.checks_complete = self.full_review
             && ctx.rules_completed
@@ -119,8 +184,16 @@ impl Pipeline {
                 ctx.document
                     .contains_quote(requirement.location, &requirement.quote)
             });
+        ctx.emit(|| ProgressEvent::RunFinished {
+            duration_ms: elapsed_ms(run_started),
+            succeeded: true,
+        });
         Ok(())
     }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

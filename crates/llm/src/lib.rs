@@ -3,7 +3,9 @@ mod mock_review;
 mod openai;
 mod providers;
 
-pub use decorators::{CachedProvider, RateLimitedProvider, RetryProvider, TraceEntry, TraceLog};
+pub use decorators::{
+    CachedProvider, RateLimitedProvider, RetryNotice, RetryProvider, TraceEntry, TraceLog,
+};
 pub use openai::OpenAiProvider;
 pub use providers::{GeminiProvider, MockProvider};
 
