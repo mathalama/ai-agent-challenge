@@ -243,10 +243,16 @@ fn requirement_location(requirement: &Requirement) -> String {
         parts.push(markdown(section));
     }
     if let Some(table) = &requirement.table {
-        parts.push(format!(
-            "таблица #{}, строка {}",
-            table.block_id.0, table.row
-        ));
+        let label = match table.title.as_deref() {
+            Some(title) => format!(
+                "таблица {} «{}», строка {}",
+                table.index,
+                markdown(title),
+                table.row
+            ),
+            None => format!("таблица {}, строка {}", table.index, table.row),
+        };
+        parts.push(label);
     }
     parts.push(location(requirement.location));
     parts.join(" · ")

@@ -18,21 +18,77 @@ struct BlockContext {
     heading: Option<String>,
 }
 
-/// Детерминированно извлекает идентификатор требования из начала текста блока или ячейки
-/// (например, `Ф-1`, `НФ-2`, `ФТ-1.2`, `REQ-001`).
+/// Детерминированно извлекает идентификатор требования из текста блока, заголовка или ячейки
+/// (например, `Ф-1`, `НФ-2`, `ФТ-1.2`, `REQ-001`, `"Требование Ф-5: ..."`).
 pub fn extract_source_id(text: &str) -> Option<String> {
+    extract_source_id_at_start(text).or_else(|| extract_source_id_mid_sentence(text))
+}
+
+fn extract_source_id_at_start(text: &str) -> Option<String> {
     let mut rest = text.trim_start();
     if rest.is_empty() {
         return None;
     }
 
-    // Убираем ведущий маркер списка (`* `, `- `, `• `, `– `, `— `).
+    // Убираем ведущий маркер списка (`* `, `- `, `• `, `– `, `— `) или нумерацию заголовка (`1.2. `).
     if let Some(after_bullet) = strip_list_bullet(rest) {
         rest = after_bullet.trim_start();
+    } else if let Some(after_num) = strip_leading_numbering(rest) {
+        rest = after_num.trim_start();
     }
 
-    rest = trim_leading_emphasis(rest);
+    parse_id_at(rest, true)
+}
 
+fn extract_source_id_mid_sentence(text: &str) -> Option<String> {
+    let mut words_seen = 0usize;
+    let mut prev_word = String::new();
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        let slice = &text[index..];
+        let at_word_start = index == 0
+            || text[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|prev| prev.is_whitespace() || matches!(prev, '(' | '[' | '«' | '"'));
+
+        if at_word_start && words_seen > 0 {
+            let is_reference = is_reference_word(&prev_word);
+            if !is_reference {
+                // Проверяем ID после вводного ярлыка в начале фразы (до 3 слов, например «Требование Ф-5: ...»)
+                // либо явно объявленный ID с двоеточием/тире/скобками.
+                let require_explicit_decl = words_seen > 3 || !is_intro_label(&prev_word);
+                if let Some(id) = parse_id_at(slice, !require_explicit_decl) {
+                    return Some(id);
+                }
+            }
+        }
+
+        // Пропускаем текущее слово для отслеживания предыдущего слова и позиции.
+        let mut word_end = index + ch.len_utf8();
+        while let Some(&(next_idx, next_ch)) = chars.peek() {
+            if next_ch.is_whitespace() {
+                break;
+            }
+            word_end = next_idx + next_ch.len_utf8();
+            chars.next();
+        }
+        prev_word = text[index..word_end]
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+            .to_lowercase();
+        if !prev_word.is_empty() {
+            words_seen += 1;
+        }
+    }
+    None
+}
+
+fn parse_id_at(input: &str, allow_loose_boundary: bool) -> Option<String> {
+    let mut rest = trim_leading_emphasis(input);
     let closing = match rest.chars().next()? {
         '[' => {
             rest = rest[1..].trim_start();
@@ -62,6 +118,9 @@ pub fn extract_source_id(text: &str) -> Option<String> {
         return None;
     }
     let prefix = &rest[..prefix_end];
+    if is_technical_acronym(prefix) {
+        return None;
+    }
     rest = &rest[prefix_end..];
 
     let sep_char = rest.chars().next()?;
@@ -89,7 +148,14 @@ pub fn extract_source_id(text: &str) -> Option<String> {
         {
             return None;
         }
-    } else if !has_valid_id_boundary(prefix, rest) {
+        if !allow_loose_boundary && !starts_with_declaration_delimiter(after_close) {
+            return None;
+        }
+    } else if allow_loose_boundary {
+        if !has_valid_id_boundary(rest) {
+            return None;
+        }
+    } else if !starts_with_declaration_delimiter(rest) {
         return None;
     }
 
@@ -104,6 +170,36 @@ fn strip_list_bullet(text: &str) -> Option<&str> {
     let after = &text[first.len_utf8()..];
     if after.chars().next().is_some_and(char::is_whitespace) {
         Some(after)
+    } else {
+        None
+    }
+}
+
+fn strip_leading_numbering(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == 0 {
+        return None;
+    }
+    while index + 1 < bytes.len() && bytes[index] == b'.' && bytes[index + 1].is_ascii_digit() {
+        index += 1;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+    }
+    if index < bytes.len() && matches!(bytes[index], b'.' | b')') {
+        index += 1;
+    }
+    if index < bytes.len()
+        && text[index..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+    {
+        Some(&text[index..])
     } else {
         None
     }
@@ -137,10 +233,10 @@ fn scan_id_number(text: &str) -> Option<usize> {
     Some(index)
 }
 
-fn has_valid_id_boundary(prefix: &str, rest: &str) -> bool {
+fn has_valid_id_boundary(rest: &str) -> bool {
     let rest = trim_leading_emphasis(rest);
     if rest.is_empty() {
-        return !is_technical_acronym(prefix);
+        return true;
     }
     let first = rest.chars().next().expect("непустой остаток");
     match first {
@@ -166,14 +262,81 @@ fn has_valid_id_boundary(prefix: &str, rest: &str) -> bool {
             {
                 return true;
             }
-            !is_technical_acronym(prefix)
-                && after_ws
-                    .chars()
-                    .next()
-                    .is_some_and(|next| next.is_uppercase())
+            after_ws
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_uppercase())
         }
         _ => false,
     }
+}
+
+fn starts_with_declaration_delimiter(rest: &str) -> bool {
+    let rest = trim_leading_emphasis(rest);
+    if let Some(first) = rest.chars().next() {
+        if matches!(first, ':' | '—' | '–') {
+            return true;
+        }
+        if first.is_whitespace() {
+            let after_ws = rest.trim_start();
+            if let Some(after_dash) = after_ws
+                .strip_prefix('-')
+                .or_else(|| after_ws.strip_prefix('—'))
+                .or_else(|| after_ws.strip_prefix('–'))
+                && after_dash.chars().next().is_some_and(char::is_whitespace)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_intro_label(word: &str) -> bool {
+    matches!(
+        word,
+        "требование"
+            | "пункт"
+            | "правило"
+            | "критерий"
+            | "сценарий"
+            | "кейс"
+            | "номер"
+            | "код"
+            | "id"
+            | "requirement"
+            | "rule"
+            | "item"
+            | "case"
+    )
+}
+
+fn is_reference_word(word: &str) -> bool {
+    matches!(
+        word,
+        "см" | "согласно"
+            | "противоречит"
+            | "против"
+            | "ссылка"
+            | "ссылается"
+            | "к"
+            | "по"
+            | "из"
+            | "на"
+            | "от"
+            | "в"
+            | "во"
+            | "о"
+            | "об"
+            | "для"
+            | "при"
+            | "see"
+            | "per"
+            | "ref"
+            | "from"
+            | "in"
+            | "to"
+    )
 }
 
 fn is_technical_acronym(prefix: &str) -> bool {
@@ -181,6 +344,7 @@ fn is_technical_acronym(prefix: &str) -> bool {
         prefix,
         "UTF"
             | "ISO"
+            | "IEC"
             | "IEEE"
             | "HTTP"
             | "HTTPS"
@@ -191,6 +355,17 @@ fn is_technical_acronym(prefix: &str) -> bool {
             | "ASCII"
             | "RFC"
             | "COVID"
+            | "GOST"
+            | "ГОСТ"
+            | "UUID"
+            | "JWT"
+            | "OAUTH"
+            | "PCI"
+            | "BASE"
+            | "AES"
+            | "RSA"
+            | "HMAC"
+            | "POSIX"
     )
 }
 
@@ -199,11 +374,13 @@ fn is_technical_acronym(prefix: &str) -> bool {
 pub fn extract_table_requirements(document: &Document) -> Vec<Requirement> {
     let contexts = index_block_contexts(document);
     let mut requirements = Vec::new();
+    let mut table_index = 0usize;
     for (block, context) in document.blocks.iter().zip(contexts.iter()) {
         let BlockContent::Table { rows, row_lines } = &block.content else {
             continue;
         };
-        if rows.len() < 2 || is_non_requirement_table(context, &rows[0]) {
+        table_index += 1;
+        if rows.len() < 2 || is_non_requirement_table(context, &rows[0], &rows[1..]) {
             continue;
         }
         let headers = &rows[0];
@@ -234,6 +411,7 @@ pub fn extract_table_requirements(document: &Document) -> Vec<Requirement> {
                 section: context.section.clone(),
                 table: Some(TableRef {
                     block_id: block.id,
+                    index: table_index,
                     row: row_index,
                     title: context.heading.clone(),
                 }),
@@ -274,7 +452,7 @@ pub(crate) fn merge_requirements(
         if draft.text.trim().is_empty() && draft.quote.trim().is_empty() {
             continue;
         }
-        if overlaps_table_block(document, draft.location) {
+        if is_duplicate_table_draft(document, &draft) {
             continue;
         }
         let matched = find_matching_block(document, draft.location, &draft.quote);
@@ -287,6 +465,11 @@ pub(crate) fn merge_requirements(
                 matched.and_then(|index| {
                     extract_source_id_from_block(&document.blocks[index], draft.location)
                 })
+            })
+            .or_else(|| {
+                context
+                    .and_then(|ctx| ctx.heading.as_deref())
+                    .and_then(extract_source_id)
             });
         merged.push(Requirement {
             id: String::new(),
@@ -371,55 +554,145 @@ fn build_block_context(stack: &[(u8, String)], title: &str) -> BlockContext {
 }
 
 fn is_part_heading(text: &str) -> bool {
-    let lower = text.trim().to_lowercase();
-    let suffix = lower
-        .strip_prefix("часть ")
-        .or_else(|| lower.strip_prefix("part "));
-    suffix.is_some_and(|rest| {
-        rest.trim_start()
-            .chars()
+    let trimmed = text.trim();
+    let after_prefix = strip_case_insensitive_prefix(trimmed, "часть ")
+        .or_else(|| strip_case_insensitive_prefix(trimmed, "part "));
+    let Some(rest) = after_prefix else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let token_end = rest
+        .find(|ch: char| ch.is_whitespace() || matches!(ch, '.' | ':' | '—' | '–' | '-' | ')'))
+        .unwrap_or(rest.len());
+    let token = &rest[..token_end];
+    if token.is_empty() {
+        return false;
+    }
+    let single_uppercase_letter = {
+        let mut chars = token.chars();
+        chars
             .next()
-            .is_some_and(char::is_alphanumeric)
-    })
+            .is_some_and(|ch| ch.is_alphabetic() && ch.is_uppercase())
+            && chars.next().is_none()
+    };
+    let numeric = token.bytes().all(|byte| byte.is_ascii_digit());
+    let roman = token.len() <= 4 && token.bytes().all(|byte| matches!(byte, b'I' | b'V' | b'X'));
+    single_uppercase_letter || numeric || roman
 }
 
-fn is_non_requirement_table(context: &BlockContext, headers: &[String]) -> bool {
-    if let Some(heading) = context.heading.as_deref() {
-        let lower = heading.to_lowercase();
-        if lower == "общие сведения"
-            || lower == "паспорт документа"
-            || lower == "сведения о документе"
-            || lower == "метаданные"
-            || lower.contains("ревью")
-            || lower.contains("чек-лист")
-            || lower.contains("чеклист")
-            || lower.contains("checklist")
-            || lower.contains("согласующ")
-            || lower.contains("согласован")
-            || lower.contains("история изменен")
-            || lower.contains("лист регистрац")
-            || lower.contains("версии документа")
-            || lower.contains("changelog")
-            || lower.contains("revision history")
-        {
-            return true;
+fn strip_case_insensitive_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let mut text_chars = text.chars();
+    for expected in prefix.chars() {
+        let actual = text_chars.next()?;
+        if actual.to_lowercase().ne(expected.to_lowercase()) {
+            return None;
         }
     }
+    Some(text_chars.as_str())
+}
 
+fn normalize_heading_title(heading: &str) -> String {
+    let trimmed = heading.trim();
+    let stripped = strip_leading_numbering(trimmed).unwrap_or(trimmed).trim();
+    stripped
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn is_non_requirement_table(
+    context: &BlockContext,
+    headers: &[String],
+    data_rows: &[Vec<String>],
+) -> bool {
+    let title = context.heading.as_deref().map(normalize_heading_title);
     let lower_headers: Vec<String> = headers
         .iter()
         .map(|header| header.trim().to_lowercase())
         .collect();
 
-    let is_review_checklist = lower_headers.iter().any(|h| h.contains("проверено"))
+    // 1. Паспорт / общие сведения документа (включая нумерованные «1. Общие сведения»).
+    let is_passport_heading = matches!(
+        title.as_deref(),
+        Some(
+            "общие сведения"
+                | "паспорт документа"
+                | "сведения о документе"
+                | "метаданные"
+                | "метаданные документа"
+                | "общая информация"
+        )
+    );
+    if is_passport_heading && is_key_value_headers(headers) {
+        return true;
+    }
+
+    // 2. Чек-лист ревью требований (по заголовкам таблицы или явному чек-листу ревью).
+    let is_review_checklist_headers = lower_headers
+        .iter()
+        .any(|h| h == "проверено" || h == "статус проверки")
         && lower_headers
             .iter()
             .any(|h| h.contains("проверка") || h.contains("создано") || h.contains("примечан"));
-    let is_signoff = lower_headers
+    let is_review_checklist_heading = matches!(
+        title.as_deref(),
+        Some(
+            "ревью требований"
+                | "чек-лист"
+                | "чеклист"
+                | "чек-лист ревью"
+                | "чек-лист проверки требований"
+                | "review checklist"
+        )
+    );
+    let has_yes_no_template = data_rows.iter().any(|row| {
+        row.iter().any(|cell| {
+            let value = cell.trim().to_lowercase();
+            value == "да / нет" || value == "да/нет" || value.starts_with("да / нет")
+        })
+    });
+    if is_review_checklist_headers || (is_review_checklist_heading && has_yes_no_template) {
+        return true;
+    }
+
+    // 3. Блок согласующих / лист согласования (по колонкам подписи или точному названию раздела).
+    let is_signoff_headers = lower_headers
         .iter()
         .any(|h| h == "подпись" || h.contains("фио ответственного"));
+    let is_signoff_heading = matches!(
+        title.as_deref(),
+        Some(
+            "блок согласующих"
+                | "лист согласования"
+                | "согласующие"
+                | "согласование документа"
+                | "утверждение документа"
+                | "подписи"
+        )
+    );
+    if is_signoff_headers || is_signoff_heading {
+        return true;
+    }
 
-    is_review_checklist || is_signoff
+    // 4. История изменений / версии документа.
+    let is_changelog_heading = matches!(
+        title.as_deref(),
+        Some(
+            "история изменений"
+                | "история версий"
+                | "лист регистрации изменений"
+                | "версии документа"
+                | "changelog"
+                | "revision history"
+        )
+    );
+    let is_changelog_headers = lower_headers.iter().any(|h| h == "версия")
+        && lower_headers.iter().any(|h| h == "дата" || h == "автор")
+        && lower_headers
+            .iter()
+            .any(|h| h.contains("изменен") || h.contains("описан"));
+    is_changelog_heading || is_changelog_headers
 }
 
 fn is_key_value_headers(headers: &[String]) -> bool {
@@ -483,12 +756,60 @@ fn format_row_text(headers: &[String], row: &[String]) -> String {
     parts.join("; ")
 }
 
-fn overlaps_table_block(document: &Document, span: SourceSpan) -> bool {
+fn is_duplicate_table_draft(document: &Document, draft: &RequirementDraft) -> bool {
+    if matches_non_table_block(document, draft.location, &draft.quote) {
+        return false;
+    }
     document.blocks.iter().any(|block| {
-        matches!(block.content, BlockContent::Table { .. })
-            && block.location.page == span.page
+        if !matches!(block.content, BlockContent::Table { .. })
+            || block.location.page != draft.location.page
+            || block.location.start_line > draft.location.end_line
+            || draft.location.start_line > block.location.end_line
+        {
+            return false;
+        }
+        let strictly_inside = block.location.start_line <= draft.location.start_line
+            && draft.location.end_line <= block.location.end_line;
+        strictly_inside || table_block_contains_quote(block, draft.location, &draft.quote)
+    })
+}
+
+fn matches_non_table_block(document: &Document, span: SourceSpan, quote: &str) -> bool {
+    let normalized = normalize(quote);
+    if normalized.is_empty() {
+        return false;
+    }
+    document.blocks.iter().any(|block| {
+        block.location.page == span.page
             && block.location.start_line <= span.end_line
             && span.start_line <= block.location.end_line
+            && block_plain_text(&block.content)
+                .is_some_and(|text| normalize(&text).contains(&normalized))
+    })
+}
+
+fn table_block_contains_quote(block: &Block, span: SourceSpan, quote: &str) -> bool {
+    let normalized = normalize(quote);
+    if normalized.is_empty() {
+        return false;
+    }
+    let BlockContent::Table { rows, row_lines } = &block.content else {
+        return false;
+    };
+    let includes = |line| (span.start_line..=span.end_line).contains(&line);
+    let covers_block = includes(block.location.start_line) && includes(block.location.end_line);
+    let matches = |text: &str| normalize(text).contains(&normalized);
+    rows.iter().enumerate().any(|(index, row)| {
+        let non_empty: Vec<_> = row
+            .iter()
+            .map(|cell| cell.trim())
+            .filter(|cell| !cell.is_empty())
+            .collect();
+        (covers_block || row_lines.get(index).is_some_and(|line| includes(*line)))
+            && (row.iter().any(|cell| matches(cell))
+                || matches(&row.join(" "))
+                || matches(&row.join(" | "))
+                || matches(&non_empty.join(" | ")))
     })
 }
 
@@ -497,7 +818,8 @@ fn find_matching_block(document: &Document, span: SourceSpan, quote: &str) -> Op
     let normalized_quote = normalize(quote);
 
     for (index, block) in document.blocks.iter().enumerate() {
-        if block.location.page != span.page
+        if matches!(block.content, BlockContent::Table { .. })
+            || block.location.page != span.page
             || block.location.start_line > span.end_line
             || span.start_line > block.location.end_line
         {
