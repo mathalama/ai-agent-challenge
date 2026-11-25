@@ -21,7 +21,8 @@ use llm::{
 };
 use review::{
     AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, Report, ReportRenderer,
-    RunContext, RunPassport,
+    RunContext, RunPassport, discover_golden_files, evaluate_document, format_eval_report,
+    load_golden_file,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -70,6 +71,10 @@ enum Command {
     Eval {
         #[arg(long, default_value = "eval/")]
         golden: PathBuf,
+        #[arg(long, value_enum, default_value = "gemini")]
+        provider: Provider,
+        #[arg(long)]
+        no_cache: bool,
     },
 }
 
@@ -162,10 +167,11 @@ async fn run(cli: Cli) -> Result<()> {
             provider,
             no_cache,
         } => ask::run(&input, &output, provider, no_cache).await,
-        Command::Eval { golden } => {
-            // TODO(issue): рассчитать метрики на эталонных данных.
-            Err(format!("Команда eval для «{}» пока в разработке", golden.display()).into())
-        }
+        Command::Eval {
+            golden,
+            provider,
+            no_cache,
+        } => eval_golden(&golden, provider, no_cache).await,
     }
 }
 
@@ -236,19 +242,8 @@ async fn review(
     let bytes = fs::read(input)
         .map_err(|error| format!("Не удалось прочитать «{}»: {error}", input.display()))?;
     let document = ParserRegistry::default().parse(input, &bytes)?;
-    let provider: Box<dyn LlmProvider> = match provider {
-        Provider::Mock => Box::new(MockProvider),
-        Provider::Gemini => Box::new(RateLimitedProvider::from_env(Box::new(
-            GeminiProvider::from_env()?,
-        ))?),
-    };
     let trace_log = TraceLog::default();
-    let retry = RetryProvider::new(provider).with_trace(trace_log.clone());
-    let provider: Box<dyn LlmProvider> = if no_cache {
-        Box::new(retry)
-    } else {
-        Box::new(CachedProvider::new(retry, ".cache/llm"))
-    };
+    let provider = build_provider(provider, no_cache, Some(trace_log.clone()))?;
     let checks = CheckRegistry::with_builtin_rules();
     let mut ctx = RunContext::new(document, provider.as_ref(), &checks);
     let result = Pipeline::default().run(&mut ctx).await;
@@ -275,6 +270,58 @@ async fn review(
         );
     }
     Ok(report)
+}
+
+async fn eval_golden(golden: &Path, provider_kind: Provider, no_cache: bool) -> Result<()> {
+    let golden_files = discover_golden_files(golden)?;
+    let mut loaded = Vec::with_capacity(golden_files.len());
+    for file in golden_files {
+        loaded.push(load_golden_file(&file)?);
+    }
+
+    let provider = build_provider(provider_kind, no_cache, None)?;
+    let registry = ParserRegistry::default();
+    let checks = CheckRegistry::with_builtin_rules();
+    let pipeline = Pipeline::default();
+
+    let mut results = Vec::with_capacity(loaded.len());
+    for item in loaded {
+        let bytes = fs::read(&item.document_path).map_err(|error| {
+            format!(
+                "Не удалось прочитать «{}»: {error}",
+                item.document_path.display()
+            )
+        })?;
+        let document = registry.parse(&item.document_path, &bytes)?;
+        let mut ctx = RunContext::new(document, provider.as_ref(), &checks);
+        pipeline.run(&mut ctx).await?;
+        results.push(evaluate_document(&item, &ctx.requirements, &ctx.findings));
+    }
+
+    print!("{}", format_eval_report(&results));
+    Ok(())
+}
+
+fn build_provider(
+    provider: Provider,
+    no_cache: bool,
+    trace_log: Option<TraceLog>,
+) -> Result<Box<dyn LlmProvider>> {
+    let base: Box<dyn LlmProvider> = match provider {
+        Provider::Mock => Box::new(MockProvider),
+        Provider::Gemini => Box::new(RateLimitedProvider::from_env(Box::new(
+            GeminiProvider::from_env()?,
+        ))?),
+    };
+    let retry = match trace_log {
+        Some(log) => RetryProvider::new(base).with_trace(log),
+        None => RetryProvider::new(base),
+    };
+    Ok(if no_cache {
+        Box::new(retry)
+    } else {
+        Box::new(CachedProvider::new(retry, ".cache/llm"))
+    })
 }
 
 fn same_path(left: &Path, right: &Path) -> io::Result<bool> {

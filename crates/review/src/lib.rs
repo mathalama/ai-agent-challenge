@@ -2,6 +2,7 @@ mod clarify;
 mod consistency;
 mod dedup;
 mod domain;
+pub mod eval;
 mod facts;
 mod pipeline;
 mod report;
@@ -12,6 +13,10 @@ mod vague;
 
 pub use dedup::merge_findings;
 pub use domain::*;
+pub use eval::{
+    DocumentEval, EvalError, GoldenDefect, GoldenFile, LoadedGolden, MatchedDefect,
+    discover_golden_files, evaluate_document, format_eval_report, load_golden_file,
+};
 pub use facts::*;
 pub use pipeline::Result as StageResult;
 pub use pipeline::{
