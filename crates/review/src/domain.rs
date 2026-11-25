@@ -8,6 +8,7 @@ pub type FindingId = String;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TableRef {
     pub block_id: BlockId,
+    pub index: usize,
     pub row: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
