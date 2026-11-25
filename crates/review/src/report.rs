@@ -184,7 +184,9 @@ impl ReportRenderer for MarkdownRenderer {
             .expect("запись в строку");
         }
 
-        output.push_str("\n## 3. Проверка каждого требования\n");
+        output.push_str(
+            "\n<a name=\"requirement-findings\"></a>\n\n## 3. Проверка каждого требования\n",
+        );
         for requirement in &report.requirements {
             writeln!(
                 output,
@@ -211,7 +213,7 @@ impl ReportRenderer for MarkdownRenderer {
             write_findings(&mut output, report, unmatched);
         }
 
-        output.push_str("\n## 4. Проверка набора требований\n\n");
+        output.push_str("\n<a name=\"set-findings\"></a>\n\n## 4. Проверка набора требований\n\n");
         write_findings(
             &mut output,
             report,
@@ -223,13 +225,19 @@ impl ReportRenderer for MarkdownRenderer {
         );
 
         let summary = &report.summary;
-        writeln!(output,
-            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- Критичные дефекты — {}",
-            summary.requirement_count, summary.finding_count, summary.verified_count,
-            if summary.critical_findings.is_empty() { "список пуст".into() } else {
-                summary.critical_findings.iter().map(|id| markdown(id)).collect::<Vec<_>>().join(", ")
-            },
-        ).expect("запись в строку");
+        let critical: Vec<_> = report
+            .findings
+            .iter()
+            .enumerate()
+            .filter(|(_, finding)| finding.verified && finding.severity == Severity::Critical)
+            .map(|(index, finding)| format!("[{}](#finding-{})", markdown(&finding.id), index + 1))
+            .collect();
+        writeln!(
+            output,
+            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- Подтверждённых критичных дефектов — {}",
+            summary.requirement_count, summary.finding_count, summary.verified_count, critical.len(),
+        )
+        .expect("запись в строку");
         if !report.finding_answers.is_empty() {
             writeln!(
                 output,
@@ -250,7 +258,7 @@ impl ReportRenderer for MarkdownRenderer {
             }
         });
         if matches!(report.readiness, Readiness::Blocked) {
-            write_blocking_reason(&mut output, &report.findings);
+            write_blocking_reason(&mut output, &report.findings, &critical);
         }
         if !report.incomplete_stages.is_empty() {
             let stages = report
@@ -358,13 +366,7 @@ fn write_question(output: &mut String, report: &Report, question: &Question) {
     }
 }
 
-fn write_blocking_reason(output: &mut String, findings: &[Finding]) {
-    let critical: Vec<_> = findings
-        .iter()
-        .enumerate()
-        .filter(|(_, finding)| needs_fix(finding) && finding.severity == Severity::Critical)
-        .map(|(index, finding)| format!("[{}](#finding-{})", markdown(&finding.id), index + 1))
-        .collect();
+fn write_blocking_reason(output: &mut String, findings: &[Finding], critical: &[String]) {
     if critical.is_empty() {
         let count = findings.iter().filter(|finding| needs_fix(finding)).count();
         writeln!(
@@ -383,6 +385,8 @@ fn write_blocking_reason(output: &mut String, findings: &[Finding]) {
 }
 
 fn write_priority_fixes(output: &mut String, report: &Report) {
+    const PRIORITY_LIMIT: usize = 7;
+
     let mut fixes: Vec<_> = report
         .findings
         .iter()
@@ -398,7 +402,8 @@ fn write_priority_fixes(output: &mut String, report: &Report) {
     if !fixes.is_empty() {
         output.push_str("\n### Что исправить в первую очередь\n\n");
     }
-    for (index, finding, affected) in fixes.into_iter().take(7) {
+    let total = fixes.len();
+    for (index, finding, affected) in fixes.into_iter().take(PRIORITY_LIMIT) {
         writeln!(
             output,
             "- [{}](#finding-{}) — {} важность, затронуто требований — {}. {}",
@@ -412,6 +417,13 @@ fn write_priority_fixes(output: &mut String, report: &Report) {
                     .as_deref()
                     .unwrap_or(&finding.explanation)
             ),
+        )
+        .expect("запись в строку");
+    }
+    if total > PRIORITY_LIMIT {
+        writeln!(
+            output,
+            "\nПоказано {PRIORITY_LIMIT} из {total} подтверждённых дефектов средней важности и выше. Полный список — в разделах [3](#requirement-findings) и [4](#set-findings)."
         )
         .expect("запись в строку");
     }
@@ -747,6 +759,7 @@ mod tests {
         let markdown = MarkdownRenderer.render(&report).unwrap();
         assert!(markdown.contains("Ответ Q-1 — не знаю"));
         assert!(markdown.contains("Находок с ответами — 1"));
+        assert!(!markdown.contains("Показано 7 из"));
         assert!(markdown.contains("[critical](#finding-1)"));
         assert!(markdown.contains("**Q-old** — предыдущее решение"));
         let json: serde_json::Value =
@@ -857,13 +870,21 @@ mod tests {
         };
 
         let markdown = MarkdownRenderer.render(&report).unwrap();
-        let (_, summary) = markdown.split_once("## 6. Итог").unwrap();
+        let (before_verdict, summary) = markdown.split_once("## 6. Итог").unwrap();
+        let (_, overview) = before_verdict.split_once("## 5. Сводка").unwrap();
+        assert!(overview.contains("Подтверждённых критичных дефектов — 1"));
         let (summary, _) = summary.split_once("## 7.").unwrap();
         assert!(summary.contains("**Не готово.**"));
         assert!(
             summary.contains("Подтверждённых критичных дефектов — 1 ([critical](#finding-4)).")
         );
         assert!(!summary.contains("unverified"));
+        assert!(summary.contains(
+            "Показано 7 из 8 подтверждённых дефектов средней важности и выше. Полный список — в разделах [3](#requirement-findings) и [4](#set-findings)."
+        ));
+        for anchor in ["requirement-findings", "set-findings"] {
+            assert!(markdown.contains(&format!("<a name=\"{anchor}\"></a>")));
+        }
         assert!(!markdown.contains("Находок с ответами — 0"));
         assert_eq!(
             summary
@@ -880,7 +901,7 @@ mod tests {
                 "- [extra-2](#finding-9) — средняя важность, затронуто требований — 0. Описание extra-2",
             ]
         );
-        for index in [1, 2, 3, 4, 7, 8, 9, 10] {
+        for index in 1..=10 {
             assert!(markdown.contains(&format!("<a name=\"finding-{index}\"></a>")));
         }
 

@@ -318,11 +318,6 @@ async fn sample_conflicts_have_verified_quotes_on_both_sides() {
         match &finding.detector {
             Detector::Rule(rule) => {
                 rules.push(rule.as_str());
-                let expected_severity = match rule.as_str() {
-                    "http_method_mismatch" | "unit_mismatch" => review::Severity::Critical,
-                    _ => review::Severity::High,
-                };
-                assert_eq!(finding.severity, expected_severity, "{rule}");
                 if rule == "acceptance_period_mismatch" {
                     assert_eq!(finding.scope, review::Scope::Set);
                     assert_eq!(finding.criterion, review::Criterion::Consistent);

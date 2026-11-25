@@ -6,7 +6,7 @@ use llm::MockProvider;
 use super::*;
 use crate::{Bound, EventMonth, FieldType, HttpMethod};
 
-fn check_rule(left: FactData, right: FactData, expected: Option<&str>) {
+fn check_rule(left: FactData, right: FactData, expected: Option<(&str, Severity)>) {
     let location = SourceSpan {
         start_line: 1,
         end_line: 1,
@@ -42,20 +42,23 @@ fn check_rule(left: FactData, right: FactData, expected: Option<&str>) {
     assert_eq!(
         group
             .compare(&left, &right, &conversions)
-            .map(|(name, _, _)| name),
+            .map(|(name, severity, _)| (name, severity)),
         expected
     );
     assert_eq!(
         group
             .compare(&right, &left, &conversions)
-            .map(|(name, _, _)| name),
+            .map(|(name, severity, _)| (name, severity)),
         expected
     );
 }
 
 #[test]
 fn quantity_and_range_must_use_matching_units() {
-    for (unit, expected) in [("cm", Some("unit_mismatch")), (" M ", None)] {
+    for (unit, expected) in [
+        ("cm", Some(("unit_mismatch", Severity::High))),
+        (" M ", None),
+    ] {
         check_rule(
             FactData::Quantity {
                 value: Some(2.0),
@@ -168,13 +171,18 @@ async fn verified_conversion_applies_across_entities() {
     ctx.facts[2].evidence.quote = "Вымышленное соотношение".into();
     check(&mut ctx, "").await.unwrap();
     assert!(matches!(&ctx.findings[0].detector, Detector::Rule(rule) if rule == "unit_mismatch"));
+    assert_eq!(ctx.findings[0].severity, Severity::Critical);
     assert!(ctx.findings[0].explanation.contains("(тенге и тиын)"));
 }
 
 #[test]
 fn field_type_must_agree_for_the_same_field() {
     for (name, field_type, expected) in [
-        ("weight", FieldType::String, Some("field_type_mismatch")),
+        (
+            "weight",
+            FieldType::String,
+            Some(("field_type_mismatch", Severity::High)),
+        ),
         ("weight", FieldType::Number, None),
         ("height", FieldType::String, None),
     ] {
@@ -198,22 +206,22 @@ fn safe_http_methods_must_not_change_state() {
         (
             HttpMethod::Get,
             OperationIntent::Update,
-            Some("http_method_mismatch"),
+            Some(("http_method_mismatch", Severity::Critical)),
         ),
         (
             HttpMethod::Head,
             OperationIntent::Create,
-            Some("http_method_mismatch"),
+            Some(("http_method_mismatch", Severity::Critical)),
         ),
         (
             HttpMethod::Options,
             OperationIntent::Delete,
-            Some("http_method_mismatch"),
+            Some(("http_method_mismatch", Severity::Critical)),
         ),
         (
             HttpMethod::Trace,
             OperationIntent::Update,
-            Some("http_method_mismatch"),
+            Some(("http_method_mismatch", Severity::Critical)),
         ),
         (HttpMethod::Post, OperationIntent::Read, None),
         (HttpMethod::Get, OperationIntent::Read, None),
@@ -232,7 +240,11 @@ fn safe_http_methods_must_not_change_state() {
 #[test]
 fn response_status_heading_must_match_returned_code_within_its_scenario() {
     for (scenario, code, expected) in [
-        (" LOCKED ", 429, Some("status_code_mismatch")),
+        (
+            " LOCKED ",
+            429,
+            Some(("status_code_mismatch", Severity::High)),
+        ),
         ("locked", 423, None),
         ("rate_limit", 429, None),
     ] {
@@ -259,13 +271,13 @@ fn response_status_must_match_body_outcome_within_its_scenario() {
             " CREATED ",
             202,
             Outcome::Error,
-            Some("status_outcome_mismatch"),
+            Some(("status_outcome_mismatch", Severity::High)),
         ),
         (
             "created",
             422,
             Outcome::Success,
-            Some("status_outcome_mismatch"),
+            Some(("status_outcome_mismatch", Severity::High)),
         ),
         ("created", 202, Outcome::Success, None),
         ("created", 422, Outcome::Unspecified, None),
@@ -291,12 +303,17 @@ fn response_status_must_match_body_outcome_within_its_scenario() {
 #[test]
 fn acceptance_must_use_the_period_of_the_event_named_by_the_rule() {
     for (reference, month, year, expected) in [
-        (Some("INV-7"), 7, None, Some("acceptance_period_mismatch")),
+        (
+            Some("INV-7"),
+            7,
+            None,
+            Some(("acceptance_period_mismatch", Severity::High)),
+        ),
         (
             Some("R-001"),
             6,
             Some(2033),
-            Some("acceptance_period_mismatch"),
+            Some(("acceptance_period_mismatch", Severity::High)),
         ),
         (Some("INV-8"), 7, None, None),
         (None, 6, None, None),
