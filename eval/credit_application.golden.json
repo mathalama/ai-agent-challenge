@@ -1,0 +1,119 @@
+{
+  "document": "credit_application.md",
+  "title": "Онлайн-заявка на потребительский кредит",
+  "defects": [
+    {
+      "id": "C-01",
+      "requirement": "КР-2, КР-5",
+      "criterion": "consistent",
+      "severity": "critical",
+      "lines": [24, 27],
+      "description": "Противоречие между КР-2 (запрет повторной заявки в течение 30 календарных дней после отказа) и КР-5 (немедленная повторная подача на следующий день при изменении суммы или срока)."
+    },
+    {
+      "id": "C-02",
+      "requirement": "КР-1, Приёмочные сценарии",
+      "criterion": "consistent",
+      "severity": "critical",
+      "lines": [23, 48],
+      "description": "Противоречие между КР-1 (возраст от 21 до 65 лет проверяется на момент подачи заявки) и приёмочным сценарием (отказ клиенту 64 лет из-за достижения 66 лет до закрытия кредита)."
+    },
+    {
+      "id": "C-03",
+      "requirement": "Реквизиты метода / HTTP-метод",
+      "criterion": "correct",
+      "acceptable_criteria": ["conforming"],
+      "severity": "high",
+      "lines": [68],
+      "description": "Для регистрации и создания кредитной заявки (/api/v1/loans/submit) указан идемпотентный HTTP-метод GET вместо POST."
+    },
+    {
+      "id": "C-04",
+      "requirement": "Пошаговый алгоритм, Коды ответов HTTP / 201",
+      "criterion": "consistent",
+      "acceptable_criteria": ["correct"],
+      "severity": "high",
+      "lines": [78, 95, 100, 107, 113],
+      "description": "При нарушении лимитов возвращается HTTP 201 с decision=REJECTED_INPUT, что противоречит описанию «200 и 201 означают успешное создание заявки»."
+    },
+    {
+      "id": "C-05",
+      "requirement": "Коды ответов HTTP / 403, 422",
+      "criterion": "consistent",
+      "acceptable_criteria": ["complete"],
+      "severity": "high",
+      "lines": [118, 121, 122],
+      "description": "В списке кодов для заблокированной учётной записи объявлен 403, но в детальном описании указан возврат HTTP 422, отсутствующего в перечне кодов."
+    },
+    {
+      "id": "C-06",
+      "requirement": "Модель хранения данных",
+      "criterion": "consistent",
+      "acceptable_criteria": ["complete", "unambiguous"],
+      "severity": "high",
+      "lines": [36],
+      "description": "Процентная ставка хранится в базисных пунктах (rate_bp), а в расчётном ядре и API передаётся в годовых процентах без правил преобразования, точности и округления."
+    },
+    {
+      "id": "C-07",
+      "requirement": "Параметры строки запроса, Структура ответа / principal, termMonths",
+      "criterion": "consistent",
+      "severity": "high",
+      "lines": [87, 88, 101, 102, 109],
+      "description": "Несогласованность типов данных: principal и termMonths в запросе имеют тип integer, а в структуре ответа и примере JSON — string."
+    },
+    {
+      "id": "C-08",
+      "requirement": "Сценарии проверки качества / План тестирования",
+      "criterion": "set_complete",
+      "severity": "medium",
+      "lines": [38, 40, 41],
+      "description": "Раздел плана тестирования содержит только заглушку TBD вместо сценариев проверки."
+    },
+    {
+      "id": "C-09",
+      "requirement": "Паспорт документа, Согласование документа",
+      "criterion": "conforming",
+      "acceptable_criteria": ["set_complete", "traceable", "modifiable"],
+      "severity": "medium",
+      "lines": [16, 51, 55],
+      "description": "Не заполнены версия и дата документа («—»), таблица согласования пуста."
+    },
+    {
+      "id": "C-10",
+      "requirement": "Реквизиты метода / Путь (Stage / Prod), Документация OpenAPI",
+      "criterion": "complete",
+      "acceptable_criteria": ["set_complete"],
+      "severity": "medium",
+      "lines": [70, 71],
+      "description": "Не указан Prod-путь (TBD) и отсутствует ссылка на спецификацию OpenAPI."
+    },
+    {
+      "id": "C-11",
+      "requirement": "Производительность и надёжность",
+      "criterion": "verifiable",
+      "acceptable_criteria": ["unambiguous", "complete"],
+      "severity": "medium",
+      "lines": [33],
+      "description": "Непроверяемое нефункциональное требование («достаточно быстро и стабильно работать при сезонных пиках») без численных SLA, перцентилей и целевой нагрузки."
+    },
+    {
+      "id": "C-12",
+      "requirement": "Взаимодействие компонентов, Параметры строки запроса / iin",
+      "criterion": "set_complete",
+      "acceptable_criteria": ["complete"],
+      "severity": "high",
+      "lines": [30, 86],
+      "description": "Передача ИИН в открытых query-параметрах и пересылка ИИН, номера удостоверения и дохода в сервис SMS/e-mail без требований ИБ (шифрование, маскирование, защита ПДн)."
+    },
+    {
+      "id": "C-13",
+      "requirement": "Тело запроса",
+      "criterion": "consistent",
+      "acceptable_criteria": ["correct"],
+      "severity": "medium",
+      "lines": [91, 92],
+      "description": "Указан заголовок Content-Type: application/json при отсутствии тела запроса."
+    }
+  ]
+}

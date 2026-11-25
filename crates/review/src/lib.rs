@@ -1,5 +1,6 @@
 mod consistency;
 mod domain;
+pub mod eval;
 mod facts;
 mod pipeline;
 mod report;
@@ -8,6 +9,10 @@ pub mod segment;
 mod stages;
 
 pub use domain::*;
+pub use eval::{
+    DocumentEval, EvalError, GoldenDefect, GoldenFile, LoadedGolden, MatchedDefect,
+    discover_golden_files, evaluate_document, format_eval_report, load_golden_file,
+};
 pub use facts::*;
 pub use pipeline::Result as StageResult;
 pub use pipeline::{

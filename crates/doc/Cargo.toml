@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pdfsink-rs.workspace = true
 pulldown-cmark.workspace = true
+quick-xml.workspace = true
 schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+zip.workspace = true

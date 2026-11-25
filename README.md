@@ -1,6 +1,6 @@
 # Агент проверки требований
 
-Rust CLI для статической проверки требований к финтех-проектам. Агент выделяет требования, анализирует их с Gemini, сверяет цитаты и формирует отчёт на русском. Поддерживаются Markdown и обычный текст в UTF‑8. [Задание хакатона](https://github.com/BCC-HUB/ai-requirements-validator-task)
+Rust CLI для статической проверки требований к финтех-проектам. Агент выделяет требования, анализирует их с Gemini, сверяет цитаты и формирует отчёт на русском. Поддерживаются Markdown, обычный текст (UTF‑8), PDF и DOCX. [Задание хакатона](https://github.com/BCC-HUB/ai-requirements-validator-task)
 
 ## Запуск
 
@@ -35,10 +35,10 @@ cargo run -p cli -- check samples/requirements.md -o reports/report.md --provide
 ```text
 rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|mock] [--no-cache] [--trace <PATH>]
 rs ask <INPUT>
-rs eval [--golden eval/]
+rs eval [--golden eval/] [--provider gemini|mock] [--no-cache]
 ```
 
-По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команды `ask` и `eval` находятся в разработке.
+По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команда `eval` рассчитывает precision, recall и список пропусков по эталонным разметкам в `eval/` (формат описан в [eval/README.md](eval/README.md)). Команда `ask` находится в разработке.
 
 ## Настройка Gemini
 

@@ -66,7 +66,7 @@ fn plain_text_preserves_paragraph_lines_and_reports_unsupported_formats() {
         matches!(&document.blocks[0].content, BlockContent::Paragraph { text } if text == "One\nTwo")
     );
 
-    for format in ["pdf", "docx"] {
+    for format in ["rtf", "odt"] {
         let name = format!("example.{format}");
         assert!(matches!(
             registry.parse(Path::new(&name), b""),
