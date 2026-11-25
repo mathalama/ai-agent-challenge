@@ -1,6 +1,7 @@
 mod domain;
 mod pipeline;
 mod report;
+mod rules;
 mod stages;
 
 pub use domain::*;

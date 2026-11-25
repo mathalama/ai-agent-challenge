@@ -142,6 +142,12 @@ pub struct CheckRegistry {
 }
 
 impl CheckRegistry {
+    pub fn with_builtin_rules() -> Self {
+        let mut registry = Self::default();
+        registry.register(crate::rules::TestingSection);
+        registry
+    }
+
     pub fn register(&mut self, check: impl Check + 'static) {
         self.checks.push(Box::new(check));
     }

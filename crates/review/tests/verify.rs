@@ -137,8 +137,8 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
         (Some(CheckPhase::Set), None, "checks_incomplete"),
         (
             None,
-            Some((Severity::High, "Первое требование")),
-            "checks_incomplete",
+            Some((Severity::Critical, "Первое требование")),
+            "blocked",
         ),
         (Some(CheckPhase::Rules), None, "ready"),
         (
@@ -154,7 +154,7 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
         (
             Some(CheckPhase::Rules),
             Some((Severity::Critical, "Вымышленная цитата")),
-            "ready",
+            "checks_incomplete",
         ),
         (
             Some(CheckPhase::Rules),
@@ -174,10 +174,15 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
             )
             .unwrap();
         let provider = ReviewProvider(finding);
-        let mut checks = CheckRegistry::default();
-        if let Some(phase) = rules_phase {
-            checks.register(EmptyCheck(phase));
-        }
+        let checks = match rules_phase {
+            Some(CheckPhase::Rules) => CheckRegistry::with_builtin_rules(),
+            Some(phase) => {
+                let mut checks = CheckRegistry::default();
+                checks.register(EmptyCheck(phase));
+                checks
+            }
+            None => CheckRegistry::default(),
+        };
         let mut ctx = RunContext::new(document, &provider, &checks);
         Pipeline::default().run(&mut ctx).await.unwrap();
         let passport = RunPassport {

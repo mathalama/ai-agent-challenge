@@ -33,10 +33,14 @@ pub enum Readiness {
 
 impl Readiness {
     fn evaluate(checks_complete: bool, findings: &[Finding]) -> Self {
-        if !checks_complete {
-            Self::ChecksIncomplete
-        } else if findings.iter().any(needs_fix) {
+        if findings.iter().any(needs_fix) {
             Self::Blocked
+        } else if !checks_complete
+            || findings
+                .iter()
+                .any(|finding| !finding.verified && finding.severity >= Severity::High)
+        {
+            Self::ChecksIncomplete
         } else {
             Self::Ready
         }
@@ -134,6 +138,15 @@ impl ReportRenderer for MarkdownRenderer {
             output.push_str("\nНет требований для вывода.\n");
         }
 
+        let requirement_ids: HashSet<_> = report.requirements.iter().map(|req| &req.id).collect();
+        let mut unmatched = report.findings.iter().enumerate().filter(|(_, finding)| {
+            matches!(&finding.scope, Scope::Requirement(id) if !requirement_ids.contains(id))
+        }).peekable();
+        if unmatched.peek().is_some() {
+            output.push_str("\n### Находки без привязки к требованию\n\n");
+            write_findings(&mut output, unmatched);
+        }
+
         output.push_str("\n## 4. Проверка набора требований\n\n");
         write_findings(
             &mut output,
@@ -166,7 +179,7 @@ impl ReportRenderer for MarkdownRenderer {
         write_priority_fixes(&mut output, report);
         if passport.model == "mock" {
             output.push_str(
-                "\nУчебный прогон показывает работу каркаса на одном примере требования.\n",
+                "\nУчебный прогон модели охватывает одно требование. Детерминированные правила проверяют весь документ.\n",
             );
         }
 
@@ -344,7 +357,7 @@ mod tests {
     #[test]
     fn readiness_requires_complete_checks_without_verified_blockers() {
         let low = finding("low", Severity::Low, true);
-        let unverified = finding("unverified", Severity::Critical, false);
+        let unverified = finding("unverified", Severity::Medium, false);
         assert!(matches!(
             Readiness::evaluate(true, &[low, unverified]),
             Readiness::Ready
@@ -357,6 +370,13 @@ mod tests {
             ));
             assert!(matches!(
                 Readiness::evaluate(false, &blockers),
+                Readiness::Blocked
+            ));
+        }
+        for severity in [Severity::High, Severity::Critical] {
+            let unverified = finding("unverified", severity, false);
+            assert!(matches!(
+                Readiness::evaluate(true, &[unverified]),
                 Readiness::ChecksIncomplete
             ));
         }
@@ -385,6 +405,8 @@ mod tests {
             });
         let mut high_single = finding("high-single", Severity::High, true);
         high_single.scope = Scope::Requirement("R-1".into());
+        let mut orphan = finding("orphan", Severity::Medium, true);
+        orphan.scope = Scope::Requirement("R-404".into());
         let mut high_multiple = finding("high-multiple", Severity::High, true);
         high_multiple.suggestion = Some("Устранить противоречие".into());
         high_multiple.evidence = [0, 1, 0]
@@ -409,11 +431,12 @@ mod tests {
                 finding("critical", Severity::Critical, true),
                 finding("unverified", Severity::Critical, false),
                 finding("low", Severity::Low, true),
+                orphan,
             ],
             summary: ReportSummary {
                 requirement_count: 3,
-                finding_count: 6,
-                verified_count: 5,
+                finding_count: 7,
+                verified_count: 6,
                 critical_findings: Vec::new(),
             },
             readiness: Readiness::Blocked,
@@ -434,9 +457,10 @@ mod tests {
                 "- [high-multiple](#finding-3) — высокая важность, затронуто требований — 2. Устранить противоречие",
                 "- [high-single](#finding-1) — высокая важность, затронуто требований — 1. Описание high-single",
                 "- [medium](#finding-2) — средняя важность, затронуто требований — 0. Описание medium",
+                "- [orphan](#finding-7) — средняя важность, затронуто требований — 0. Описание orphan",
             ]
         );
-        for index in [1, 2, 3, 4] {
+        for index in [1, 2, 3, 4, 7] {
             assert!(markdown.contains(&format!("<a name=\"finding-{index}\"></a>")));
         }
     }
