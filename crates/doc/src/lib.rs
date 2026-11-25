@@ -1,8 +1,10 @@
 mod docx;
 mod markdown;
+mod pdf;
 
 pub use docx::DocxParser;
 pub use markdown::MarkdownParser;
+pub use pdf::PdfParser;
 
 use std::{
     path::{Path, PathBuf},
@@ -22,8 +24,9 @@ pub struct Document {
 
 impl Document {
     pub fn contains_quote(&self, span: SourceSpan, quote: &str) -> bool {
-        let quote = normalize_quote(quote);
-        if span.start_line == 0 || span.start_line > span.end_line || quote.is_empty() {
+        let quote_plain = normalize_quote(quote);
+        let quote_dehyphenated = normalize_quote_dehyphenated(quote);
+        if span.start_line == 0 || span.start_line > span.end_line || quote_plain.is_empty() {
             return false;
         }
         self.blocks.iter().any(|block| {
@@ -36,7 +39,11 @@ impl Document {
             }
             let includes = |line| (span.start_line..=span.end_line).contains(&line);
             let covers_block = includes(location.start_line) && includes(location.end_line);
-            let matches = |text: &str| normalize_quote(text).contains(&quote);
+            let matches = |text: &str| {
+                normalize_quote(text).contains(&quote_plain)
+                    || (!quote_dehyphenated.is_empty()
+                        && normalize_quote_dehyphenated(text).contains(&quote_dehyphenated))
+            };
             match &block.content {
                 BlockContent::Table { rows, row_lines } => {
                     rows.iter().enumerate().any(|(index, row)| {
@@ -74,11 +81,63 @@ impl Document {
 }
 
 fn normalize_quote(text: &str) -> String {
-    text.split_whitespace()
+    text.replace('\u{00A0}', " ")
+        .replace('\u{00AD}', "")
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .replace(['«', '»', '“', '”', '„', '‟', '‹', '›'], "\"")
         .replace(['‘', '’', '‚', '‛'], "'")
+}
+
+fn normalize_quote_dehyphenated(text: &str) -> String {
+    normalize_quote(&dehyphenate_multiline(text))
+}
+
+pub(crate) fn dehyphenate_multiline(text: &str) -> String {
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    let mut result = first.trim_end().to_owned();
+    for raw_line in lines {
+        let next = raw_line.trim();
+        if next.is_empty() {
+            continue;
+        }
+        if result.is_empty() {
+            result.push_str(next);
+            continue;
+        }
+        if should_join_hyphenated(&result, next) {
+            result.pop();
+            result.push_str(next);
+        } else {
+            result.push(' ');
+            result.push_str(next);
+        }
+    }
+    result
+}
+
+fn should_join_hyphenated(left: &str, right: &str) -> bool {
+    let mut left_chars = left.chars().rev();
+    let Some(last) = left_chars.next() else {
+        return false;
+    };
+    if !matches!(last, '-' | '\u{2010}' | '\u{00AD}') {
+        return false;
+    }
+    let Some(before_hyphen) = left_chars.next() else {
+        return false;
+    };
+    if !before_hyphen.is_alphabetic() {
+        return false;
+    }
+    right
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_alphabetic() && ch.is_lowercase())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -130,6 +189,12 @@ pub enum DocumentError {
     Unsupported(String),
     #[error("Документ должен быть сохранён в кодировке UTF-8: {0}")]
     Encoding(#[from] str::Utf8Error),
+    #[error("Не удалось разобрать PDF: {0}")]
+    InvalidPdf(String),
+    #[error(
+        "PDF не содержит текстового слоя (похоже на скан); распознавание изображений не поддерживается"
+    )]
+    EmptyPdfText,
     #[error("Не удалось разобрать DOCX: {0}")]
     InvalidDocx(String),
 }
@@ -235,18 +300,5 @@ impl DocumentParser for PlainTextParser {
             source_path: PathBuf::new(),
             blocks,
         })
-    }
-}
-
-pub struct PdfParser;
-
-impl DocumentParser for PdfParser {
-    fn supports(&self, path: &Path) -> bool {
-        has_extension(path, &["pdf"])
-    }
-
-    fn parse(&self, _bytes: &[u8]) -> Result<Document> {
-        // TODO(issue): извлечь текст и диапазоны страниц из PDF.
-        Err(DocumentError::Unsupported("PDF".into()))
     }
 }
