@@ -16,8 +16,8 @@ use clap::{
 };
 use doc::ParserRegistry;
 use llm::{
-    CachedProvider, GeminiProvider, LlmProvider, MockProvider, RateLimitedProvider, RetryProvider,
-    TraceLog,
+    CachedProvider, GeminiProvider, LlmProvider, MockProvider, OpenAiProvider, RateLimitedProvider,
+    RetryProvider, TraceLog,
 };
 use review::{
     AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, Report, ReportRenderer,
@@ -93,6 +93,8 @@ enum Format {
 #[derive(Clone, Copy, ValueEnum)]
 enum Provider {
     Gemini,
+    /// Любой API, совместимый с OpenAI Chat Completions (OPENAI_BASE_URL).
+    Openai,
     Mock,
 }
 
@@ -326,6 +328,9 @@ fn build_provider(
         Provider::Mock => Box::new(MockProvider),
         Provider::Gemini => Box::new(RateLimitedProvider::from_env(Box::new(
             GeminiProvider::from_env()?,
+        ))?),
+        Provider::Openai => Box::new(RateLimitedProvider::from_env(Box::new(
+            OpenAiProvider::from_env()?,
         ))?),
     };
     let retry = match trace_log {
