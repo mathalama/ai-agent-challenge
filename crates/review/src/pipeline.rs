@@ -7,7 +7,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    Fact, Finding, ProgressEvent, ProgressSink, Question, Requirement, stages::ScaffoldStage,
+    ContextItem, Fact, Finding, ProgressEvent, ProgressSink, Question, Requirement,
+    stages::ScaffoldStage,
 };
 
 #[derive(Debug, Error)]
@@ -24,6 +25,16 @@ pub enum StageError {
     Json(#[from] serde_json::Error),
 }
 
+impl StageError {
+    fn is_output_limit(&self) -> bool {
+        match self {
+            Self::Llm(error) => error.is_output_limit(),
+            Self::Stage { source, .. } => source.is_output_limit(),
+            Self::Json(_) => false,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, StageError>;
 
 #[derive(Debug, Serialize)]
@@ -38,6 +49,7 @@ pub struct RunContext<'a> {
     pub provider: &'a dyn LlmProvider,
     pub checks: &'a CheckRegistry,
     pub requirements: Vec<Requirement>,
+    pub context_items: Vec<ContextItem>,
     pub facts: Vec<Fact>,
     pub findings: Vec<Finding>,
     pub questions: Vec<Question>,
@@ -45,6 +57,7 @@ pub struct RunContext<'a> {
     progress: Option<(&'a dyn ProgressSink, TraceLog)>,
     pub(crate) rules_completed: bool,
     pub(crate) checks_complete: bool,
+    pub(crate) incomplete_stages: Vec<String>,
 }
 
 impl<'a> RunContext<'a> {
@@ -58,6 +71,7 @@ impl<'a> RunContext<'a> {
             provider,
             checks,
             requirements: Vec::new(),
+            context_items: Vec::new(),
             facts: Vec::new(),
             findings: Vec::new(),
             questions: Vec::new(),
@@ -65,6 +79,7 @@ impl<'a> RunContext<'a> {
             progress: None,
             rules_completed: false,
             checks_complete: false,
+            incomplete_stages: Vec::new(),
         }
     }
 
@@ -75,9 +90,15 @@ impl<'a> RunContext<'a> {
         self
     }
 
-    fn emit(&self, event: impl FnOnce() -> ProgressEvent) {
+    pub(crate) fn emit(&self, event: impl FnOnce() -> ProgressEvent) {
         if let Some((sink, _)) = &self.progress {
             sink.emit(&event());
+        }
+    }
+
+    pub(crate) fn mark_incomplete(&mut self, stage: &'static str) {
+        if !self.incomplete_stages.iter().any(|name| name == stage) {
+            self.incomplete_stages.push(stage.into());
         }
     }
 
@@ -122,6 +143,7 @@ impl Pipeline {
     pub async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
         ctx.rules_completed = false;
         ctx.checks_complete = false;
+        ctx.incomplete_stages.clear();
         let run_started = Instant::now();
         let total = self.stages.len();
         ctx.emit(|| ProgressEvent::RunStarted {
@@ -167,6 +189,13 @@ impl Pipeline {
                 }
             });
             if let Err(source) = result {
+                if source.is_output_limit() {
+                    ctx.mark_incomplete(stage.name());
+                    ctx.emit(|| ProgressEvent::StageOutputLimit {
+                        stage: stage.name(),
+                    });
+                    continue;
+                }
                 ctx.emit(|| ProgressEvent::RunFinished {
                     duration_ms: elapsed_ms(run_started),
                     succeeded: false,
@@ -179,6 +208,7 @@ impl Pipeline {
         }
         ctx.checks_complete = self.full_review
             && ctx.rules_completed
+            && ctx.incomplete_stages.is_empty()
             && ctx.provider.model() != "mock"
             && ctx.requirements.iter().all(|requirement| {
                 ctx.document

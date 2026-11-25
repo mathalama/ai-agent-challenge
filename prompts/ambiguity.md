@@ -4,7 +4,7 @@
 
 # Вход и выход
 
-- **Вход**: JSON-массив `Requirement` (`id`, `source_id`, `text`, `quote`, `location`, `part`).
+- **Вход** — объект {requirements, context}. Требования и контекст API содержат quote и location. Элементы контекста можно цитировать в находках.
 - **Выход**: JSON-массив объектов `FindingDraft`:
   - `requirement_id` — точный `id` требования из входного списка (или `null`, если двусмысленность относится к терминологии всего набора).
   - `criterion` — всегда `unambiguous`.

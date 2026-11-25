@@ -4,7 +4,7 @@
     "document_title": "Уведомление о расходах по карте",
     "date": "2026-11-25",
     "model": "mock",
-    "agent_version": "b8d71b4"
+    "agent_version": "d6020da"
   },
   "blocks": [
     {
@@ -1252,6 +1252,45 @@
     {
       "id": "R-005",
       "source_id": null,
+      "text": "Сервис передаёт push на отправку в течение минуты после получения события.",
+      "quote": "Сервис передаёт push на отправку в течение минуты после получения события.",
+      "location": {
+        "start_line": 46,
+        "end_line": 46,
+        "page": null
+      },
+      "part": "Часть A. Новый функционал",
+      "section": "Нефункциональные требования"
+    },
+    {
+      "id": "R-006",
+      "source_id": null,
+      "text": "Хранить идентификатор карты, месяц, идентификатор операции, сумму покупки в тиынах, признак отправки и порог в тенге.",
+      "quote": "Хранить идентификатор карты, месяц, идентификатор операции, сумму покупки в тиынах, признак отправки и порог в тенге.",
+      "location": {
+        "start_line": 49,
+        "end_line": 49,
+        "page": null
+      },
+      "part": "Часть A. Новый функционал",
+      "section": "Требования к данным"
+    },
+    {
+      "id": "R-007",
+      "source_id": null,
+      "text": "Приложение читает и сохраняет настройки через дочерний документ «Уведомление о расходах по карте — REST API». Повторная доставка одного события процессинга сохраняет исходный итог.",
+      "quote": "Приложение читает и сохраняет настройки через дочерний документ «Уведомление о расходах по карте — REST API». Повторная доставка одного события процессинга сохраняет исходный итог.",
+      "location": {
+        "start_line": 52,
+        "end_line": 52,
+        "page": null
+      },
+      "part": "Часть A. Новый функционал",
+      "section": "Требования к интеграции"
+    },
+    {
+      "id": "R-008",
+      "source_id": null,
       "text": "Исходные условия: Расходы 48 500 ₸, порог 50 000 ₸; Действие: Провести покупку на 1 500 ₸; Ожидаемый результат: Итог 50 000 ₸ и один push",
       "quote": "Расходы 48 500 ₸, порог 50 000 ₸ | Провести покупку на 1 500 ₸ | Итог 50 000 ₸ и один push",
       "location": {
@@ -1269,7 +1308,7 @@
       }
     },
     {
-      "id": "R-006",
+      "id": "R-009",
       "source_id": null,
       "text": "Исходные условия: Покупка 31 января в 23:58 на 4 000 ₸; Действие: Провести 1 февраля в 00:03 по Алматы; Ожидаемый результат: Февральский счётчик вырос на 4 000 ₸",
       "quote": "Покупка 31 января в 23:58 на 4 000 ₸ | Провести 1 февраля в 00:03 по Алматы | Февральский счётчик вырос на 4 000 ₸",
@@ -1288,7 +1327,7 @@
       }
     },
     {
-      "id": "R-007",
+      "id": "R-010",
       "source_id": null,
       "text": "Исходные условия: Расходы 19 900 ₸, порог 20 000 ₸; Действие: Перевести 500 ₸; Ожидаемый результат: Счётчик показывает 19 900 ₸",
       "quote": "Расходы 19 900 ₸, порог 20 000 ₸ | Перевести 500 ₸ | Счётчик показывает 19 900 ₸",
@@ -1307,9 +1346,9 @@
       }
     },
     {
-      "id": "R-008",
+      "id": "R-011",
       "source_id": null,
-      "text": "Description: Сохранение порога. Функциональные требования: чтение порога",
+      "text": "Сохранение порога. Функциональные требования: чтение порога",
       "quote": "Description | Сохранение порога. Функциональные требования: чтение порога",
       "location": {
         "start_line": 103,
@@ -1326,346 +1365,147 @@
       }
     },
     {
-      "id": "R-009",
-      "source_id": null,
-      "text": "REST type: GET",
-      "quote": "REST type | GET",
-      "location": {
-        "start_line": 104,
-        "end_line": 104,
-        "page": null
-      },
-      "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 2,
-        "title": "Общие параметры"
-      }
-    },
-    {
-      "id": "R-010",
-      "source_id": null,
-      "text": "Authorization: Bearer, сессия владельца карты",
-      "quote": "Authorization | Bearer, сессия владельца карты",
-      "location": {
-        "start_line": 105,
-        "end_line": 105,
-        "page": null
-      },
-      "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 3,
-        "title": "Общие параметры"
-      }
-    },
-    {
-      "id": "R-011",
-      "source_id": null,
-      "text": "Controller: AlertsController",
-      "quote": "Controller | AlertsController",
-      "location": {
-        "start_line": 106,
-        "end_line": 106,
-        "page": null
-      },
-      "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 4,
-        "title": "Общие параметры"
-      }
-    },
-    {
       "id": "R-012",
       "source_id": null,
-      "text": "URL type: Dev / Prod",
-      "quote": "URL type | Dev / Prod",
+      "text": "Проверить пользовательскую сессию.",
+      "quote": "Проверить пользовательскую сессию.",
       "location": {
-        "start_line": 107,
-        "end_line": 107,
+        "start_line": 117,
+        "end_line": 117,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 5,
-        "title": "Общие параметры"
-      }
+      "section": "Логика работы метода"
     },
     {
       "id": "R-013",
       "source_id": null,
-      "text": "Request URL: Dev: /alerts/saveLimit . Prod: —",
-      "quote": "Request URL | Dev: /alerts/saveLimit . Prod: —",
+      "text": "Проверить принадлежность карты клиенту.",
+      "quote": "Проверить принадлежность карты клиенту.",
       "location": {
-        "start_line": 108,
-        "end_line": 108,
+        "start_line": 118,
+        "end_line": 118,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 6,
-        "title": "Общие параметры"
-      }
+      "section": "Логика работы метода"
     },
     {
       "id": "R-014",
       "source_id": null,
-      "text": "CURL: curl -G \"$BASE/alerts/saveLimit\" -H \"Authorization: Bearer $TOKEN\" --data 'cardId=demo-42&amount=50000&enabled=1'",
-      "quote": "CURL | curl -G \"$BASE/alerts/saveLimit\" -H \"Authorization: Bearer $TOKEN\" --data 'cardId=demo-42&amount=50000&enabled=1'",
+      "text": "Проверить сумму и переключатель.",
+      "quote": "Проверить сумму и переключатель.",
       "location": {
-        "start_line": 109,
-        "end_line": 109,
+        "start_line": 119,
+        "end_line": 119,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 7,
-        "title": "Общие параметры"
-      }
+      "section": "Логика работы метода"
     },
     {
       "id": "R-015",
       "source_id": null,
-      "text": "Swagger: —",
-      "quote": "Swagger | —",
+      "text": "Заменить настройку и вернуть результат сохранения.",
+      "quote": "Заменить настройку и вернуть результат сохранения.",
       "location": {
-        "start_line": 110,
-        "end_line": 110,
+        "start_line": 120,
+        "end_line": 120,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 8,
-        "title": "Общие параметры"
-      }
+      "section": "Логика работы метода"
     },
     {
       "id": "R-016",
       "source_id": null,
-      "text": "Gitlab project: Учебный контур",
-      "quote": "Gitlab project | Учебный контур",
+      "text": "При отклонении суммы вернуть прежнее состояние и результат ERROR.",
+      "quote": "При отклонении суммы вернуть прежнее состояние и результат ERROR.",
       "location": {
-        "start_line": 111,
-        "end_line": 111,
+        "start_line": 121,
+        "end_line": 121,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 9,
-        "title": "Общие параметры"
-      }
+      "section": "Логика работы метода"
     },
     {
       "id": "R-017",
       "source_id": null,
-      "text": "Framework: Учебный контур",
-      "quote": "Framework | Учебный контур",
+      "text": "Целое число тенге, обе границы включены.",
+      "quote": "Целое число тенге, обе границы включены.",
       "location": {
-        "start_line": 112,
-        "end_line": 112,
+        "start_line": 124,
+        "end_line": 124,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 10,
-        "title": "Общие параметры"
-      }
+      "section": "Особые правила"
     },
     {
       "id": "R-018",
       "source_id": null,
-      "text": "Author: Школа тестирования",
-      "quote": "Author | Школа тестирования",
+      "text": "Повторное сохранение заменяет действующую настройку.",
+      "quote": "Повторное сохранение заменяет действующую настройку.",
       "location": {
-        "start_line": 113,
-        "end_line": 113,
+        "start_line": 125,
+        "end_line": 125,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 11,
-        "title": "Общие параметры"
-      }
+      "section": "Особые правила"
     },
     {
       "id": "R-019",
       "source_id": null,
-      "text": "Developer: Команда практикума",
-      "quote": "Developer | Команда практикума",
+      "text": "Изменение порога сохраняет накопленные расходы.",
+      "quote": "Изменение порога сохраняет накопленные расходы.",
       "location": {
-        "start_line": 114,
-        "end_line": 114,
+        "start_line": 126,
+        "end_line": 126,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Общие параметры",
-      "table": {
-        "block_id": 41,
-        "index": 5,
-        "row": 12,
-        "title": "Общие параметры"
-      }
+      "section": "Особые правила"
     },
     {
       "id": "R-020",
       "source_id": null,
-      "text": "Parameter: cardId; Format: string; Size: 1–64; Mandatory: Да; Logic: Карта клиента; Description: Идентификатор карты; DB field: card_id",
-      "quote": "cardId | string | 1–64 | Да | Карта клиента | Идентификатор карты | card_id",
+      "text": "Content-Type: application/json .",
+      "quote": "Content-Type: application/json .",
       "location": {
-        "start_line": 142,
-        "end_line": 142,
+        "start_line": 147,
+        "end_line": 147,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Параметры запроса / Query-параметры",
-      "table": {
-        "block_id": 58,
-        "index": 6,
-        "row": 1,
-        "title": "Query-параметры"
-      }
+      "section": "Параметры запроса / Request body"
     },
     {
       "id": "R-021",
       "source_id": null,
-      "text": "Parameter: amount; Format: integer; Size: 32 bit; Mandatory: Да; Logic: 1 000–1 000 000; Description: Порог в тенге; DB field: limit_kzt",
-      "quote": "amount | integer | 32 bit | Да | 1 000–1 000 000 | Порог в тенге | limit_kzt",
+      "text": "Тело не используется.",
+      "quote": "Тело не используется.",
       "location": {
-        "start_line": 143,
-        "end_line": 143,
+        "start_line": 148,
+        "end_line": 148,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Параметры запроса / Query-параметры",
-      "table": {
-        "block_id": 58,
-        "index": 6,
-        "row": 2,
-        "title": "Query-параметры"
-      }
+      "section": "Параметры запроса / Request body"
     },
     {
       "id": "R-022",
       "source_id": null,
-      "text": "Parameter: enabled; Format: integer; Size: 1 знак; Mandatory: Да; Logic: 0 или 1; Description: Признак включения; DB field: enabled",
-      "quote": "enabled | integer | 1 знак | Да | 0 или 1 | Признак включения | enabled",
+      "text": "Если результат 200 или 201 — успешный. Если результат 400, 401 и далее — неуспешный.",
+      "quote": "Если результат 200 или 201 — успешный. Если результат 400, 401 и далее — неуспешный.",
       "location": {
-        "start_line": 144,
-        "end_line": 144,
+        "start_line": 151,
+        "end_line": 151,
         "page": null
       },
       "part": "Часть B. REST API",
-      "section": "Параметры запроса / Query-параметры",
-      "table": {
-        "block_id": 58,
-        "index": 6,
-        "row": 3,
-        "title": "Query-параметры"
-      }
-    },
-    {
-      "id": "R-023",
-      "source_id": null,
-      "text": "Parameter: result; Format: string; Logic: OK / ERROR; Description: Исход сохранения; DB field: —",
-      "quote": "result | string | OK / ERROR | Исход сохранения | —",
-      "location": {
-        "start_line": 155,
-        "end_line": 155,
-        "page": null
-      },
-      "part": "Часть B. REST API",
-      "section": "Ответ",
-      "table": {
-        "block_id": 64,
-        "index": 7,
-        "row": 1,
-        "title": "Ответ"
-      }
-    },
-    {
-      "id": "R-024",
-      "source_id": null,
-      "text": "Parameter: amount; Format: string; Logic: При успехе; Description: Порог в тенге; DB field: limit_kzt",
-      "quote": "amount | string | При успехе | Порог в тенге | limit_kzt",
-      "location": {
-        "start_line": 156,
-        "end_line": 156,
-        "page": null
-      },
-      "part": "Часть B. REST API",
-      "section": "Ответ",
-      "table": {
-        "block_id": 64,
-        "index": 7,
-        "row": 2,
-        "title": "Ответ"
-      }
-    },
-    {
-      "id": "R-025",
-      "source_id": null,
-      "text": "Parameter: enabled; Format: string; Logic: «0» или «1»; Description: Признак включения; DB field: enabled",
-      "quote": "enabled | string | «0» или «1» | Признак включения | enabled",
-      "location": {
-        "start_line": 157,
-        "end_line": 157,
-        "page": null
-      },
-      "part": "Часть B. REST API",
-      "section": "Ответ",
-      "table": {
-        "block_id": 64,
-        "index": 7,
-        "row": 3,
-        "title": "Ответ"
-      }
-    },
-    {
-      "id": "R-026",
-      "source_id": null,
-      "text": "Parameter: message; Format: string; Logic: При ошибке; Description: Описание ошибки; DB field: —",
-      "quote": "message | string | При ошибке | Описание ошибки | —",
-      "location": {
-        "start_line": 158,
-        "end_line": 158,
-        "page": null
-      },
-      "part": "Часть B. REST API",
-      "section": "Ответ",
-      "table": {
-        "block_id": 64,
-        "index": 7,
-        "row": 4,
-        "title": "Ответ"
-      }
+      "section": "Ответ"
     }
   ],
   "findings": [
@@ -1846,7 +1686,8 @@
     {
       "id": "vague-term-001",
       "scope": {
-        "kind": "set"
+        "kind": "requirement",
+        "id": "R-022"
       },
       "criterion": "unambiguous",
       "severity": "medium",
@@ -1961,7 +1802,7 @@
     }
   ],
   "summary": {
-    "requirement_count": 26,
+    "requirement_count": 22,
     "finding_count": 10,
     "verified_count": 10,
     "critical_findings": []

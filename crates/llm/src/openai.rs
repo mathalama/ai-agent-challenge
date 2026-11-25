@@ -1,7 +1,7 @@
 //! Провайдер для API, совместимых с OpenAI Chat Completions: OpenAI, GitHub Models,
 //! OpenRouter, Groq, DeepSeek и другие. Отличаются они только адресом, ключом и моделью.
 
-use std::{env, time::Duration};
+use std::{env, num::NonZeroU32, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::{
@@ -14,6 +14,7 @@ use crate::{
     LlmError, LlmProvider, LlmRequest, LlmResponse, Result, Usage, providers::retry_after_header,
 };
 
+const MAX_TOKENS_VAR: &str = "OPENAI_MAX_TOKENS";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// Ключ, под которым лежит ответ модели в обёртке схемы.
 const RESULT_FIELD: &str = "result";
@@ -34,6 +35,7 @@ pub struct OpenAiProvider {
     format: ResponseFormat,
     /// `reasoning_effort` для рассуждающих моделей; `none` отключает рассуждения у Ollama.
     reasoning_effort: Option<String>,
+    max_tokens: Option<NonZeroU32>,
     client: Client,
 }
 
@@ -98,6 +100,7 @@ impl OpenAiProvider {
             endpoint: format!("{base_url}/chat/completions"),
             format,
             reasoning_effort,
+            max_tokens: parse_max_tokens(optional_var(MAX_TOKENS_VAR)?.as_deref())?,
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(timeout))
@@ -134,8 +137,19 @@ impl OpenAiProvider {
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
         }
+        if let Some(max_tokens) = self.max_tokens {
+            body["max_tokens"] = json!(max_tokens.get());
+        }
         body
     }
+}
+
+fn parse_max_tokens(value: Option<&str>) -> Result<Option<NonZeroU32>> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse().map_err(|_| LlmError::Config(MAX_TOKENS_VAR)))
+        .transpose()
 }
 
 fn optional_var(name: &'static str) -> Result<Option<String>> {
@@ -259,6 +273,7 @@ mod tests {
             endpoint: format!("{DEFAULT_BASE_URL}/chat/completions"),
             format,
             reasoning_effort: None,
+            max_tokens: None,
             client: Client::new(),
         }
     }
@@ -304,6 +319,22 @@ mod tests {
         let mut quick = provider(ResponseFormat::JsonSchema);
         quick.reasoning_effort = Some("none".into());
         assert_eq!(quick.request_body(&request)["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn max_tokens_is_optional_and_must_be_positive() {
+        let mut provider = provider(ResponseFormat::JsonObject);
+        let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        assert!(provider.request_body(&request).get("max_tokens").is_none());
+        assert_eq!(parse_max_tokens(Some("   ")).unwrap(), None);
+        for invalid in ["0", "-1", "bad"] {
+            assert!(matches!(
+                parse_max_tokens(Some(invalid)),
+                Err(LlmError::Config("OPENAI_MAX_TOKENS"))
+            ));
+        }
+        provider.max_tokens = parse_max_tokens(Some(" 4096 ")).unwrap();
+        assert_eq!(provider.request_body(&request)["max_tokens"], 4096);
     }
 
     #[test]
