@@ -5,8 +5,8 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::{
-    CheckPhase, Criterion, Detector, Evidence, Finding, Question, RelatedId, RunContext, Scope,
-    Severity, Stage, consistency,
+    CheckPhase, Criterion, Detector, Evidence, Finding, RunContext, Scope, Severity, Stage,
+    clarify, consistency,
     pipeline::Result,
     segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
 };
@@ -21,14 +21,6 @@ struct FindingDraft {
     evidence: Vec<Evidence>,
     explanation: String,
     suggestion: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct QuestionDraft {
-    text: String,
-    why: String,
-    priority: Severity,
-    finding_ids: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -177,46 +169,7 @@ impl Stage for ScaffoldStage {
                 }
                 ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
             }
-            Self::Clarify => {
-                ctx.questions.clear();
-                let verified: Vec<_> = ctx
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.verified)
-                    .collect();
-                if verified.is_empty() {
-                    return Ok(());
-                }
-                let prompt = self.llm_prompt();
-                let questions: Vec<QuestionDraft> = generate_typed(
-                    ctx.provider,
-                    name,
-                    &prompt,
-                    serde_json::to_string(&verified)?,
-                )
-                .await?;
-                for question in questions {
-                    if !has_cyrillic(&question.text) || !has_cyrillic(&question.why) {
-                        warn!("Отброшен уточняющий вопрос без кириллицы");
-                        continue;
-                    }
-                    let related: Vec<_> = question
-                        .finding_ids
-                        .into_iter()
-                        .filter(|id| verified.iter().any(|finding| finding.id == *id))
-                        .map(RelatedId::Finding)
-                        .collect();
-                    if !related.is_empty() {
-                        ctx.questions.push(Question {
-                            id: format!("Q-{:03}", ctx.questions.len() + 1),
-                            text: question.text,
-                            why: question.why,
-                            priority: question.priority,
-                            related,
-                        });
-                    }
-                }
-            }
+            Self::Clarify => clarify::ask_questions(ctx, &self.llm_prompt()).await?,
         }
         Ok(())
     }

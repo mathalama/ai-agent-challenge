@@ -1,3 +1,4 @@
+mod clarify;
 mod consistency;
 mod dedup;
 mod domain;

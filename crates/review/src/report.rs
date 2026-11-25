@@ -1,9 +1,16 @@
-use std::{cmp::Reverse, collections::HashSet, fmt::Write};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, HashSet},
+    fmt::Write,
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Finding, FindingId, Question, Requirement, RunContext, RunPassport, Scope, Severity};
+use crate::{
+    Answer, Finding, FindingId, Question, RelatedId, Requirement, RunContext, RunPassport, Scope,
+    Severity,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Report {
@@ -13,6 +20,10 @@ pub struct Report {
     pub summary: ReportSummary,
     pub readiness: Readiness,
     pub questions: Vec<Question>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub finding_answers: BTreeMap<FindingId, Vec<Answer>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unmatched_answers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -32,13 +43,14 @@ pub enum Readiness {
 }
 
 impl Readiness {
-    fn evaluate(checks_complete: bool, findings: &[Finding]) -> Self {
-        if findings.iter().any(needs_fix) {
+    fn evaluate<'a>(
+        checks_complete: bool,
+        mut findings: impl Iterator<Item = &'a Finding> + Clone,
+    ) -> Self {
+        if findings.clone().any(needs_fix) {
             Self::Blocked
         } else if !checks_complete
-            || findings
-                .iter()
-                .any(|finding| !finding.verified && finding.severity >= Severity::High)
+            || findings.any(|finding| !finding.verified && finding.severity >= Severity::High)
         {
             Self::ChecksIncomplete
         } else {
@@ -53,6 +65,34 @@ fn needs_fix(finding: &Finding) -> bool {
 
 impl Report {
     pub fn from_run(ctx: RunContext<'_>, passport: RunPassport) -> Self {
+        Self::with_answers(ctx, passport, &BTreeMap::new())
+    }
+
+    pub fn with_answers(
+        mut ctx: RunContext<'_>,
+        passport: RunPassport,
+        answers: &BTreeMap<String, String>,
+    ) -> Self {
+        let mut unmatched_answers = answers.clone();
+        let mut finding_answers = BTreeMap::<_, Vec<_>>::new();
+        ctx.questions.retain(|question| {
+            let Some(text) = unmatched_answers.remove(&question.id) else {
+                return true;
+            };
+            if text.trim().is_empty() {
+                return true;
+            }
+            for related in &question.related {
+                if let RelatedId::Finding(id) = related {
+                    finding_answers.entry(id.clone()).or_default().push(Answer {
+                        question_id: question.id.clone(),
+                        text: text.clone(),
+                    });
+                }
+            }
+            false
+        });
+
         let summary = ReportSummary {
             requirement_count: ctx.requirements.len(),
             finding_count: ctx.findings.len(),
@@ -70,7 +110,7 @@ impl Report {
         };
         let readiness = Readiness::evaluate(
             ctx.checks_complete && !ctx.requirements.is_empty(),
-            &ctx.findings,
+            ctx.findings.iter(),
         );
         Self {
             passport,
@@ -79,6 +119,8 @@ impl Report {
             summary,
             readiness,
             questions: ctx.questions,
+            finding_answers,
+            unmatched_answers,
         }
     }
 }
@@ -113,10 +155,10 @@ impl ReportRenderer for MarkdownRenderer {
             writeln!(
                 output,
                 "| {} | {} | {} | {} |",
-                markdown(&requirement.id),
-                markdown(requirement.source_id.as_deref().unwrap_or("—")),
-                markdown(&requirement_section(requirement)),
-                markdown(&requirement.text),
+                markdown_cell(&requirement.id),
+                markdown_cell(requirement.source_id.as_deref().unwrap_or("—")),
+                markdown_cell(&requirement_section(requirement)),
+                markdown_cell(&requirement.text),
             )
             .expect("запись в строку");
         }
@@ -127,11 +169,11 @@ impl ReportRenderer for MarkdownRenderer {
                 output,
                 "\n### {}\n\n> {}\n\n{}\n",
                 markdown(&requirement.id),
-                markdown(&requirement.quote),
+                markdown_block(&requirement.quote),
                 requirement_location(requirement)
             )
             .expect("запись в строку");
-            write_findings(&mut output, report.findings.iter().enumerate().filter(|(_, finding)| {
+            write_findings(&mut output, report, report.findings.iter().enumerate().filter(|(_, finding)| {
                 matches!(&finding.scope, Scope::Requirement(id) if *id == requirement.id)
             }));
         }
@@ -145,12 +187,13 @@ impl ReportRenderer for MarkdownRenderer {
         }).peekable();
         if unmatched.peek().is_some() {
             output.push_str("\n### Находки без привязки к требованию\n\n");
-            write_findings(&mut output, unmatched);
+            write_findings(&mut output, report, unmatched);
         }
 
         output.push_str("\n## 4. Проверка набора требований\n\n");
         write_findings(
             &mut output,
+            report,
             report
                 .findings
                 .iter()
@@ -160,8 +203,8 @@ impl ReportRenderer for MarkdownRenderer {
 
         let summary = &report.summary;
         writeln!(output,
-            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- Критичные дефекты — {}",
-            summary.requirement_count, summary.finding_count, summary.verified_count,
+            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- Находок с ответами — {}\n- Критичные дефекты — {}",
+            summary.requirement_count, summary.finding_count, summary.verified_count, report.finding_answers.len(),
             if summary.critical_findings.is_empty() { "список пуст".into() } else {
                 summary.critical_findings.iter().map(|id| markdown(id)).collect::<Vec<_>>().join(", ")
             },
@@ -180,7 +223,7 @@ impl ReportRenderer for MarkdownRenderer {
         write_priority_fixes(&mut output, report);
         if passport.model == "mock" {
             output.push_str(
-                "\nУчебный прогон модели охватывает одно требование. Детерминированные правила проверяют весь документ.\n",
+                "\nУчебный прогон использует фиксированные ответы модели. Детерминированные правила проверяют весь документ.\n",
             );
         }
 
@@ -188,32 +231,85 @@ impl ReportRenderer for MarkdownRenderer {
         if report.questions.is_empty() {
             output.push_str("Вопросы отсутствуют.\n");
         }
-        for question in &report.questions {
-            let related = question
-                .related
-                .iter()
-                .map(|id| match id {
-                    crate::RelatedId::Finding(id) | crate::RelatedId::Requirement(id) => {
-                        markdown(id)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln!(
-                output,
-                "- {}. {}. Приоритет — {}. Основание — {}.",
-                markdown(&question.id),
-                markdown(&question.text),
-                question.priority.russian_name(),
-                markdown(&question.why),
-            )
-            .expect("запись в строку");
-            if !related.is_empty() {
-                writeln!(output, "  Связи — {related}.").expect("запись в строку");
+        let mut questions: Vec<_> = report.questions.iter().collect();
+        questions.sort_by_key(|question| Reverse(question.priority));
+        let (main, additional) = questions.split_at(questions.len().min(10));
+        let mut topics = Vec::new();
+        for question in main {
+            if !topics.contains(&question.topic) {
+                topics.push(question.topic);
+            }
+        }
+        for topic in topics {
+            writeln!(output, "### {}\n", topic.russian_name()).expect("запись в строку");
+            for question in main.iter().filter(|question| question.topic == topic) {
+                write_question(&mut output, report, question);
+            }
+            output.push('\n');
+        }
+        if !additional.is_empty() {
+            output.push_str("### Дополнительные вопросы\n\n");
+            for question in additional {
+                write_question(&mut output, report, question);
+            }
+        }
+
+        if !report.unmatched_answers.is_empty() {
+            output.push_str("\n### Ответы без текущего вопроса\n\n");
+            for (id, text) in &report.unmatched_answers {
+                writeln!(output, "- **{}** — {}", markdown(id), markdown(text))
+                    .expect("запись в строку");
             }
         }
 
         Ok(output)
+    }
+}
+
+fn write_question(output: &mut String, report: &Report, question: &Question) {
+    writeln!(
+        output,
+        "- **{}** — {} Приоритет — {}. Основание — {}",
+        markdown(&question.id),
+        sentence(&question.text),
+        question.priority.russian_name(),
+        sentence(&question.why),
+    )
+    .expect("запись в строку");
+    if !question.options.is_empty() {
+        output.push_str("  - Варианты ответа\n");
+        for (index, option) in question.options.iter().enumerate() {
+            writeln!(output, "    {}. {}", index + 1, markdown_block(option))
+                .expect("запись в строку");
+        }
+    }
+    let related = question
+        .related
+        .iter()
+        .map(|related| match related {
+            RelatedId::Finding(id) => report
+                .findings
+                .iter()
+                .position(|finding| &finding.id == id)
+                .map_or_else(
+                    || markdown(id),
+                    |index| format!("[{}](#finding-{})", markdown(id), index + 1),
+                ),
+            RelatedId::Requirement(id) => markdown(id),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !related.is_empty() {
+        writeln!(output, "  - Связи — {related}").expect("запись в строку");
+    }
+    for evidence in &question.evidence {
+        writeln!(
+            output,
+            "  - «{}» ({})",
+            markdown(&evidence.quote),
+            location(evidence.location)
+        )
+        .expect("запись в строку");
     }
 }
 
@@ -272,7 +368,11 @@ fn affected_requirement_count(finding: &Finding, requirements: &[Requirement]) -
     }
 }
 
-fn write_findings<'a>(output: &mut String, findings: impl Iterator<Item = (usize, &'a Finding)>) {
+fn write_findings<'a>(
+    output: &mut String,
+    report: &Report,
+    findings: impl Iterator<Item = (usize, &'a Finding)>,
+) {
     let mut findings = findings.peekable();
     if findings.peek().is_none() {
         output.push_str("Замечания в этом прогоне отсутствуют.\n");
@@ -315,6 +415,17 @@ fn write_findings<'a>(output: &mut String, findings: impl Iterator<Item = (usize
                 markdown(&finding.detector.display_label())
             )
             .expect("запись в строку");
+        }
+        if let Some(answers) = report.finding_answers.get(&finding.id) {
+            for answer in answers {
+                writeln!(
+                    output,
+                    "  - Ответ {} — {}",
+                    markdown(&answer.question_id),
+                    markdown(&answer.text)
+                )
+                .expect("запись в строку");
+            }
         }
         if !finding.verified {
             output.push_str("  Доказательства не подтверждены.\n");
@@ -375,16 +486,45 @@ fn location(span: doc::SourceSpan) -> String {
     }
 }
 
+fn sentence(value: &str) -> String {
+    let value = value.trim();
+    let mut formatted = markdown(value);
+    if !value.is_empty() && !value.ends_with(['.', '?', '!', '…']) {
+        formatted.push('.');
+    }
+    formatted
+}
+
+fn markdown_block(value: &str) -> String {
+    let trimmed = value.trim_start_matches([' ', '\t']);
+    let mut formatted = markdown(value);
+    if trimmed.starts_with('>') {
+        formatted.insert(value.len() - trimmed.len(), '\\');
+    }
+    formatted
+}
+
+fn markdown_cell(value: &str) -> String {
+    markdown(value).replace('|', "\\|")
+}
+
 fn markdown(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
+    for (index, character) in value.char_indices() {
         match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
+            '<' if value[index + 1..].starts_with(|next: char| {
+                next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?')
+            }) && value[index + 1..]
+                .split('\n')
+                .next()
+                .is_some_and(|line| line.contains('>')) =>
+            {
+                escaped.push_str("\\<");
+            }
+            '&' if starts_with_entity(&value[index + 1..]) => escaped.push_str("\\&"),
             '\n' => escaped.push_str("<br>"),
             '\r' => {}
-            '\\' | '|' | '*' | '_' | '`' | '[' | ']' | '~' => {
+            '\\' | '*' | '_' | '`' | '[' | ']' | '~' => {
                 escaped.push('\\');
                 escaped.push(character);
             }
@@ -392,6 +532,16 @@ fn markdown(value: &str) -> String {
         }
     }
     escaped
+}
+
+fn starts_with_entity(value: &str) -> bool {
+    let name = value.strip_prefix('#').unwrap_or(value);
+    let len = name
+        .bytes()
+        .take(33)
+        .take_while(u8::is_ascii_alphanumeric)
+        .count();
+    (1..=32).contains(&len) && name.as_bytes().get(len) == Some(&b';')
 }
 
 #[cfg(test)]
@@ -420,33 +570,148 @@ mod tests {
     }
 
     #[test]
+    fn markdown_preserves_sentence_endings_and_comparisons() {
+        assert_eq!(sentence("Сумма >= 10."), "Сумма >= 10.");
+        assert_eq!(sentence("Сумма < 10?"), "Сумма < 10?");
+        assert_eq!(sentence("Сумма < 10"), "Сумма < 10.");
+        assert_eq!(sentence("Готово!"), "Готово!");
+        assert_eq!(markdown("Флаг A | B"), "Флаг A | B");
+        assert_eq!(markdown_cell("Флаг A | B"), r"Флаг A \| B");
+        assert_eq!(markdown("<script>"), r"\<script>");
+        assert_eq!(markdown("A & B, &lt;, &#62;"), r"A & B, \&lt;, \&#62;");
+        assert_eq!(markdown_block("> 10 000 ₸"), r"\> 10 000 ₸");
+    }
+
+    #[test]
+    fn markdown_groups_the_ten_highest_priority_questions_before_the_remainder() {
+        use crate::QuestionTopic;
+
+        let questions = (0..11)
+            .map(|index| Question {
+                id: format!("Q-{index}"),
+                text: "Сумма < 10?".into(),
+                why: "Проверка при сумме >= 10.".into(),
+                priority: if index == 0 {
+                    Severity::Low
+                } else {
+                    Severity::High
+                },
+                topic: QuestionTopic::Calculation,
+                options: vec!["> 10 000 ₸".into(), "Символ &lt;".into()],
+                evidence: Vec::new(),
+                related: Vec::new(),
+            })
+            .collect();
+        let report = Report {
+            passport: RunPassport {
+                document_title: String::new(),
+                date: String::new(),
+                model: "test".into(),
+                agent_version: String::new(),
+            },
+            requirements: Vec::new(),
+            findings: Vec::new(),
+            summary: ReportSummary {
+                requirement_count: 0,
+                finding_count: 0,
+                verified_count: 0,
+                critical_findings: Vec::new(),
+            },
+            readiness: Readiness::ChecksIncomplete,
+            questions,
+            finding_answers: BTreeMap::new(),
+            unmatched_answers: BTreeMap::new(),
+        };
+        let rendered = MarkdownRenderer.render(&report).unwrap();
+        let (main, rest) = rendered.split_once("### Дополнительные вопросы").unwrap();
+        assert!(main.contains("### Расчёт"));
+        assert_eq!(main.matches("- **Q-").count(), 10);
+        assert!(rest.contains("**Q-0**"));
+        assert!(!main.contains("**Q-0**"));
+        assert!(main.contains("Сумма < 10? Приоритет"));
+        assert!(main.contains("Проверка при сумме >= 10.\n"));
+        assert!(main.contains(r"1. \> 10 000 ₸"));
+        assert!(main.contains(r"2. Символ \&lt;"));
+    }
+
+    #[test]
+    fn saved_answers_keep_blockers_and_show_their_text_in_both_formats() {
+        let document = doc::ParserRegistry::default()
+            .parse(std::path::Path::new("test.md"), "# Требования".as_bytes())
+            .unwrap();
+        let checks = crate::CheckRegistry::default();
+        let mut ctx = RunContext::new(document, &llm::MockProvider, &checks);
+        ctx.findings
+            .push(finding("critical", Severity::Critical, true));
+        ctx.questions.push(Question {
+            id: "Q-1".into(),
+            text: "Какое правило действует?".into(),
+            why: "От этого зависит реализация.".into(),
+            priority: Severity::Critical,
+            topic: Default::default(),
+            options: Vec::new(),
+            evidence: Vec::new(),
+            related: vec![RelatedId::Finding("critical".into())],
+        });
+        let passport = RunPassport {
+            document_title: "Требования".into(),
+            date: String::new(),
+            model: "test".into(),
+            agent_version: String::new(),
+        };
+
+        let report = Report::with_answers(
+            ctx,
+            passport,
+            &BTreeMap::from([
+                ("Q-1".into(), "не знаю".into()),
+                ("Q-old".into(), "предыдущее решение".into()),
+            ]),
+        );
+
+        assert!(matches!(report.readiness, Readiness::Blocked));
+        assert_eq!(report.summary.critical_findings, ["critical"]);
+        assert!(report.questions.is_empty());
+        let markdown = MarkdownRenderer.render(&report).unwrap();
+        assert!(markdown.contains("Ответ Q-1 — не знаю"));
+        assert!(markdown.contains("[critical](#finding-1)"));
+        assert!(markdown.contains("**Q-old** — предыдущее решение"));
+        let json: serde_json::Value =
+            serde_json::from_str(&JsonRenderer.render(&report).unwrap()).unwrap();
+        assert_eq!(
+            json["finding_answers"]["critical"][0],
+            serde_json::json!({"question_id": "Q-1", "text": "не знаю"}),
+        );
+    }
+
+    #[test]
     fn readiness_requires_complete_checks_without_verified_blockers() {
         let low = finding("low", Severity::Low, true);
         let unverified = finding("unverified", Severity::Medium, false);
         assert!(matches!(
-            Readiness::evaluate(true, &[low, unverified]),
+            Readiness::evaluate(true, [&low, &unverified].into_iter()),
             Readiness::Ready
         ));
         for severity in [Severity::Medium, Severity::High, Severity::Critical] {
             let blockers = [finding("blocker", severity, true)];
             assert!(matches!(
-                Readiness::evaluate(true, &blockers),
+                Readiness::evaluate(true, blockers.iter()),
                 Readiness::Blocked
             ));
             assert!(matches!(
-                Readiness::evaluate(false, &blockers),
+                Readiness::evaluate(false, blockers.iter()),
                 Readiness::Blocked
             ));
         }
         for severity in [Severity::High, Severity::Critical] {
             let unverified = finding("unverified", severity, false);
             assert!(matches!(
-                Readiness::evaluate(true, &[unverified]),
+                Readiness::evaluate(true, [&unverified].into_iter()),
                 Readiness::ChecksIncomplete
             ));
         }
         assert!(matches!(
-            Readiness::evaluate(false, &[]),
+            Readiness::evaluate(false, std::iter::empty()),
             Readiness::ChecksIncomplete
         ));
     }
@@ -508,6 +773,8 @@ mod tests {
             },
             readiness: Readiness::Blocked,
             questions: Vec::new(),
+            finding_answers: BTreeMap::new(),
+            unmatched_answers: BTreeMap::new(),
         };
 
         let markdown = MarkdownRenderer.render(&report).unwrap();
