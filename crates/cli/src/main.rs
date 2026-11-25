@@ -4,7 +4,7 @@ mod progress;
 
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -166,6 +166,12 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if cli.command.is_none() && !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+        eprintln!(
+            "Укажите команду. Для чата используйте rs chat. Справка доступна через rs --help."
+        );
+        return ExitCode::from(2);
+    }
     if let Err(error) = run(cli).await {
         eprintln!("Ошибка: {error}");
         return ExitCode::FAILURE;

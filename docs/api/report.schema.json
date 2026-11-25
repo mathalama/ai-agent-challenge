@@ -42,6 +42,15 @@
     "readiness": {
       "$ref": "#/$defs/Readiness"
     },
+    "requirement_answers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Answer"
+        }
+      }
+    },
     "requirements": {
       "type": "array",
       "items": {

@@ -34,7 +34,8 @@ cargo run -p cli -- check samples/requirements.md -o reports/report.md --provide
 
 ### Чат в терминале и браузере
 
-`rs` без аргументов открывает чат. Для прогона без ключа используйте `cargo run -p cli -- chat --provider mock`.
+`rs` без аргументов открывает чат в интерактивном терминале. Для перенаправленного ввода укажите `rs chat` явно.
+Для прогона без ключа используйте `cargo run -p cli -- chat --provider mock`.
 Введите `/load samples/requirements.md`, затем `/check`. После проверки доступны `/findings`, `/questions`,
 `/verdict`, свободные вопросы и `/ask <вопрос>`. Ответ на уточнение можно отправить командой
 `/answer <ID> <текст>`. Терминал записывает ответы рядом с документом в `*.answers.json`.

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Answers, Result, progress_trace, review};
 
-const HELP: &str = "Загрузите документ через клиент. В терминале используйте /load <путь>. Для проверки введите /check. После проверки доступны /findings, /questions, /verdict, /export md|json и /ask <вопрос>. Для ответа введите /answer <ID> <ответ> или ответьте на текущий вопрос. Рассуждения включаются командой /reasoning on.";
+const HELP: &str = "Загрузите документ через клиент. В терминале используйте /load <путь>. Для проверки введите /check. После проверки доступны /findings, /questions, /verdict, /export md|json и /ask <вопрос>. Ответ на уточнение отправьте командой /answer <ID> <ответ>. Рассуждения включаются командой /reasoning on.";
 
 pub enum Input<'a> {
     Text(&'a str),
@@ -98,7 +98,6 @@ pub struct Session {
     document: Option<Document>,
     report: Option<Report>,
     answers: Answers,
-    current_question: Option<String>,
     include_reasoning: bool,
     provider: Box<ProviderFactory>,
 }
@@ -112,7 +111,6 @@ impl Session {
             document: None,
             report: None,
             answers: Answers::new(),
-            current_question: None,
             include_reasoning: false,
             provider: Box::new(provider),
         }
@@ -180,7 +178,6 @@ impl Session {
         self.document = Some(document);
         self.report = None;
         self.answers = answers;
-        self.current_question = None;
         Ok(event)
     }
 
@@ -212,11 +209,10 @@ impl Session {
                     return Err("Используйте /ask <вопрос>.".into());
                 }
                 self.ask(arguments, Arc::clone(emit)).await?;
-            } else if !text.is_empty() && !text.starts_with('/') && self.current_question.is_none()
-            {
+            } else if !text.is_empty() && !text.starts_with('/') {
                 self.ask(text, Arc::clone(emit)).await?;
             } else {
-                self.handle_report(command, arguments, text, emit.as_ref())?;
+                self.handle_report(command, arguments, emit.as_ref())?;
             }
         } else {
             emit(message(
@@ -226,13 +222,7 @@ impl Session {
         Ok(())
     }
 
-    fn handle_report(
-        &mut self,
-        command: &str,
-        arguments: &str,
-        text: &str,
-        emit: &EventHandler,
-    ) -> Result<()> {
+    fn handle_report(&mut self, command: &str, arguments: &str, emit: &EventHandler) -> Result<()> {
         let report = self.report.as_ref().expect("проверка завершена");
         match command {
             "/findings" => {
@@ -249,8 +239,6 @@ impl Session {
                 }));
             }
             "/questions" => {
-                self.current_question =
-                    report.questions.first().map(|question| question.id.clone());
                 if report.questions.is_empty() {
                     emit(message("Открытых вопросов нет."));
                 }
@@ -279,10 +267,6 @@ impl Session {
                     .ok_or("Используйте /answer <ID> <ответ>.")?;
                 self.answer(id, answer.trim(), emit)?;
             }
-            _ if !text.starts_with('/') && !text.is_empty() && self.current_question.is_some() => {
-                let id = self.current_question.clone().expect("открыт вопрос");
-                self.answer(&id, text, emit)?;
-            }
             _ => emit(message(HELP)),
         }
         Ok(())
@@ -296,7 +280,6 @@ impl Session {
             let summary = report.summary.clone();
             let readiness = report.readiness;
             self.report = Some(report);
-            self.current_question = None;
             (summary, readiness)
         });
         emit(AgentEvent::StateChanged {
@@ -358,14 +341,6 @@ impl Session {
             answers: self.answers.clone(),
         });
         emit(message(format!("Ответ на {id} принят.")));
-        if self.current_question.as_deref() == Some(id) {
-            self.current_question = report.questions.first().map(|question| question.id.clone());
-            if let Some(question) = report.questions.first() {
-                emit(AgentEvent::Question {
-                    question: question.clone(),
-                });
-            }
-        }
         Ok(())
     }
 }

@@ -32,13 +32,27 @@ fn chat(directory: &Path, args: &[&str], input: &str) -> Output {
 #[test]
 fn opens_chat_without_a_document_or_provider_configuration() {
     let directory = tempfile::tempdir().unwrap();
-    let output = chat(directory.path(), &[], "Привет\n/check\n/exit\n");
+    let output = chat(directory.path(), &["chat"], "Привет\n/check\n/exit\n");
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
             .contains("Загрузите документ")
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn bare_command_with_redirected_stdin_requires_a_subcommand() {
+    let result = Command::new(env!("CARGO_BIN_EXE_rs"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert!(
+        String::from_utf8(result.stderr)
+            .unwrap()
+            .contains("rs chat")
+    );
 }
 
 #[test]

@@ -129,16 +129,16 @@ async fn answers_update_the_report_and_survive_a_second_check() {
     let first = questions[0].id.clone();
     let second = questions[1].id.clone();
     session.handle(Input::Text("/questions"), |_| {}).await;
-    let first_answer_id = first.clone();
     session
-        .handle(Input::Text(FIRST_ANSWER), move |event| match event {
-            AgentEvent::AnswersUpdated { answers } => {
-                assert_eq!(answers[&first_answer_id], FIRST_ANSWER);
+        .handle(Input::Text("Почему FR-3 критично?"), |event| {
+            if matches!(event, AgentEvent::AnswersUpdated { .. }) {
+                panic!("Свободный вопрос был записан как ответ");
             }
-            AgentEvent::Progress { .. } => panic!("Вместо записи ответа запущена проверка"),
-            _ => {}
         })
         .await;
+    assert_eq!(session.report().unwrap().questions[0].id, first);
+    let first_command = format!("/answer {first} {FIRST_ANSWER}");
+    session.handle(Input::Text(&first_command), |_| {}).await;
     let command = format!("/answer {second} Второй ответ");
     session
         .handle(Input::Text(&command), move |event| {

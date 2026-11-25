@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, error::Error, fs, io, path::Path, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fs, io,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use chrono::Local;
 use doc::Document;
@@ -27,23 +33,53 @@ pub fn build_provider(
     trace_log: TraceLog,
     reasoning: bool,
 ) -> Result<Box<dyn LlmProvider>> {
-    let base: Box<dyn LlmProvider> = match provider {
-        Provider::Mock => Box::new(MockProvider),
-        Provider::Gemini => Box::new(RateLimitedProvider::from_env(Box::new(
-            GeminiProvider::from_env()?,
-        ))?),
-        Provider::Openai => Box::new(RateLimitedProvider::from_env(Box::new(
-            OpenAiProvider::from_env()?,
-        ))?),
-    };
-    let retry = RetryProvider::new(base)
-        .with_trace(trace_log)
-        .with_reasoning(reasoning);
-    Ok(if no_cache {
-        Box::new(retry)
-    } else {
-        Box::new(CachedProvider::new(retry, ".cache/llm"))
-    })
+    ProviderFactory::new(provider, no_cache).build(trace_log, reasoning)
+}
+
+/// Создаёт базовый провайдер при первом запросе и делит его лимит между операциями.
+pub struct ProviderFactory {
+    provider: Provider,
+    no_cache: bool,
+    base: Mutex<Option<Arc<dyn LlmProvider>>>,
+}
+
+impl ProviderFactory {
+    pub fn new(provider: Provider, no_cache: bool) -> Self {
+        Self {
+            provider,
+            no_cache,
+            base: Mutex::new(None),
+        }
+    }
+
+    pub fn build(&self, trace: TraceLog, reasoning: bool) -> Result<Box<dyn LlmProvider>> {
+        let retry = RetryProvider::from_shared(self.base()?)
+            .with_trace(trace)
+            .with_reasoning(reasoning);
+        Ok(if self.no_cache {
+            Box::new(retry)
+        } else {
+            Box::new(CachedProvider::new(retry, ".cache/llm"))
+        })
+    }
+
+    fn base(&self) -> Result<Arc<dyn LlmProvider>> {
+        let mut stored = self.base.lock().expect("блокировка провайдера");
+        if let Some(provider) = stored.as_ref() {
+            return Ok(Arc::clone(provider));
+        }
+        let base: Arc<dyn LlmProvider> = match self.provider {
+            Provider::Mock => Arc::new(MockProvider),
+            Provider::Gemini => Arc::new(RateLimitedProvider::from_env(Box::new(
+                GeminiProvider::from_env()?,
+            ))?),
+            Provider::Openai => Arc::new(RateLimitedProvider::from_env(Box::new(
+                OpenAiProvider::from_env()?,
+            ))?),
+        };
+        *stored = Some(Arc::clone(&base));
+        Ok(base)
+    }
 }
 
 /// Сохраняем трассу стадий даже при ошибке конвейера.

@@ -26,9 +26,15 @@ interface ChatConnection {
   greeting: Extract<ChatEvent, { event: 'message' }>;
 }
 
-async function failure(response: Response): Promise<Error> {
+export class ChatApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+async function failure(response: Response): Promise<ChatApiError> {
   const body = await response.json().catch(() => null) as { error?: string } | null;
-  return new Error(body?.error ?? `Ошибка запроса (${response.status})`);
+  return new ChatApiError(body?.error ?? `Ошибка запроса (${response.status})`, response.status);
 }
 
 async function createSession(): Promise<ChatConnection | null> {

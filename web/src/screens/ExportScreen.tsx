@@ -8,7 +8,8 @@ function Content({ report }: { report: Report }) {
   const answers = useReportStore((s) => s.answers);
   const sessionId = useReportStore((s) => s.sessionId);
   const answered = sessionId
-    ? new Set(Object.values(report.finding_answers ?? {}).flat().map((answer) => answer.question_id)).size
+    ? new Set([...Object.values(report.finding_answers ?? {}), ...Object.values(report.requirement_answers ?? {})]
+      .flat().map((answer) => answer.question_id)).size
     : Object.keys(answers).length;
   const stem = `report-${report.passport.date}`;
   const reportUrl = sessionId ? `/api/sessions/${sessionId}/report?format=` : null;

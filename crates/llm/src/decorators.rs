@@ -112,13 +112,17 @@ fn write_cache_entry(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub struct RetryProvider {
-    inner: Box<dyn LlmProvider>,
+    inner: Arc<dyn LlmProvider>,
     trace: TraceLog,
     include_reasoning: bool,
 }
 
 impl RetryProvider {
     pub fn new(inner: Box<dyn LlmProvider>) -> Self {
+        Self::from_shared(inner.into())
+    }
+
+    pub fn from_shared(inner: Arc<dyn LlmProvider>) -> Self {
         Self {
             inner,
             trace: TraceLog::default(),
@@ -517,6 +521,22 @@ mod tests {
             *events.lock().unwrap(),
             vec![("test".into(), "Объяснение".into(), false); 2]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn separate_operations_share_the_same_rate_limit() {
+        let base: Arc<dyn LlmProvider> = Arc::new(RateLimitedProvider::new(
+            Box::new(crate::MockProvider),
+            NonZeroU32::new(60).unwrap(),
+        ));
+        let first = RetryProvider::from_shared(Arc::clone(&base));
+        let second = RetryProvider::from_shared(base);
+        let request =
+            LlmRequest::typed::<Vec<serde_json::Value>>("facts", "", String::new()).unwrap();
+        let start = Instant::now();
+        first.generate(&request).await.unwrap();
+        second.generate(&request).await.unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(1));
     }
 
     #[tokio::test(start_paused = true)]

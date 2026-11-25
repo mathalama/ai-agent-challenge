@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent::{Input, Provider, Session, build_provider};
+use agent::{Input, Provider, ProviderFactory, Session};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart, Path as RoutePath, Query, Request, State},
@@ -34,13 +34,18 @@ const SESSION_IDLE: Duration = Duration::from_secs(3600);
 #[derive(Clone)]
 struct App {
     sessions: Arc<Mutex<HashMap<Uuid, SessionEntry>>>,
-    provider: Provider,
-    no_cache: bool,
+    provider: Arc<ProviderFactory>,
 }
 
 struct SessionEntry {
     last_used: Instant,
     session: Arc<Chat>,
+}
+
+impl SessionEntry {
+    fn is_expired(&self) -> bool {
+        self.last_used.elapsed() >= SESSION_IDLE && Arc::strong_count(&self.session) == 1
+    }
 }
 
 struct Chat {
@@ -50,6 +55,7 @@ struct Chat {
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
+#[derive(Debug)]
 struct ApiError(StatusCode, &'static str);
 
 impl IntoResponse for ApiError {
@@ -74,8 +80,7 @@ pub async fn serve(
 fn router(provider: Provider, no_cache: bool, web_dir: &Path, loopback: bool) -> Router {
     let app = App {
         sessions: Arc::default(),
-        provider,
-        no_cache,
+        provider: Arc::new(ProviderFactory::new(provider, no_cache)),
     };
     let api = Router::new()
         .route("/schema", get(|| async { Json(Report::json_schema()) }))
@@ -132,7 +137,12 @@ fn local_host(headers: &HeaderMap) -> bool {
 async fn create_session(State(app): State<App>) -> ApiResult<(StatusCode, Json<Value>)> {
     let mut sessions = app.sessions.lock().expect("блокировка сессий");
     sessions.retain(|_, entry| {
-        entry.last_used.elapsed() < SESSION_IDLE || entry.session.session.try_lock().is_err()
+        if entry.is_expired() {
+            entry.session.events.expire();
+            false
+        } else {
+            true
+        }
     });
     if sessions.len() >= MAX_SESSIONS {
         return Err(ApiError(
@@ -141,11 +151,8 @@ async fn create_session(State(app): State<App>) -> ApiResult<(StatusCode, Json<V
         ));
     }
     let id = Uuid::new_v4();
-    let App {
-        provider, no_cache, ..
-    } = app;
-    let session =
-        Session::new(move |trace, reasoning| build_provider(provider, no_cache, trace, reasoning));
+    let factory = Arc::clone(&app.provider);
+    let session = Session::new(move |trace, reasoning| factory.build(trace, reasoning));
     sessions.insert(
         id,
         SessionEntry {
@@ -167,6 +174,12 @@ impl App {
         let missing = || ApiError(StatusCode::NOT_FOUND, "Сессия не найдена");
         let id = Uuid::parse_str(id).map_err(|_| missing())?;
         let mut sessions = self.sessions.lock().expect("блокировка сессий");
+        if sessions.get(&id).is_some_and(SessionEntry::is_expired) {
+            if let Some(entry) = sessions.remove(&id) {
+                entry.session.events.expire();
+            }
+            return Err(missing());
+        }
         let entry = sessions.get_mut(&id).ok_or_else(missing)?;
         entry.last_used = Instant::now();
         Ok(Arc::clone(&entry.session))
@@ -305,7 +318,12 @@ async fn report(
     Query(query): Query<ReportQuery>,
 ) -> ApiResult<Response> {
     let chat = app.chat(&id)?;
-    let session = chat.session.lock().await;
+    let session = chat.session.try_lock().map_err(|_| {
+        ApiError(
+            StatusCode::CONFLICT,
+            "В сессии выполняется команда. Повторите запрос после её завершения",
+        )
+    })?;
     let report = session
         .report()
         .ok_or(ApiError(StatusCode::CONFLICT, "Отчёт ещё не готов"))?;

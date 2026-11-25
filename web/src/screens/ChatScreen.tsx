@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { ThinkingOrb } from 'thinking-orbs';
 import { Button } from '../components/Button';
 import { formatLocation } from '../components/FindingCard';
-import { connectChat, sendChatInput, type ChatEvent, type Progress, type SessionState } from '../lib/chat-api';
+import { ChatApiError, connectChat, sendChatInput, type ChatEvent, type Progress, type SessionState } from '../lib/chat-api';
 import { download } from '../lib/export';
 import { READINESS, STAGE_BY_ID, isStageId, type StageId } from '../lib/labels';
 import { useReportStore, type StageRecord } from '../lib/report-store';
@@ -87,6 +87,7 @@ export function ChatScreen() {
   const [items, setItems] = useState<Item[]>([]);
   const [state, setState] = useState<SessionState>('empty');
   const [connected, setConnected] = useState(false);
+  const [sessionEnded, setSessionEnded] = useState(false);
   const [connectionError, setConnectionError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -95,10 +96,19 @@ export function ChatScreen() {
   const messageInput = useRef<HTMLInputElement>(null);
   const lastLine = useRef<HTMLDivElement>(null);
   const pending = useRef<{ filename?: string } | null>(null);
+  const eventSource = useRef<EventSource | null>(null);
+
+  function endSession() {
+    eventSource.current?.close();
+    pending.current = null;
+    setConnected(false);
+    setBusy(false);
+    setSessionEnded(true);
+  }
 
   useEffect(() => {
     let current = true;
-    let stream: EventSource | undefined;
+    let reportDirty = false;
 
     function receive(event: ChatEvent) {
       switch (event.event) {
@@ -139,10 +149,10 @@ export function ChatScreen() {
           break;
         case 'report_ready':
           setItems((list) => [...list, { kind: 'report', summary: event.summary, readiness: event.readiness }]);
-          refreshReport();
+          reportDirty = true;
           break;
         case 'answers_updated':
-          refreshReport();
+          reportDirty = true;
           break;
         case 'export':
           download(`report.${event.format}`, event.content, event.format === 'md' ? 'text/markdown' : 'application/json');
@@ -167,11 +177,23 @@ export function ChatScreen() {
       }
       useReportStore.setState({ mode: 'live', sessionId: connection.id });
       receive(connection.greeting);
-      stream = new EventSource(`/api/sessions/${connection.id}/events`);
+      const stream = new EventSource(`/api/sessions/${connection.id}/events`);
+      eventSource.current = stream;
       stream.onopen = () => setConnected(true);
-      stream.onerror = () => setConnected(false);
+      stream.onerror = () => {
+        if (stream.readyState === EventSource.CLOSED) endSession();
+        else setConnected(false);
+      };
+      stream.addEventListener('expired', endSession);
+      stream.addEventListener('history_gap', () => {
+        setItems((list) => [...list, { kind: 'message', text: 'Часть истории недоступна. Ниже показаны оставшиеся события.' }]);
+      });
       stream.onmessage = (message: MessageEvent<string>) => receive(JSON.parse(message.data) as ChatEvent);
       stream.addEventListener('done', () => {
+        if (reportDirty) {
+          reportDirty = false;
+          refreshReport();
+        }
         pending.current = null;
         setBusy(false);
         setItems((list) => list.map((item) => item.kind === 'reasoning' && item.value.active
@@ -183,7 +205,8 @@ export function ChatScreen() {
 
     return () => {
       current = false;
-      stream?.close();
+      eventSource.current?.close();
+      eventSource.current = null;
     };
   }, []);
 
@@ -208,6 +231,10 @@ export function ChatScreen() {
     try {
       await sendChatInput(sessionId, value);
     } catch (error) {
+      if (error instanceof ChatApiError && error.status === 404) {
+        endSession();
+        return;
+      }
       pending.current = null;
       setBusy(false);
       setItems((list) => [...list, { kind: 'message', text: error instanceof Error ? error.message : String(error), error: true }]);
@@ -246,7 +273,12 @@ export function ChatScreen() {
     }}>
       <header>
         <h1 className="text-3xl font-semibold tracking-[-0.025em]">Чат проверки требований</h1>
-        {!connected && <p role="status" className="mt-2 text-sm text-muted">Восстанавливаем подключение…</p>}
+        {sessionEnded ? (
+          <div className="mt-2 flex items-center gap-3">
+            <p role="alert" className="text-sm text-muted">Сессия завершилась.</p>
+            <Button variant="secondary" onClick={() => window.location.reload()}>Начать новую сессию</Button>
+          </div>
+        ) : !connected && <p role="status" className="mt-2 text-sm text-muted">Восстанавливаем подключение…</p>}
       </header>
 
       <div role="log" aria-label="Сообщения" className="max-h-[58dvh] min-h-52 space-y-4 overflow-y-auto rounded-3xl border border-line bg-surface p-4 sm:p-6">

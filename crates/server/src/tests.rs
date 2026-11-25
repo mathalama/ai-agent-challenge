@@ -1,6 +1,67 @@
 use super::*;
 
 #[tokio::test]
+async fn busy_reports_return_conflict_without_waiting_for_the_lock() {
+    let app = mock_app();
+    let (_, Json(created)) = create_session(State(app.clone())).await.unwrap();
+    let id = created["id"].as_str().unwrap().to_owned();
+    let chat = app.chat(&id).unwrap();
+    let _running = chat.begin().unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_millis(100),
+        report(
+            State(app),
+            RoutePath(id),
+            Query(ReportQuery {
+                format: Format::Json,
+            }),
+        ),
+    )
+    .await;
+    assert!(matches!(result, Ok(Err(ApiError(StatusCode::CONFLICT, _)))));
+}
+
+#[tokio::test]
+async fn expiring_a_session_closes_an_open_sse_stream() {
+    let app = mock_app();
+    let (_, Json(created)) = create_session(State(app.clone())).await.unwrap();
+    let id = created["id"].as_str().unwrap();
+    let events = Arc::clone(&app.chat(id).unwrap().events);
+    let stream = events.subscribe(0);
+    app.sessions
+        .lock()
+        .unwrap()
+        .get_mut(&Uuid::parse_str(id).unwrap())
+        .unwrap()
+        .last_used = Instant::now() - SESSION_IDLE;
+    let (status, _) = create_session(State(app.clone())).await.unwrap();
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(matches!(
+        app.chat(id),
+        Err(ApiError(StatusCode::NOT_FOUND, _))
+    ));
+    let payload = tokio::time::timeout(
+        Duration::from_secs(1),
+        axum::body::to_bytes(stream.into_body(), 1024),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        std::str::from_utf8(&payload)
+            .unwrap()
+            .contains("event: expired")
+    );
+}
+
+fn mock_app() -> App {
+    App {
+        sessions: Arc::default(),
+        provider: Arc::new(ProviderFactory::new(Provider::Mock, true)),
+    }
+}
+
+#[tokio::test]
 async fn http_session_replays_events_and_serves_the_mock_report() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/api", listener.local_addr().unwrap());

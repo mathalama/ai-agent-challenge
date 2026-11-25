@@ -9,8 +9,8 @@ use schemars::{JsonSchema, Schema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Finding, FindingId, Question, RelatedId, Requirement, RunContext, RunPassport, Scope,
-    Severity,
+    Answer, Finding, FindingId, Question, RelatedId, Requirement, RequirementId, RunContext,
+    RunPassport, Scope, Severity,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -27,6 +27,8 @@ pub struct Report {
     pub questions: Vec<Question>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub finding_answers: BTreeMap<FindingId, Vec<Answer>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requirement_answers: BTreeMap<RequirementId, Vec<Answer>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unmatched_answers: BTreeMap<String, String>,
 }
@@ -121,6 +123,7 @@ impl Report {
             incomplete_stages: ctx.incomplete_stages,
             questions: ctx.questions,
             finding_answers: BTreeMap::new(),
+            requirement_answers: BTreeMap::new(),
             unmatched_answers: answers.clone(),
         };
         report.questions.retain(|question| {
@@ -130,13 +133,18 @@ impl Report {
             if text.trim().is_empty() {
                 return true;
             }
-            record_answer(&mut report.finding_answers, question, &text);
+            record_answer(
+                &mut report.finding_answers,
+                &mut report.requirement_answers,
+                question,
+                &text,
+            );
             false
         });
         report
     }
 
-    /// Снимает открытый вопрос и прикрепляет ответ к связанным находкам.
+    /// Снимает открытый вопрос и прикрепляет ответ к связанным находкам и требованиям.
     pub fn answer_question(&mut self, id: &str, text: &str) -> bool {
         if text.trim().is_empty() {
             return false;
@@ -145,23 +153,31 @@ impl Report {
             return false;
         };
         let question = self.questions.remove(index);
-        record_answer(&mut self.finding_answers, &question, text);
+        record_answer(
+            &mut self.finding_answers,
+            &mut self.requirement_answers,
+            &question,
+            text,
+        );
         true
     }
 }
 
 fn record_answer(
     finding_answers: &mut BTreeMap<FindingId, Vec<Answer>>,
+    requirement_answers: &mut BTreeMap<RequirementId, Vec<Answer>>,
     question: &Question,
     text: &str,
 ) {
     for related in &question.related {
-        if let RelatedId::Finding(id) = related {
-            finding_answers.entry(id.clone()).or_default().push(Answer {
-                question_id: question.id.clone(),
-                text: text.to_owned(),
-            });
-        }
+        let answers = match related {
+            RelatedId::Finding(id) => finding_answers.entry(id.clone()).or_default(),
+            RelatedId::Requirement(id) => requirement_answers.entry(id.clone()).or_default(),
+        };
+        answers.push(Answer {
+            question_id: question.id.clone(),
+            text: text.to_owned(),
+        });
     }
 }
 
@@ -323,6 +339,22 @@ impl ReportRenderer for MarkdownRenderer {
             output.push_str("### Дополнительные вопросы\n\n");
             for question in additional {
                 write_question(&mut output, report, question);
+            }
+        }
+
+        if !report.requirement_answers.is_empty() {
+            output.push_str("\n### Ответы по требованиям\n\n");
+            for (id, answers) in &report.requirement_answers {
+                for answer in answers {
+                    writeln!(
+                        output,
+                        "- **{}** · ответ {} — {}",
+                        markdown(id),
+                        markdown(&answer.question_id),
+                        markdown(&answer.text)
+                    )
+                    .expect("запись в строку");
+                }
             }
         }
 
@@ -723,6 +755,7 @@ mod tests {
             incomplete_stages: Vec::new(),
             questions,
             finding_answers: BTreeMap::new(),
+            requirement_answers: BTreeMap::new(),
             unmatched_answers: BTreeMap::new(),
         };
         let rendered = MarkdownRenderer.render(&report).unwrap();
@@ -756,6 +789,10 @@ mod tests {
             evidence: Vec::new(),
             related: vec![RelatedId::Finding("critical".into())],
         });
+        let mut requirement_question = ctx.questions[0].clone();
+        requirement_question.id = "Q-2".into();
+        requirement_question.related = vec![RelatedId::Requirement("R-1".into())];
+        ctx.questions.push(requirement_question.clone());
         let passport = RunPassport {
             document_title: "Требования".into(),
             date: String::new(),
@@ -763,11 +800,12 @@ mod tests {
             agent_version: String::new(),
         };
 
-        let report = Report::with_answers(
+        let mut report = Report::with_answers(
             ctx,
             passport,
             &BTreeMap::from([
                 ("Q-1".into(), "не знаю".into()),
+                ("Q-2".into(), "30 дней".into()),
                 ("Q-old".into(), "предыдущее решение".into()),
             ]),
         );
@@ -777,6 +815,7 @@ mod tests {
         assert!(report.questions.is_empty());
         let markdown = MarkdownRenderer.render(&report).unwrap();
         assert!(markdown.contains("Ответ Q-1 — не знаю"));
+        assert!(markdown.contains("**R-1** · ответ Q-2 — 30 дней"));
         assert!(markdown.contains("Находок с ответами — 1"));
         assert!(!markdown.contains("Показано 7 из"));
         assert!(markdown.contains("[critical](#finding-1)"));
@@ -786,6 +825,18 @@ mod tests {
         assert_eq!(
             json["finding_answers"]["critical"][0],
             serde_json::json!({"question_id": "Q-1", "text": "не знаю"}),
+        );
+        let stored = json["requirement_answers"]["R-1"].clone();
+        assert_eq!(
+            stored,
+            serde_json::json!([{"question_id": "Q-2", "text": "30 дней"}])
+        );
+        report.requirement_answers.clear();
+        report.questions.push(requirement_question);
+        assert!(report.answer_question("Q-2", "30 дней"));
+        assert_eq!(
+            serde_json::to_value(&report.requirement_answers["R-1"]).unwrap(),
+            stored
         );
     }
 
@@ -885,6 +936,7 @@ mod tests {
             incomplete_stages: Vec::new(),
             questions: Vec::new(),
             finding_answers: BTreeMap::new(),
+            requirement_answers: BTreeMap::new(),
             unmatched_answers: BTreeMap::new(),
         };
 

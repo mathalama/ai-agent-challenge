@@ -9,15 +9,15 @@ use std::{
 };
 
 use agent::{
-    AgentEvent, ExportFormat, Input, Provider, Result, Session, build_provider, read_answers,
+    AgentEvent, ExportFormat, Input, Provider, ProviderFactory, Result, Session, read_answers,
 };
 use review::ProgressSink;
 
 use crate::{progress::ConsoleProgress, same_path, write_output};
 
 pub async fn run(input: Option<PathBuf>, provider: Provider, no_cache: bool) -> Result<()> {
-    let mut session =
-        Session::new(move |trace, reasoning| build_provider(provider, no_cache, trace, reasoning));
+    let factory = ProviderFactory::new(provider, no_cache);
+    let mut session = Session::new(move |trace, reasoning| factory.build(trace, reasoning));
     let mut path = None;
     let progress = Arc::new(ConsoleProgress::default());
     print_event(Session::greeting(), None, &progress)?;
