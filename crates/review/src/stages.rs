@@ -6,7 +6,7 @@ use tracing::warn;
 
 use crate::{
     CheckPhase, Criterion, Detector, Evidence, Finding, Question, RelatedId, RunContext, Scope,
-    Severity, Stage,
+    Severity, Stage, consistency,
     pipeline::Result,
     segment::{RequirementDraft, has_non_table_content, merge_requirements, non_table_blocks},
 };
@@ -110,14 +110,17 @@ impl Stage for ScaffoldStage {
                 ctx.requirements = merge_requirements(&ctx.document, drafts);
             }
             Self::Facts => {
-                let prompt = self.llm_prompt();
-                ctx.facts = generate_typed(
-                    ctx.provider,
-                    name,
-                    &prompt,
-                    serde_json::to_string(&ctx.requirements)?,
-                )
-                .await?;
+                ctx.facts = if ctx.requirements.is_empty() {
+                    Vec::new()
+                } else {
+                    generate_typed(
+                        ctx.provider,
+                        name,
+                        &self.llm_prompt(),
+                        serde_json::to_string(&ctx.requirements)?,
+                    )
+                    .await?
+                };
             }
             Self::Rules => {
                 let findings = ctx.checks.run(CheckPhase::Rules, ctx).await?;
@@ -137,11 +140,7 @@ impl Stage for ScaffoldStage {
                     .await?;
             }
             Self::Consistency => {
-                let input = serde_json::to_string(&serde_json::json!({
-                    "requirements": ctx.requirements,
-                    "facts": ctx.facts,
-                }))?;
-                self.find_with_model(ctx, input).await?;
+                consistency::check(ctx, &self.llm_prompt()).await?;
             }
             Self::Ambiguity => {
                 self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)

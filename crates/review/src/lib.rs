@@ -1,4 +1,6 @@
+mod consistency;
 mod domain;
+mod facts;
 mod pipeline;
 mod report;
 mod rules;
@@ -6,6 +8,7 @@ pub mod segment;
 mod stages;
 
 pub use domain::*;
+pub use facts::*;
 pub use pipeline::Result as StageResult;
 pub use pipeline::{
     Check, CheckPhase, CheckRegistry, Pipeline, RunContext, Stage, StageError, StageTrace,

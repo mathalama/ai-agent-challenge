@@ -196,6 +196,53 @@ async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
     }
 }
 
+#[tokio::test]
+async fn readiness_requires_testing_section_coverage() {
+    let source = "# Спецификация\n\n* **Ф-1.** Сохранять изменения.";
+    let checks = CheckRegistry::with_builtin_rules();
+    for (path, expected) in [("input.md", "blocked"), ("input.txt", "checks_incomplete")] {
+        let document = ParserRegistry::default()
+            .parse(Path::new(path), source.as_bytes())
+            .unwrap();
+        let provider = ReviewProvider(None, 2);
+        let mut ctx = RunContext::new(document, &provider, &checks);
+        Pipeline::default().run(&mut ctx).await.unwrap();
+        let passport = RunPassport {
+            document_title: ctx.document.title.clone(),
+            date: String::new(),
+            model: provider.model().into(),
+            agent_version: String::new(),
+        };
+        let report = Report::from_run(ctx, passport);
+        assert_eq!(
+            serde_json::to_value(report.readiness).unwrap(),
+            expected,
+            "{path}"
+        );
+        if path == "input.md" {
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.id == "testing-section-missing" && finding.verified)
+            );
+        }
+    }
+}
+
+struct EmptyCheck(CheckPhase);
+
+#[async_trait]
+impl Check for EmptyCheck {
+    fn phase(&self) -> CheckPhase {
+        self.0
+    }
+
+    async fn run(&self, _ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
+        Ok(Vec::new())
+    }
+}
+
 struct LanguageCheck;
 
 #[async_trait]
@@ -263,10 +310,27 @@ impl LlmProvider for LanguageAndPromptProvider {
             .lock()
             .unwrap()
             .push((request.stage.clone(), request.system_prompt.clone()));
-        if request.stage == "segment" {
-            return MockProvider.generate(request).await;
-        }
         let json = match request.stage.as_str() {
+            "segment" => {
+                let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
+                serde_json::json!(input["blocks"].as_array().unwrap().iter()
+                    .filter(|block| block["kind"] == "list_item")
+                    .map(|block| serde_json::json!({"text": block["text"], "quote": block["text"], "location": block["location"]}))
+                    .collect::<Vec<_>>())
+            }
+            "facts" => {
+                let rows: Vec<serde_json::Value> =
+                    serde_json::from_str(&request.user_text).unwrap();
+                serde_json::json!(
+                    rows.iter()
+                        .map(|row| serde_json::json!({
+                            "requirement_id": row["id"], "entity": "отчётность",
+                            "evidence": {"quote": row["quote"], "location": row["location"]},
+                            "data": {"kind": "policy", "statement": row["text"]}
+                        }))
+                        .collect::<Vec<_>>()
+                )
+            }
             "requirement_checks" => serde_json::json!([
                 {
                     "requirement_id": "R-001",
@@ -337,7 +401,8 @@ async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_conte
     let document = ParserRegistry::default()
         .parse(
             Path::new("input.md"),
-            "# Документ требований\n\n* **Ф-1.** Первое требование\n".as_bytes(),
+            "# Документ требований\n\n* **Ф-1.** Первое требование\n* **Ф-2.** Второе требование\n"
+                .as_bytes(),
         )
         .unwrap();
     let provider = LanguageAndPromptProvider::new();
@@ -430,51 +495,4 @@ async fn drops_findings_and_questions_without_cyrillic_and_attaches_domain_conte
         .1;
     assert!(set_prompt.contains("ISO/IEC/IEEE 29148:2018 § 5.2.6"));
     assert!(set_prompt.contains("IEEE Std 830-1998 § 4.3"));
-}
-
-#[tokio::test]
-async fn readiness_requires_testing_section_coverage() {
-    let source = "# Спецификация\n\n* **Ф-1.** Сохранять изменения.";
-    let checks = CheckRegistry::with_builtin_rules();
-    for (path, expected) in [("input.md", "blocked"), ("input.txt", "checks_incomplete")] {
-        let document = ParserRegistry::default()
-            .parse(Path::new(path), source.as_bytes())
-            .unwrap();
-        let provider = ReviewProvider(None, 2);
-        let mut ctx = RunContext::new(document, &provider, &checks);
-        Pipeline::default().run(&mut ctx).await.unwrap();
-        let passport = RunPassport {
-            document_title: ctx.document.title.clone(),
-            date: String::new(),
-            model: provider.model().into(),
-            agent_version: String::new(),
-        };
-        let report = Report::from_run(ctx, passport);
-        assert_eq!(
-            serde_json::to_value(report.readiness).unwrap(),
-            expected,
-            "{path}"
-        );
-        if path == "input.md" {
-            assert!(
-                report
-                    .findings
-                    .iter()
-                    .any(|finding| finding.id == "testing-section-missing" && finding.verified)
-            );
-        }
-    }
-}
-
-struct EmptyCheck(CheckPhase);
-
-#[async_trait]
-impl Check for EmptyCheck {
-    fn phase(&self) -> CheckPhase {
-        self.0
-    }
-
-    async fn run(&self, _ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
-        Ok(Vec::new())
-    }
 }
