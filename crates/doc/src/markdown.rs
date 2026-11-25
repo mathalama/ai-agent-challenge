@@ -33,7 +33,17 @@ impl DocumentParser for MarkdownParser {
                     start(tag, range, line, &mut pending);
                 }
                 Event::End(end) => finish(end, &mut pending, &mut completed),
-                Event::Text(text) | Event::Code(text) => push_text(&mut pending, &text),
+                Event::Text(text) => {
+                    let raw = &source[range];
+                    // Preserve the spelling of decoded references in source quotations.
+                    let text = if raw.starts_with('&') && raw.ends_with(';') {
+                        raw
+                    } else {
+                        &text
+                    };
+                    push_text(&mut pending, text);
+                }
+                Event::Code(text) => push_text(&mut pending, &text),
                 Event::SoftBreak | Event::HardBreak => push_text(&mut pending, "\n"),
                 _ => {}
             }

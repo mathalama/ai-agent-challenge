@@ -25,7 +25,7 @@ pub(crate) async fn run(
 
     let mut line = String::new();
     let mut saved = false;
-    for question in report.questions {
+    'questions: for question in report.questions {
         writeln!(
             stdout,
             "\n{} — {} · {}\n{}",
@@ -43,7 +43,9 @@ pub(crate) async fn run(
             })
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(stdout, "Находки — {findings}")?;
+        if !findings.is_empty() {
+            writeln!(stdout, "Находки — {findings}")?;
+        }
         for evidence in &question.evidence {
             writeln!(
                 stdout,
@@ -56,31 +58,47 @@ pub(crate) async fn run(
         for (index, option) in question.options.iter().enumerate() {
             writeln!(stdout, "  {}. {}", index + 1, terminal_text(option))?;
         }
-        if question.options.is_empty() {
-            write!(stdout, "Введите ответ или нажмите Enter для пропуска > ")?;
-        } else {
-            write!(
-                stdout,
-                "Введите номер варианта или свой ответ. Enter — пропустить > "
-            )?;
-        }
-        stdout.flush()?;
+        let answer = loop {
+            if question.options.is_empty() {
+                write!(stdout, "Введите ответ или нажмите Enter для пропуска > ")?;
+            } else {
+                write!(
+                    stdout,
+                    "Введите номер варианта или свой ответ. Enter — пропустить > "
+                )?;
+            }
+            stdout.flush()?;
 
-        line.clear();
-        if stdin.read_line(&mut line)? == 0 {
-            writeln!(stdout)?;
-            break;
-        }
-        let answer = line.trim();
-        if answer.is_empty() {
-            continue;
-        }
-        let answer = answer
-            .parse::<usize>()
-            .ok()
-            .and_then(|number| number.checked_sub(1))
-            .and_then(|index| question.options.get(index))
-            .map_or(answer, String::as_str);
+            line.clear();
+            if stdin.read_line(&mut line)? == 0 {
+                writeln!(stdout)?;
+                break 'questions;
+            }
+            let input = line.trim();
+            if input.is_empty() {
+                continue 'questions;
+            }
+            let digits = input.strip_prefix(['+', '-']).unwrap_or(input);
+            if question.options.is_empty()
+                || digits.is_empty()
+                || !digits.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                break input;
+            }
+            if let Some(option) = input
+                .parse::<usize>()
+                .ok()
+                .and_then(|number| number.checked_sub(1))
+                .and_then(|index| question.options.get(index))
+            {
+                break option.as_str();
+            }
+            writeln!(
+                stdout,
+                "Допустимые номера — от 1 до {}.",
+                question.options.len()
+            )?;
+        };
         answers.insert(question.id, answer.to_owned());
         write_output(&path, &(serde_json::to_string_pretty(&answers)? + "\n"))?;
         saved = true;

@@ -267,7 +267,14 @@ async fn review(
         model: provider.model().into(),
         agent_version: AGENT_VERSION.into(),
     };
-    Ok(Report::with_answers(ctx, passport, answers))
+    let report = Report::with_answers(ctx, passport, answers);
+    if !report.unmatched_answers.is_empty() {
+        eprintln!(
+            "Предупреждение: сохранённые ответы без текущего вопроса — {:?}.",
+            report.unmatched_answers.keys().collect::<Vec<_>>(),
+        );
+    }
+    Ok(report)
 }
 
 fn same_path(left: &Path, right: &Path) -> io::Result<bool> {

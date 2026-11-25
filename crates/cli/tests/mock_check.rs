@@ -94,7 +94,7 @@ fn mock_produces_a_report_with_all_sections() {
 }
 
 #[test]
-fn ask_saves_an_answer_and_check_marks_its_finding_closed() {
+fn ask_rejects_invalid_choices_and_check_shows_the_answer_without_clearing_blockers() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = tempfile::tempdir().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_rs"));
@@ -111,7 +111,7 @@ fn ask_saves_an_answer_and_check_marks_its_finding_closed() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    ask.stdin.take().unwrap().write_all(b"1\n\n").unwrap();
+    ask.stdin.take().unwrap().write_all(b"3\n0\n1\n\n").unwrap();
     let result = ask.wait_with_output().unwrap();
     assert!(
         result.status.success(),
@@ -126,7 +126,13 @@ fn ask_saves_an_answer_and_check_marks_its_finding_closed() {
     assert_eq!(entries.len(), 1);
     let (id, answer) = entries.iter().next().unwrap();
     assert!(id.starts_with("Q-"));
-    assert_ne!(answer, "1");
+    assert_eq!(answer, "По дате совершения покупки");
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout)
+            .matches("Допустимые номера")
+            .count(),
+        2
+    );
 
     let result = command
         .arg("check")
@@ -141,7 +147,66 @@ fn ask_saves_an_answer_and_check_marks_its_finding_closed() {
     );
     let report = fs::read_to_string(output.path().join("reports/report.md")).unwrap();
     let (findings, questions) = report.split_once("## 7.").unwrap();
-    assert!(findings.contains(&format!("Закрыто ответом {id}")));
+    assert!(findings.contains(&format!("Ответ {id} — По дате совершения покупки")));
+    assert!(findings.contains("**Не готово.**"));
     assert!(!questions.contains(id));
     assert!(questions.contains("заблокирован"));
+}
+
+#[test]
+fn check_reports_saved_answers_that_no_longer_match_any_question() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = tempfile::tempdir().unwrap();
+    let reports = output.path().join("reports");
+    fs::create_dir(&reports).unwrap();
+    let answers = reports.join("report.answers.json");
+    let saved = r#"{"Q-old":"Ранее записанный ответ"}"#;
+    fs::write(&answers, saved).unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_rs"))
+        .current_dir(output.path())
+        .arg("check")
+        .arg(workspace.join("samples/requirements.md"))
+        .args(["--provider", "mock", "--no-cache", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Q-old"));
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(reports.join("report.json")).unwrap()).unwrap();
+    assert_eq!(
+        report["unmatched_answers"]["Q-old"],
+        "Ранее записанный ответ"
+    );
+    assert_eq!(fs::read_to_string(answers).unwrap(), saved);
+}
+
+#[test]
+fn markdown_report_keeps_character_references_from_the_source_quote() {
+    let output = tempfile::tempdir().unwrap();
+    let input = output.path().join("requirements.md");
+    fs::write(
+        &input,
+        "# Требования\n\nПоказать &lt; и не менять сумму > 10.\n",
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_rs"))
+        .current_dir(output.path())
+        .arg("check")
+        .arg(&input)
+        .args(["--provider", "mock", "--no-cache"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report = fs::read_to_string(output.path().join("reports/report.md")).unwrap();
+    assert!(report.contains(r"> Показать \&lt; и не менять сумму > 10."));
 }

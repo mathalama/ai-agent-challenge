@@ -85,6 +85,7 @@ fn build_questions(drafts: Vec<QuestionDraft>, verified: &[&Finding]) -> Result<
             .iter()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty() && seen_options.insert(normalized(value)))
+            .take(3)
             .map(str::to_owned)
             .collect();
         let mut evidence: Vec<_> = linked
