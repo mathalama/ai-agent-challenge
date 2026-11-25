@@ -1,0 +1,67 @@
+{
+  "stages": [
+    {
+      "stage": "segment",
+      "duration_ms": 1840,
+      "succeeded": true,
+      "tokens_in": 3120,
+      "tokens_out": 410
+    },
+    {
+      "stage": "facts",
+      "duration_ms": 2210,
+      "succeeded": true,
+      "tokens_in": 4380,
+      "tokens_out": 960
+    },
+    {
+      "stage": "rules",
+      "duration_ms": 160,
+      "succeeded": true,
+      "tokens_in": 0,
+      "tokens_out": 0
+    },
+    {
+      "stage": "requirement_checks",
+      "duration_ms": 9420,
+      "succeeded": true,
+      "tokens_in": 18240,
+      "tokens_out": 3870
+    },
+    {
+      "stage": "set_checks",
+      "duration_ms": 6730,
+      "succeeded": true,
+      "tokens_in": 11960,
+      "tokens_out": 2540
+    },
+    {
+      "stage": "consistency",
+      "duration_ms": 5180,
+      "succeeded": true,
+      "tokens_in": 9210,
+      "tokens_out": 1730
+    },
+    {
+      "stage": "ambiguity",
+      "duration_ms": 4390,
+      "succeeded": true,
+      "tokens_in": 7840,
+      "tokens_out": 1420
+    },
+    {
+      "stage": "verify",
+      "duration_ms": 1270,
+      "succeeded": true,
+      "tokens_in": 0,
+      "tokens_out": 0
+    },
+    {
+      "stage": "clarify",
+      "duration_ms": 3050,
+      "succeeded": true,
+      "tokens_in": 5980,
+      "tokens_out": 1190
+    }
+  ]
+}
