@@ -335,7 +335,8 @@ fn merge_into(target: &mut Finding, other: Finding) {
 
 fn append_distinct_sentences(target: &mut String, addition: &str) {
     for sentence in sentences(addition) {
-        if sentences(target).any(|existing| same_sentence(existing, sentence)) {
+        let key = merged_sentence_key(sentence);
+        if sentences(target).any(|existing| merged_sentence_key(existing) == key) {
             continue;
         }
         if !target.trim().is_empty() {
@@ -346,6 +347,43 @@ fn append_distinct_sentences(target: &mut String, addition: &str) {
         }
         target.push_str(sentence);
     }
+}
+
+fn merged_sentence_key(sentence: &str) -> String {
+    const EXAMPLE: &str = " (например, ";
+    const SECTION_ENDINGS: [(&str, &str); 4] = [
+        (" в разделах документации", " в разделах спецификации"),
+        (
+            " во всех разделах документации",
+            " во всех разделах спецификации",
+        ),
+        (" в разделах спецификации", " в разделах спецификации"),
+        (
+            " во всех разделах спецификации",
+            " во всех разделах спецификации",
+        ),
+    ];
+
+    let normalized = normalize_spacing_and_quotes(sentence);
+    let text = normalized.trim_end_matches(['.', '!', '?']);
+    for (ending, canonical) in SECTION_ENDINGS {
+        if let Some(body) = text.strip_suffix(ending) {
+            if let Some((stem, example)) = body.split_once(EXAMPLE)
+                && let Some(value) = example.strip_suffix(')')
+                && !value.contains(['(', ')'])
+            {
+                return format!("{stem}{canonical}{EXAMPLE}{value})");
+            }
+            return format!("{body}{canonical}");
+        }
+        if let Some((body, example)) = text.split_once(EXAMPLE)
+            && let Some(stem) = body.strip_suffix(ending)
+            && example.ends_with(')')
+        {
+            return format!("{stem}{canonical}{EXAMPLE}{example}");
+        }
+    }
+    text.to_owned()
 }
 
 fn sentences(text: &str) -> impl Iterator<Item = &str> {
@@ -525,6 +563,17 @@ mod tests {
     }
 
     #[test]
+    fn repeated_wording_does_not_hide_different_example_values() {
+        let first =
+            "Привести срок к единому значению во всех разделах спецификации (например, 15 минут).";
+        let second =
+            "Привести срок к единому значению (например, 10 минут) во всех разделах документации.";
+        let mut suggestion = first.to_owned();
+        append_distinct_sentences(&mut suggestion, second);
+        assert_eq!(suggestion, format!("{first} {second}"));
+    }
+
+    #[test]
     fn preserves_conflicting_numeric_values() {
         let left = "Динамический код оплаты действует в течение 15 минут после создания.";
         let right = "Динамический код оплаты действует в течение 10 минут после создания.";
@@ -603,9 +652,8 @@ mod tests {
         let mut duplicate = first.clone();
         duplicate.id = "ambiguity-001".into();
         duplicate.detector = Detector::Llm("ambiguity:test".into());
-        duplicate.explanation =
-            format!("{}  В тестах нужен сценарий просрочки.", first.explanation);
-        duplicate.suggestion = Some(format!("{suggestion} Добавить приёмочный тест."));
+        duplicate.explanation = "Срок действия динамического QR-кода различается в разделах документации. В тестах нужен сценарий просрочки.".into();
+        duplicate.suggestion = Some("Привести значение срока действия динамического QR-кода к единому значению (например, 15 минут) во всех разделах документации. Добавить приёмочный тест.".into());
 
         let merged = merge_findings(vec![first, duplicate]);
         assert_eq!(
