@@ -14,6 +14,7 @@ use std::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use unicode_script::{Script, UnicodeScript};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Document {
@@ -124,39 +125,32 @@ pub(crate) fn dehyphenate_multiline(text: &str) -> String {
         if next.is_empty() {
             continue;
         }
-        if result.is_empty() {
-            result.push_str(next);
-            continue;
+        let mut tail = result.chars().rev();
+        match (tail.next(), tail.next(), next.chars().next()) {
+            (Some('\u{00AD}'), _, _) => {
+                result.pop();
+            }
+            (Some('-' | '\u{2010}'), Some(left), Some(right))
+                if left.is_alphanumeric() && right.is_alphabetic() =>
+            {
+                if should_join_hyphenated(left, right) {
+                    result.pop();
+                }
+            }
+            (Some(_), _, _) => result.push(' '),
+            _ => {}
         }
-        if should_join_hyphenated(&result, next) {
-            result.pop();
-            result.push_str(next);
-        } else {
-            result.push(' ');
-            result.push_str(next);
-        }
+        result.push_str(next);
     }
     result
 }
 
-fn should_join_hyphenated(left: &str, right: &str) -> bool {
-    let mut left_chars = left.chars().rev();
-    let Some(last) = left_chars.next() else {
-        return false;
-    };
-    if !matches!(last, '-' | '\u{2010}' | '\u{00AD}') {
-        return false;
-    }
-    let Some(before_hyphen) = left_chars.next() else {
-        return false;
-    };
-    if !before_hyphen.is_alphabetic() {
-        return false;
-    }
-    right
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_alphabetic() && ch.is_lowercase())
+fn should_join_hyphenated(left: char, right: char) -> bool {
+    let script = left.script();
+    left.is_lowercase()
+        && right.is_lowercase()
+        && !matches!(script, Script::Common | Script::Inherited | Script::Unknown)
+        && script == right.script()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
