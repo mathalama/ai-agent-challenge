@@ -389,11 +389,29 @@ fn ends_sentence(sentence: &str, rest: &str) -> bool {
             .split_whitespace()
             .next_back()
             .is_some_and(|word| {
+                let word = word.to_lowercase();
                 matches!(
-                    word.to_lowercase().as_str(),
+                    word.as_str(),
                     "тыс" | "млн" | "млрд" | "руб" | "см" | "рис" | "табл"
-                )
+                ) || introduces_example_or_address(&word)
             })
+}
+
+fn introduces_example_or_address(word: &str) -> bool {
+    matches!(word, "г" | "ул" | "напр")
+}
+
+fn abbreviation_values(text: &str) -> impl Iterator<Item = &str> {
+    let words = text.split_whitespace();
+    words
+        .clone()
+        .zip(words.skip(1))
+        .filter_map(|(marker, value)| {
+            marker
+                .strip_suffix('.')
+                .filter(|word| introduces_example_or_address(word))
+                .map(|_| value.trim_matches(|ch: char| !ch.is_alphanumeric()))
+        })
 }
 
 fn numeric_values(text: &str) -> impl Iterator<Item = &str> {
@@ -411,7 +429,10 @@ fn similar_sentences(left: &str, right: &str) -> bool {
         text.split(|ch: char| !ch.is_alphanumeric())
             .any(|word| matches!(word, "не" | "без" | "нельзя" | "запрещено"))
     };
-    if negated(&left) != negated(&right) || numeric_values(&left).ne(numeric_values(&right)) {
+    if negated(&left) != negated(&right)
+        || numeric_values(&left).ne(numeric_values(&right))
+        || abbreviation_values(&left).ne(abbreviation_values(&right))
+    {
         return false;
     }
     let left: HashSet<_> = content_words(&left).into_iter().collect();
@@ -479,6 +500,28 @@ mod tests {
             merged_ids: Vec::new(),
             fallback_evidence: false,
             verified: false,
+        }
+    }
+
+    #[test]
+    fn keeps_examples_and_addresses_intact_when_merging() {
+        for (first, second) in [
+            (
+                "Отчёт доступен для г. Алматы.",
+                "Отчёт доступен для г. Астана.",
+            ),
+            (
+                "Проверить адрес для ул. Абая.",
+                "Проверить адрес для ул. Сатпаева.",
+            ),
+            (
+                "Проверить пример, напр. Алматы.",
+                "Проверить пример, напр. Астана.",
+            ),
+        ] {
+            let mut text = first.to_owned();
+            append_distinct_sentences(&mut text, second);
+            assert_eq!(text, format!("{first} {second}"));
         }
     }
 

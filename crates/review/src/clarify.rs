@@ -102,17 +102,14 @@ fn resolve_links(draft: &mut QuestionDraft, batch: &[&Finding]) {
         }
     }
 
-    // Сохраняем явные ссылки из пачки, если модель не смогла скопировать цитаты.
+    // Без сопоставимых цитат восстанавливаем явные ссылки из текущей пачки.
     if draft.finding_ids.is_empty() {
-        let declared_findings: Vec<_> = batch
+        for finding in batch
             .iter()
             .filter(|finding| declared.contains(&finding.id))
-            .collect();
-        if !cited.is_empty() || declared_findings.len() == 1 {
-            for finding in declared_findings {
-                draft.finding_ids.push(finding.id.clone());
-                draft.evidence.extend_from_slice(&finding.evidence);
-            }
+        {
+            draft.finding_ids.push(finding.id.clone());
+            draft.evidence.extend_from_slice(&finding.evidence);
         }
     }
 }
@@ -260,6 +257,43 @@ mod tests {
             fallback_evidence: false,
             verified: true,
         }
+    }
+
+    #[test]
+    fn question_keeps_multiple_declared_findings_without_evidence() {
+        let first_quote = evidence("Код истекает через 15 минут.", 8);
+        let second_quote = evidence("Код истекает через 10 минут.", 15);
+        let first = finding("set_checks-001", vec![first_quote.clone()]);
+        let second = finding("set_checks-002", vec![second_quote.clone()]);
+        let response = serde_json::json!({
+            "text": "Когда истекает код?",
+            "why": "От срока зависит проверка оплаты.",
+            "topic": "other",
+            "options": [],
+            "finding_ids": [first.id, second.id, "set_checks-999"],
+        });
+        let batch = [&first, &second];
+        let mut draft = serde_json::from_value(response).unwrap();
+        resolve_links(&mut draft, &batch);
+        let questions = build_questions(vec![draft], &batch).unwrap();
+
+        assert_eq!(questions.len(), 1);
+        assert!(matches!(
+            questions[0].related.as_slice(),
+            [RelatedId::Finding(left), RelatedId::Finding(right)]
+                if *left == first.id && *right == second.id
+        ));
+        assert_eq!(
+            questions[0]
+                .evidence
+                .iter()
+                .map(|item| (&item.quote, item.location))
+                .collect::<Vec<_>>(),
+            [
+                (&first_quote.quote, first_quote.location),
+                (&second_quote.quote, second_quote.location)
+            ]
+        );
     }
 
     #[test]

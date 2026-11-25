@@ -133,7 +133,7 @@ pub(crate) fn dehyphenate_multiline(text: &str) -> String {
             (Some('-' | '\u{2010}'), Some(left), Some(right))
                 if left.is_alphanumeric() && right.is_alphanumeric() =>
             {
-                if should_join_hyphenated(&result, left, right) {
+                if should_join_hyphenated(&result, next, left, right) {
                     result.pop();
                 }
             }
@@ -145,24 +145,76 @@ pub(crate) fn dehyphenate_multiline(text: &str) -> String {
     result
 }
 
-fn should_join_hyphenated(line: &str, left: char, right: char) -> bool {
+fn should_join_hyphenated(line: &str, next: &str, left: char, right: char) -> bool {
+    let script = left.script();
+    if !left.is_lowercase()
+        || !right.is_lowercase()
+        || matches!(script, Script::Common | Script::Inherited | Script::Unknown)
+        || script != right.script()
+    {
+        return false;
+    }
+
     let prefix = line
         .trim_end_matches(['-', '\u{2010}'])
         .rsplit(|character: char| !character.is_alphabetic())
         .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let suffix = next
+        .split(|character: char| !character.is_alphabetic())
+        .next()
         .unwrap_or_default();
-    // По одним координатам PDF нельзя отличить дефис сложного слова от переноса.
-    if matches!(
-        prefix.to_lowercase().as_str(),
-        "онлайн" | "офлайн" | "интернет" | "веб" | "бизнес"
-    ) {
-        return false;
-    }
-    let script = left.script();
-    left.is_lowercase()
-        && right.is_lowercase()
-        && !matches!(script, Script::Common | Script::Inherited | Script::Unknown)
-        && script == right.script()
+    // Известные составные слова, предлоги и частицы сохраняют постоянный дефис.
+    let fixed_prefix = matches!(
+        prefix.as_str(),
+        "онлайн" | "офлайн" | "интернет" | "веб" | "бизнес" | "кое"
+    );
+    let fixed_pair = matches!(
+        (prefix.as_str(), suffix),
+        ("из", "за" | "под") | (_, "либо" | "нибудь")
+    );
+    let pronouns_and_adverbs = [
+        "кто",
+        "кого",
+        "кому",
+        "кем",
+        "ком",
+        "что",
+        "чего",
+        "чему",
+        "чем",
+        "чём",
+        "какой",
+        "какая",
+        "какое",
+        "какие",
+        "какую",
+        "какого",
+        "какому",
+        "каким",
+        "каком",
+        "каких",
+        "какими",
+        "чей",
+        "чья",
+        "чьё",
+        "чьи",
+        "чью",
+        "чьего",
+        "чьему",
+        "чьим",
+        "где",
+        "куда",
+        "откуда",
+        "когда",
+        "почему",
+        "зачем",
+        "как",
+        "сколько",
+    ];
+    let has_particle = suffix == "то" && pronouns_and_adverbs.contains(&prefix.as_str());
+    !(fixed_prefix || fixed_pair || has_particle)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
