@@ -25,6 +25,8 @@ struct BlockContext {
     part: Option<String>,
     section: Option<String>,
     heading: Option<String>,
+    http_status_list: bool,
+    http_status_scenario: bool,
 }
 
 /// Детерминированно извлекает идентификатор требования из текста блока, заголовка или ячейки
@@ -553,18 +555,21 @@ pub(crate) fn merge_requirements(
                     "логика работы метода" | "особые правила" | "request body" | "тело запроса"
                 )
             });
+        // PDF может склеить физические строки, сохранив диапазон всего абзаца.
+        let keep_whole_block = heading_id.is_some()
+            || text.lines().count() != full_span.end_line - full_span.start_line + 1;
         let spans = if explicit_id.is_some() || is_method_rule {
             vec![full_span]
         } else {
             drafts
                 .iter()
                 .filter_map(|draft| {
-                    let DraftKind::Requirement = draft.kind;
-                    (block.id == draft.block_id
+                    (matches!(draft.kind, DraftKind::Requirement)
+                        && block.id == draft.block_id
                         && draft.start_line >= full_span.start_line
                         && draft.start_line <= draft.end_line
                         && draft.end_line <= full_span.end_line)
-                        .then_some(if heading_id.is_some() {
+                        .then_some(if keep_whole_block {
                             full_span
                         } else {
                             SourceSpan {
@@ -583,9 +588,6 @@ pub(crate) fn merge_requirements(
             let quote = if span == full_span {
                 text.trim().to_owned()
             } else {
-                if text.lines().count() != full_span.end_line - full_span.start_line + 1 {
-                    continue;
-                }
                 text.lines()
                     .skip(span.start_line - full_span.start_line)
                     .take(span.end_line - span.start_line + 1)
@@ -660,7 +662,9 @@ fn clean_requirement_text(quote: &str) -> String {
 
 fn api_context_kind(block: &Block, context: &BlockContext) -> Option<ContextKind> {
     match &block.content {
-        BlockContent::Heading { text, .. } if starts_with_http_status(text) => {
+        BlockContent::Heading { text, .. }
+            if starts_with_http_status(text, context.http_status_list) =>
+        {
             Some(ContextKind::StatusHeading)
         }
         BlockContent::Code { language, text } => {
@@ -668,27 +672,17 @@ fn api_context_kind(block: &Block, context: &BlockContext) -> Option<ContextKind
                 .as_deref()
                 .is_some_and(|lang| lang.eq_ignore_ascii_case("json"))
                 || matches!(text.trim_start().chars().next(), Some('{' | '['));
-            Some(
-                if is_json
-                    || context
-                        .heading
-                        .as_deref()
-                        .is_some_and(starts_with_http_status)
-                {
-                    ContextKind::StatusExample
-                } else {
-                    ContextKind::CodeExample
-                },
-            )
+            Some(if is_json || context.http_status_scenario {
+                ContextKind::StatusExample
+            } else {
+                ContextKind::CodeExample
+            })
         }
         BlockContent::Paragraph { text } | BlockContent::ListItem { text }
-            if context.section.as_deref().is_some_and(|section| {
-                let section = section.to_lowercase();
-                section.contains("статус") || section.contains("status")
-            }) || context
-                .heading
-                .as_deref()
-                .is_some_and(starts_with_http_status) =>
+            if context.http_status_scenario
+                || (context.http_status_list && starts_with_http_status(text, true))
+                || (strip_case_insensitive_prefix(text.trim_start(), "HTTP ").is_some()
+                    && starts_with_http_status(text, true)) =>
         {
             Some(ContextKind::StatusExample)
         }
@@ -696,17 +690,26 @@ fn api_context_kind(block: &Block, context: &BlockContext) -> Option<ContextKind
     }
 }
 
-fn starts_with_http_status(text: &str) -> bool {
+fn starts_with_http_status(text: &str, in_status_list: bool) -> bool {
     let text = text.trim();
-    let text = text.strip_prefix("HTTP ").unwrap_or(text);
-    text.get(..3)
-        .and_then(|code| code.parse::<u16>().ok())
-        .is_some_and(|code| (100..600).contains(&code))
-        && text[3..]
-            .chars()
-            .next()
-            .is_none_or(|ch| ch.is_whitespace() || matches!(ch, '.' | ':' | '–' | '—'))
-        && !text.as_bytes().get(4).is_some_and(u8::is_ascii_digit)
+    let prefixed = strip_case_insensitive_prefix(text, "HTTP ");
+    let text = prefixed.unwrap_or(text);
+    let Some((code, suffix)) = text.get(..3).zip(text.get(3..)) else {
+        return false;
+    };
+    if !code
+        .parse::<u16>()
+        .is_ok_and(|code| (100..600).contains(&code))
+    {
+        return false;
+    }
+    let whitespace_boundary = in_status_list || prefixed.is_some();
+    match suffix.chars().next() {
+        None | Some('.' | ':' | '–' | '—') => {
+            !suffix.chars().nth(1).is_some_and(|ch| ch.is_ascii_digit())
+        }
+        Some(ch) => whitespace_boundary && ch.is_whitespace(),
+    }
 }
 
 fn index_block_contexts(document: &Document) -> Vec<BlockContext> {
@@ -751,6 +754,22 @@ fn build_block_context(stack: &[(u8, String)], title: &str) -> BlockContext {
         .map(|(_, (_, text))| text.as_str())
         .collect();
 
+    let mut http_status_list = false;
+    let mut http_status_scenario = false;
+    for heading in &section_parts {
+        http_status_list |= matches!(
+            normalize_heading_title(heading).as_str(),
+            "статусы"
+                | "коды статусов"
+                | "коды ответа"
+                | "коды ответов"
+                | "http-статусы"
+                | "status codes"
+                | "http status codes"
+        );
+        http_status_scenario |= starts_with_http_status(heading, http_status_list);
+    }
+
     let heading = section_parts
         .last()
         .copied()
@@ -762,6 +781,8 @@ fn build_block_context(stack: &[(u8, String)], title: &str) -> BlockContext {
         part,
         section,
         heading,
+        http_status_list,
+        http_status_scenario,
     }
 }
 

@@ -554,3 +554,42 @@ fn joins_behavior_rows_in_a_passport_under_an_arbitrary_heading() {
         &req.quote
     ));
 }
+
+#[tokio::test]
+async fn business_status_prose_stays_in_requirements_while_http_statuses_are_context() {
+    let source = concat!(
+        "# Спецификация заявки\n\n",
+        "## Статусная модель заявки\n\n",
+        "Система переводит заявку в статус «Одобрена» после решения.\n\n",
+        "## Статусы\n\n",
+        "Статус «На рассмотрении» доступен только сотруднику.\n\n",
+        "**400.** Запрос содержит ошибку.\n\n",
+        "### 403. Forbidden\n\n",
+        "#### Пример\n\n",
+        "Для чужой заявки возвращается 404.\n",
+    );
+    let document = ParserRegistry::default()
+        .parse(Path::new("statuses.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::default();
+    let mut ctx = RunContext::new(document, &llm::MockProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert_eq!(ctx.requirements.len(), 1);
+    assert!(
+        ctx.requirements[0]
+            .quote
+            .contains("Система переводит заявку")
+    );
+    assert_eq!(
+        ctx.context_items
+            .iter()
+            .map(|item| item.quote.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "400. Запрос содержит ошибку.",
+            "403. Forbidden",
+            "Для чужой заявки возвращается 404.",
+        ]
+    );
+}

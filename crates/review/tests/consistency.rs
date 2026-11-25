@@ -22,22 +22,57 @@ impl LlmProvider for GroupedMock {
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
         let input: Value = serde_json::from_str(&request.user_text).unwrap();
         let json = match request.stage.as_str() {
-            "segment" => json!(input["blocks"].as_array().unwrap().iter().filter_map(|block| {
-                let quote = block["text"].as_str()?;
-                (!quote.is_empty()).then(|| segment_ref(block))
-            }).collect::<Vec<_>>()),
-            "facts" => json!(input["requirements"].as_array().unwrap().iter().map(|row| {
-                let i = row["id"].as_str().unwrap()[2..].parse::<usize>().unwrap() - 1;
-                json!({
-                "entity": if i < 28 { format!("resource-{}", i / 2) } else { format!("isolated-{i}") },
-                "requirement_id": row["id"],
-                "quote": null,
-                "data": {"kind": "frequency", "maximum": 2, "period": "week"}
-            })}).collect::<Vec<_>>()),
+            "segment" => json!(
+                input["blocks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|block| {
+                        let quote = block["text"].as_str()?;
+                        (!quote.is_empty()).then(|| segment_ref(block))
+                    })
+                    .collect::<Vec<_>>()
+            ),
+            "facts" => json!(
+                input["requirements"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| {
+                        let i = row["id"].as_str().unwrap()[2..].parse::<usize>().unwrap() - 1;
+                        let entity = match i {
+                            10 | 13 => "resource-5".into(),
+                            11 => "порог".into(),
+                            12 if input["known_entities"]
+                                .as_array()
+                                .is_some_and(|keys| keys.contains(&json!("порог"))) =>
+                            {
+                                "порог".into()
+                            }
+                            12 => "порог расходов".into(),
+                            0..28 => format!("resource-{}", i / 2),
+                            _ => format!("isolated-{i}"),
+                        };
+                        json!({
+                            "entity": entity,
+                            "requirement_id": row["id"],
+                            "quote": null,
+                            "data": {"kind": "frequency", "maximum": 2, "period": "week"}
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            ),
             "consistency" => {
                 let groups = input["groups"].as_array().unwrap();
                 assert_eq!(groups.len(), 14);
-                let ids = |group: &Value| -> Vec<String> { group["requirements"].as_object().unwrap().keys().cloned().collect() };
+                let ids = |group: &Value| -> Vec<String> {
+                    group["requirements"]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .cloned()
+                        .collect()
+                };
                 assert!(groups.iter().all(|group| ids(group).len() == 2));
                 let group = &groups[0];
                 let entity = format!(" {} ", group["entity"].as_str().unwrap().to_uppercase());
@@ -72,6 +107,7 @@ async fn consistency_batches_shared_entities_for_thirty_requirements() {
     Pipeline::default().run(&mut ctx).await.unwrap();
 
     assert_eq!(ctx.requirements.len(), 30);
+    assert_eq!(ctx.facts[11].entity, ctx.facts[12].entity);
     let calls = serde_json::to_value(trace.entries()).unwrap();
     for stage in ["facts", "requirement_checks"] {
         assert_eq!(

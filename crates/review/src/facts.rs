@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use doc::SourceSpan;
 use llm::{LlmError, generate_typed};
 use schemars::JsonSchema;
@@ -176,6 +178,13 @@ struct SourceBatch<'a> {
     context: &'a [ContextItem],
 }
 
+#[derive(Serialize)]
+struct FactInput<'a> {
+    #[serde(flatten)]
+    batch: SourceBatch<'a>,
+    known_entities: &'a BTreeSet<String>,
+}
+
 impl<'a> SourceBatch<'a> {
     fn sources(self) -> impl Iterator<Item = (&'a str, &'a str, SourceSpan)> {
         self.requirements
@@ -228,8 +237,12 @@ pub(crate) async fn extract(
         .rev()
         .collect();
     let mut facts = Vec::new();
+    let mut known_entities = BTreeSet::new();
     while let Some(batch) = pending.pop() {
-        let input = serde_json::to_string(&batch)?;
+        let input = serde_json::to_string(&FactInput {
+            batch,
+            known_entities: &known_entities,
+        })?;
         let drafts: Vec<FactDraft> =
             match generate_typed(ctx.provider, "facts", prompt, input).await {
                 Ok(drafts) => drafts,
@@ -269,6 +282,10 @@ pub(crate) async fn extract(
                     "Отброшен факт: цитата не совпадает с источником"
                 );
                 return None;
+            }
+            let entity_key = draft.entity.trim().to_lowercase();
+            if !entity_key.is_empty() {
+                known_entities.insert(entity_key);
             }
             Some(Fact {
                 entity: draft.entity,

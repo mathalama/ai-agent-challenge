@@ -1,8 +1,10 @@
 use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
 
+use async_trait::async_trait;
 use doc::{BlockContent, Document, ParserRegistry};
-use llm::MockProvider;
+use llm::{LlmProvider, LlmRequest, LlmResponse, MockProvider, Usage};
 use review::{CheckRegistry, Pipeline, RunContext, extract_table_requirements};
+use serde_json::{Value, json};
 
 fn render_document_to_pdf(document: &Document) -> Vec<u8> {
     let mut builder = PdfGen::new();
@@ -319,4 +321,80 @@ async fn requirements_pdf_matches_markdown_requirements_and_verify_rate() {
         "Доля подтверждённых цитат в PDF ниже Markdown"
     );
     assert!(pdf_ctx.findings.iter().all(|f| f.verified));
+}
+
+struct PartialPdfReferences;
+
+#[async_trait]
+impl LlmProvider for PartialPdfReferences {
+    fn model(&self) -> &str {
+        "test"
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage != "segment" {
+            return MockProvider.generate(request).await;
+        }
+        let input: Value = serde_json::from_str(&request.user_text).unwrap();
+        let block = input["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["kind"] == "paragraph")
+            .unwrap();
+        let location = &block["location"];
+        Ok(LlmResponse {
+            json: json!([&location["start_line"], &location["end_line"]].map(|line| json!({
+                "block_id": block["id"], "start_line": line, "end_line": line, "kind": "requirement"
+            }))),
+            usage: Usage::default(),
+            model: self.model().into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn partial_references_to_a_joined_pdf_paragraph_keep_one_verified_requirement() {
+    let mut pdf = PdfGen::new();
+    pdf.text(50.0, 54.0, 18.0, true, "Требования к архиву");
+    pdf.text(
+        50.0,
+        90.0,
+        10.0,
+        false,
+        "Система сохраняет архив после завершения",
+    );
+    pdf.text(
+        50.0,
+        103.0,
+        10.0,
+        false,
+        "сеанса и сообщает пользователю об этом.",
+    );
+    let mut document = ParserRegistry::default()
+        .parse(Path::new("wrapped.pdf"), &pdf.build())
+        .unwrap();
+    let block = document
+        .blocks
+        .iter_mut()
+        .find(|block| matches!(block.content, BlockContent::Paragraph { .. }))
+        .unwrap();
+    let BlockContent::Paragraph { text } = &block.content else {
+        unreachable!()
+    };
+    assert_eq!(text.lines().count(), 1);
+    assert!(text.contains("сеанса и сообщает"));
+    // Текущий парсер нумерует логические строки. Проверяем также вход
+    // с диапазоном физических строк у уже склеенного PDF-абзаца.
+    block.location.end_line = block.location.start_line + 1;
+    let expected = (text.clone(), block.location);
+
+    let checks = CheckRegistry::default();
+    let mut ctx = RunContext::new(document, &PartialPdfReferences, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert_eq!(ctx.requirements.len(), 1);
+    let req = &ctx.requirements[0];
+    assert_eq!((&req.quote, req.location), (&expected.0, expected.1));
+    assert!(ctx.document.contains_quote(req.location, &req.quote));
 }
