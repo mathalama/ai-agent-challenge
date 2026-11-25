@@ -665,7 +665,7 @@ impl LlmProvider for UnverifiedParaphraseProvider {
 }
 
 #[tokio::test]
-async fn unverified_llm_paraphrase_does_not_poison_verified_rule_finding() {
+async fn verified_rule_finding_absorbs_paraphrase_without_using_its_quote() {
     let source = concat!(
         "# Спецификация (версия 1.0 от 2026-03-10)\n\n",
         "* **Ф-1.** Сервис отвечает быстро на запросы пользователя.\n\n",
@@ -680,22 +680,17 @@ async fn unverified_llm_paraphrase_does_not_poison_verified_rule_finding() {
 
     Pipeline::default().run(&mut ctx).await.unwrap();
 
-    // Подтверждённое правило vague-terms и неподтверждённый пересказ ambiguity не сливаются.
-    assert_eq!(ctx.findings.len(), 2, "{:#?}", ctx.findings);
-    let rule_finding = ctx
-        .findings
-        .iter()
-        .find(|f| matches!(&f.detector, Detector::Rule(id) if id == "vague-terms"))
-        .expect("ожидалась находка правила vague-terms");
+    assert_eq!(ctx.findings.len(), 1, "{:#?}", ctx.findings);
+    let rule_finding = &ctx.findings[0];
+    assert!(matches!(&rule_finding.detector, Detector::Rule(id) if id == "vague-terms"));
     assert!(rule_finding.verified);
     assert_eq!(rule_finding.severity, Severity::Medium);
-
-    let llm_finding = ctx
-        .findings
-        .iter()
-        .find(|f| matches!(&f.detector, Detector::Llm(_)))
-        .expect("ожидалась находка LLM ambiguity");
-    assert!(!llm_finding.verified);
+    assert_eq!(rule_finding.merged_ids, ["ambiguity-001"]);
+    assert_eq!(rule_finding.evidence.len(), 1);
+    assert_eq!(
+        rule_finding.evidence[0].quote,
+        "Ф-1. Сервис отвечает быстро на запросы пользователя."
+    );
 
     let passport = RunPassport {
         document_title: ctx.document.title.clone(),
@@ -723,4 +718,147 @@ async fn weak_document_keeps_separate_missing_section_and_version_findings() {
     assert!(ids.contains(&"document-version-date-missing"), "{ids:?}");
     assert!(ids.contains(&"acceptance-criteria-missing"), "{ids:?}");
     assert!(ctx.findings.iter().all(|f| f.verified));
+}
+
+struct DuplicateProvider;
+
+#[async_trait]
+impl LlmProvider for DuplicateProvider {
+    fn model(&self) -> &str {
+        "test-duplicates"
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        let draft = |requirement_id: Option<&str>, criterion, severity, line, quote| {
+            serde_json::json!({
+                "requirement_id": requirement_id,
+                "criterion": criterion,
+                "severity": severity,
+                "evidence": [{"quote": quote, "location": {
+                    "start_line": line, "end_line": line, "page": null
+                }}],
+                "explanation": "Проверка требований.",
+                "suggestion": null
+            })
+        };
+        let json = match request.stage.as_str() {
+            "requirement_checks" => serde_json::json!([
+                draft(
+                    Some("R-001"),
+                    "complete",
+                    "high",
+                    1,
+                    "Комиссия для ТСП (TBD)."
+                ),
+                draft(
+                    Some("R-002"),
+                    "verifiable",
+                    "high",
+                    2,
+                    "Сервис выдерживает высокую нагрузку."
+                ),
+                draft(
+                    Some("R-003"),
+                    "appropriate",
+                    "critical",
+                    3,
+                    "Полные номера карт записываются в журнал."
+                ),
+            ]),
+            "set_checks" => serde_json::json!([
+                draft(None, "set_complete", "high", 1, "Комиссия для ТСП (TBD)."),
+                draft(
+                    None,
+                    "verifiable",
+                    "high",
+                    2,
+                    "Сервис выдерживает высокую нагрузку."
+                ),
+                draft(
+                    None,
+                    "appropriate",
+                    "critical",
+                    3,
+                    "Полные номера карт записываются в журнал."
+                ),
+            ]),
+            "ambiguity" => serde_json::json!([
+                draft(None, "unambiguous", "medium", 4, "В разумные сроки."),
+                draft(None, "unambiguous", "medium", 5, "По возможности."),
+                draft(None, "unambiguous", "medium", 6, "При необходимости."),
+                draft(None, "unambiguous", "medium", 7, "ER-3. И т. п."),
+                draft(
+                    None,
+                    "unambiguous",
+                    "medium",
+                    8,
+                    "Интерфейс должен быть удобным."
+                ),
+                draft(
+                    None,
+                    "unambiguous",
+                    "medium",
+                    9,
+                    "Журнал хранится достаточно долго."
+                ),
+            ]),
+            _ => return MockProvider.generate(request).await,
+        };
+        Ok(LlmResponse {
+            reasoning: None,
+            json,
+            usage: Usage::default(),
+            model: self.model().into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn merges_single_requirement_duplicates_and_counts_critical_findings_once() {
+    let source = concat!(
+        "* FR-7. Комиссия для ТСП (TBD).\n",
+        "* NFR-2. Сервис выдерживает высокую нагрузку.\n",
+        "* NFR-4. Полные номера карт записываются в журнал.\n",
+        "* FR-11. В разумные сроки.\n",
+        "* FR-12. По возможности.\n",
+        "* FR-5. При необходимости.\n",
+        "* ER-3. И т. п.\n",
+        "* NFR-5. Интерфейс должен быть удобным.\n",
+        "* NFR-6. Журнал хранится достаточно долго.\n",
+    );
+    let document = ParserRegistry::default()
+        .parse(Path::new("duplicates.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &DuplicateProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    for (stage, count, offset) in [("set_checks", 3, 0), ("ambiguity", 6, 3)] {
+        for index in 1..=count {
+            let id = format!("{stage}-{index:03}");
+            let expected_scope = Scope::Requirement(format!("R-{:03}", offset + index));
+            assert!(
+                ctx.findings.iter().any(|finding| {
+                    finding.verified
+                        && finding.scope == expected_scope
+                        && finding.merged_ids.contains(&id)
+                }),
+                "{id}: {:#?}",
+                ctx.findings
+            );
+        }
+    }
+
+    let report = Report::from_run(
+        ctx,
+        RunPassport {
+            document_title: "Требования".into(),
+            date: String::new(),
+            model: "test".into(),
+            agent_version: String::new(),
+        },
+    );
+    assert_eq!(report.summary.critical_findings, ["requirement_checks-003"]);
+    let markdown = MarkdownRenderer.render(&report).unwrap();
+    assert!(markdown.contains("Подтверждённых критичных дефектов — 1"));
 }

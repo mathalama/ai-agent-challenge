@@ -182,6 +182,7 @@ impl Stage for ScaffoldStage {
                             ctx.document
                                 .contains_quote(evidence.location, &evidence.quote)
                         });
+                    crate::dedup::narrow_set_scope(finding, &ctx.requirements);
                 }
                 ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
             }

@@ -1,14 +1,17 @@
 use std::collections::HashSet;
 
-use crate::{Detector, Evidence, Finding, Scope};
+use crate::{Detector, Evidence, Finding, Requirement, Scope};
 
 pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
     let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
-    for candidate in findings {
+    for mut candidate in findings {
         if let Some(target) = merged
             .iter_mut()
             .find(|existing| should_merge(existing, &candidate))
         {
+            if candidate.verified && !target.verified {
+                std::mem::swap(target, &mut candidate);
+            }
             merge_into(target, candidate);
         } else {
             merged.push(candidate);
@@ -17,16 +20,41 @@ pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
     merged
 }
 
+pub(crate) fn narrow_set_scope(finding: &mut Finding, requirements: &[Requirement]) {
+    if finding.scope != Scope::Set || finding.fallback_evidence || finding.evidence.is_empty() {
+        return;
+    }
+    let mut owners = requirements.iter().filter(|requirement| {
+        finding.evidence.iter().all(|evidence| {
+            let span = evidence.location;
+            let owner = requirement.location;
+            owner.page == span.page
+                && owner.start_line <= span.start_line
+                && span.start_line <= span.end_line
+                && span.end_line <= owner.end_line
+        })
+    });
+    if let Some(owner) = owners.next()
+        && owners.next().is_none()
+    {
+        finding.scope = Scope::Requirement(owner.id.clone());
+    }
+}
+
 fn should_merge(left: &Finding, right: &Finding) -> bool {
     if left.scope != right.scope {
         return false;
     }
-    // Не сливаем подтверждённую находку с неподтверждённой, чтобы пересказ LLM
-    // не обнулял verified у точной находки правила или другой стадии.
-    if left.verified != right.verified {
+    let quotes_match =
+        |a: &Evidence, b: &Evidence| spans_overlap(a, b) && texts_overlap(&a.quote, &b.quote);
+    if !quotes_overlap(&left.evidence, &right.evidence, quotes_match) {
         return false;
     }
-    if !quotes_overlap(&left.evidence, &right.evidence) {
+    // Для противоречия общей цитаты недостаточно: должны совпасть обе стороны.
+    if left.scope == Scope::Set
+        && (!covers_evidence(&left.evidence, &right.evidence, quotes_match)
+            || !covers_evidence(&right.evidence, &left.evidence, quotes_match))
+    {
         return false;
     }
 
@@ -95,12 +123,20 @@ fn detector_stage_key(detector: &Detector, finding_id: &str) -> String {
     }
 }
 
-fn quotes_overlap(left: &[Evidence], right: &[Evidence]) -> bool {
-    left.iter().any(|ev_a| {
-        right
-            .iter()
-            .any(|ev_b| spans_overlap(ev_a, ev_b) && texts_overlap(&ev_a.quote, &ev_b.quote))
-    })
+fn quotes_overlap(
+    left: &[Evidence],
+    right: &[Evidence],
+    matches: impl Fn(&Evidence, &Evidence) -> bool,
+) -> bool {
+    left.iter().any(|a| right.iter().any(|b| matches(a, b)))
+}
+
+fn covers_evidence(
+    left: &[Evidence],
+    right: &[Evidence],
+    matches: impl Fn(&Evidence, &Evidence) -> bool,
+) -> bool {
+    left.iter().all(|a| right.iter().any(|b| matches(a, b)))
 }
 
 fn spans_overlap(left: &Evidence, right: &Evidence) -> bool {
@@ -174,8 +210,6 @@ fn content_words(normalized: &str) -> Vec<String> {
 }
 
 fn merge_into(target: &mut Finding, other: Finding) {
-    target.severity = target.severity.max(other.severity);
-
     for criterion in other.all_criteria() {
         if criterion != target.criterion && !target.additional_criteria.contains(&criterion) {
             target.additional_criteria.push(criterion);
@@ -194,6 +228,10 @@ fn merge_into(target: &mut Finding, other: Finding) {
         }
     }
 
+    if target.verified != other.verified {
+        return;
+    }
+    target.severity = target.severity.max(other.severity);
     merge_evidence(&mut target.evidence, other.evidence);
 
     let target_norm = normalize_text(&target.explanation);
@@ -223,7 +261,6 @@ fn merge_into(target: &mut Finding, other: Finding) {
     }
 
     target.fallback_evidence = target.fallback_evidence && other.fallback_evidence;
-    target.verified = target.verified && other.verified;
 }
 
 fn merge_evidence(target: &mut Vec<Evidence>, incoming: Vec<Evidence>) {
@@ -441,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_merge_verified_finding_with_unverified_paraphrase() {
+    fn merges_verified_finding_with_unverified_paraphrase_in_either_order() {
         let mut verified_rule = make_finding(
             "vague-term-001",
             Scope::Requirement("R-003".into()),
@@ -464,11 +501,18 @@ mod tests {
         );
         unverified_llm.verified = false;
 
-        let merged = merge_findings(vec![verified_rule, unverified_llm]);
-        assert_eq!(merged.len(), 2);
-        assert!(merged[0].verified);
-        assert_eq!(merged[0].severity, Severity::Medium);
-        assert!(!merged[1].verified);
+        for input in [
+            vec![verified_rule.clone(), unverified_llm.clone()],
+            vec![unverified_llm, verified_rule.clone()],
+        ] {
+            let merged = merge_findings(input);
+            assert_eq!(merged.len(), 1);
+            assert!(merged[0].verified);
+            assert_eq!(merged[0].id, verified_rule.id);
+            assert_eq!(merged[0].evidence.len(), 1);
+            assert_eq!(merged[0].evidence[0].quote, verified_rule.evidence[0].quote);
+            assert_eq!(merged[0].merged_ids, ["ambiguity-001"]);
+        }
     }
 
     #[test]
@@ -510,6 +554,43 @@ mod tests {
 
         let merged = merge_findings(vec![testing_missing, version_missing, unrelated_set]);
         assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn keeps_conflicts_with_different_evidence_separate() {
+        let mut left = make_finding(
+            "set_checks-001",
+            Scope::Set,
+            Criterion::Consistent,
+            Severity::High,
+            "FR-3. Код действует 15 минут.",
+            3,
+            Detector::Llm("set_checks:test".into()),
+        );
+        left.evidence.push(Evidence {
+            quote: "ER-2. Код устаревает через 10 минут.".into(),
+            location: SourceSpan {
+                start_line: 5,
+                end_line: 5,
+                page: None,
+            },
+        });
+        let mut duplicate = left.clone();
+        duplicate.id = "ambiguity-001".into();
+        duplicate.detector = Detector::Llm("ambiguity:test".into());
+        duplicate.evidence[1].quote = "ER-2. Код устаревает через 10 мин.".into();
+        left.verified = true;
+        let mut other = duplicate.clone();
+        other.id = "ambiguity-002".into();
+        other.evidence[1].location.start_line = 7;
+        other.evidence[1].location.end_line = 7;
+
+        let merged = merge_findings(vec![left, duplicate, other]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].merged_ids, ["ambiguity-001"]);
+        assert_eq!(merged[0].evidence.len(), 2);
+        assert!(matches!(merged[0].scope, Scope::Set));
+        assert!(matches!(merged[1].scope, Scope::Set));
     }
 
     #[test]
