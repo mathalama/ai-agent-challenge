@@ -169,15 +169,13 @@ impl Stage for ScaffoldStage {
                         );
                         finding.suggestion = None;
                     }
-                }
-                ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
-                for finding in &mut ctx.findings {
                     finding.verified = !finding.evidence.is_empty()
                         && finding.evidence.iter().all(|evidence| {
                             ctx.document
                                 .contains_quote(evidence.location, &evidence.quote)
                         });
                 }
+                ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
             }
             Self::Clarify => {
                 ctx.questions.clear();

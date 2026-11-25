@@ -277,25 +277,38 @@ fn is_unselected_choice(cell: &str) -> bool {
     )
 }
 
+fn is_checklist_status_header(cell: &str) -> bool {
+    let norm = normalize_title(cell);
+    norm.contains("создано")
+        || norm.contains("проверено")
+        || norm.contains("статус")
+        || norm.contains("выполнено")
+        || norm.contains("отметка")
+        || norm.contains("checked")
+        || norm.contains("status")
+        || norm.contains("done")
+        || norm.contains("verified")
+}
+
 pub(crate) fn is_review_checklist_table(rows: &[Vec<String>]) -> bool {
     if rows.len() < 2 {
         return false;
     }
-    let header_matches = rows[0].iter().any(|cell| {
+    let header = &rows[0];
+    let has_item_header = header.iter().any(|cell| {
         let norm = normalize_title(cell);
         norm.contains("проверка")
-            || norm.contains("проверено")
-            || norm.contains("создано или доступно")
+            || norm.contains("пункт")
             || norm.contains("чек-лист")
+            || norm.contains("чеклист")
             || norm.contains("checklist")
-            || norm.contains("verified")
+            || norm.contains("критерий")
     });
-    let has_choice_cells = rows
+    let status_count = header
         .iter()
-        .skip(1)
-        .flatten()
-        .any(|cell| is_unselected_choice(cell));
-    has_choice_cells || (header_matches && rows[0].len() >= 3)
+        .filter(|cell| is_checklist_status_header(cell))
+        .count();
+    (has_item_header && status_count >= 1) || status_count >= 2
 }
 
 fn is_approvers_table(rows: &[Vec<String>]) -> bool {
@@ -525,6 +538,7 @@ impl Check for DocumentVersionDate {
         let mut has_version = false;
         let mut has_date = false;
         let mut explicit_missing_evidence: Option<Evidence> = None;
+        let mut in_metadata_section: Option<u8> = None;
 
         for block in &ctx.document.blocks {
             match &block.content {
@@ -533,9 +547,14 @@ impl Check for DocumentVersionDate {
                         continue;
                     }
                     // Проверяем колоночную таблицу истории версий (столбцы «Версия» и «Дата»).
+                    // Столбец «Дата» без «Версии» учитываем только в разделе метаданных/истории документа.
                     if let Some(header) = rows.first() {
                         let version_col = header.iter().position(|c| is_version_label(c));
-                        let date_col = header.iter().position(|c| is_date_label(c));
+                        let date_col = if version_col.is_some() || in_metadata_section.is_some() {
+                            header.iter().position(|c| is_date_label(c))
+                        } else {
+                            None
+                        };
                         if version_col.is_some() || date_col.is_some() {
                             for (row_idx, row) in rows.iter().enumerate().skip(1) {
                                 if let Some(col) = version_col
@@ -571,43 +590,70 @@ impl Check for DocumentVersionDate {
                     }
 
                     // Проверяем таблицу ключ–значение (2 столбца: Поле | Значение).
-                    for (row_idx, row) in rows.iter().enumerate().skip(1) {
-                        if row.len() < 2 {
-                            continue;
-                        }
-                        let key = &row[0];
-                        let value = &row[1];
-                        let version_key = is_version_label(key);
-                        let date_key = is_date_label(key);
-                        if version_key {
-                            if !is_placeholder(value) && contains_version_number(value) {
-                                has_version = true;
-                            } else if explicit_missing_evidence.is_none()
-                                && !row_quote(row).is_empty()
-                            {
-                                explicit_missing_evidence = Some(Evidence {
-                                    quote: row_quote(row),
-                                    location: table_row_span(block, row_lines, row_idx),
-                                });
+                    if rows.first().is_some_and(|header| header.len() == 2) {
+                        for (row_idx, row) in rows.iter().enumerate().skip(1) {
+                            if row.len() < 2 {
+                                continue;
                             }
-                        }
-                        if date_key {
-                            if !is_placeholder(value) && contains_date_value(value) {
-                                has_date = true;
-                            } else if explicit_missing_evidence.is_none()
-                                && !row_quote(row).is_empty()
-                            {
-                                explicit_missing_evidence = Some(Evidence {
-                                    quote: row_quote(row),
-                                    location: table_row_span(block, row_lines, row_idx),
-                                });
+                            let key = &row[0];
+                            let value = &row[1];
+                            let version_key = is_version_label(key);
+                            let date_key = is_date_label(key);
+                            if version_key {
+                                if !is_placeholder(value) && contains_version_number(value) {
+                                    has_version = true;
+                                } else if explicit_missing_evidence.is_none()
+                                    && !row_quote(row).is_empty()
+                                {
+                                    explicit_missing_evidence = Some(Evidence {
+                                        quote: row_quote(row),
+                                        location: table_row_span(block, row_lines, row_idx),
+                                    });
+                                }
+                            }
+                            if date_key {
+                                if !is_placeholder(value) && contains_date_value(value) {
+                                    has_date = true;
+                                } else if explicit_missing_evidence.is_none()
+                                    && !row_quote(row).is_empty()
+                                {
+                                    explicit_missing_evidence = Some(Evidence {
+                                        quote: row_quote(row),
+                                        location: table_row_span(block, row_lines, row_idx),
+                                    });
+                                }
                             }
                         }
                     }
                 }
-                BlockContent::Heading { text, .. }
-                | BlockContent::Paragraph { text }
-                | BlockContent::ListItem { text } => {
+                BlockContent::Heading { level, text } => {
+                    if let Some(meta_level) = in_metadata_section
+                        && *level <= meta_level
+                    {
+                        in_metadata_section = None;
+                    }
+                    if is_document_metadata_title(text) {
+                        in_metadata_section = Some(*level);
+                    }
+                    for line in text.lines() {
+                        if mentions_missing_version_or_date(line) {
+                            if explicit_missing_evidence.is_none() && !line.trim().is_empty() {
+                                explicit_missing_evidence = Some(Evidence {
+                                    quote: line.trim().to_string(),
+                                    location: block.location,
+                                });
+                            }
+                            continue;
+                        }
+                        if line_has_document_version(line) {
+                            has_version = true;
+                        }
+                        if line_has_document_date(line) {
+                            has_date = true;
+                        }
+                    }
+                }
+                BlockContent::Paragraph { text } | BlockContent::ListItem { text } => {
                     for line in text.lines() {
                         if mentions_missing_version_or_date(line) {
                             if explicit_missing_evidence.is_none() && !line.trim().is_empty() {
@@ -669,6 +715,21 @@ impl Check for DocumentVersionDate {
     }
 }
 
+fn is_document_metadata_title(text: &str) -> bool {
+    let norm = normalize_title(text);
+    norm.contains("общие сведения")
+        || norm.contains("паспорт документа")
+        || norm.contains("история изменений")
+        || norm.contains("история версий")
+        || norm.contains("версии документа")
+        || norm.contains("о документе")
+        || norm.contains("document info")
+        || norm.contains("revision history")
+        || norm.contains("version history")
+        || norm.contains("changelog")
+        || norm.contains("metadata")
+}
+
 fn is_version_label(text: &str) -> bool {
     let norm = normalize_title(text);
     // Исключаем «версионность» в чек-листах, если там не «версия».
@@ -677,8 +738,35 @@ fn is_version_label(text: &str) -> bool {
 }
 
 fn is_date_label(text: &str) -> bool {
-    let norm = normalize_title(text);
-    norm.contains("дата") || title_words(text).iter().any(|word| word == "date")
+    let norm = normalize_title(text)
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, '*' | '_' | ':' | ' '))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    matches!(
+        norm.as_str(),
+        "дата"
+            | "дата документа"
+            | "дата создания"
+            | "дата обновления"
+            | "дата редакции"
+            | "дата утверждения"
+            | "дата выпуска"
+            | "дата актуализации"
+            | "дата изменения"
+            | "версия/дата"
+            | "версия / дата"
+            | "версия и дата"
+            | "документ (версия/дата)"
+            | "date"
+            | "document date"
+            | "created"
+            | "updated"
+            | "last updated"
+            | "revision date"
+            | "version/date"
+    )
 }
 
 fn mentions_missing_version_or_date(line: &str) -> bool {
@@ -733,15 +821,18 @@ fn line_has_document_version(line: &str) -> bool {
 
 fn line_has_document_date(line: &str) -> bool {
     let norm = normalize_title(line);
-    let has_date_context = norm.contains("дата")
-        || norm.contains("date")
-        || norm.contains("версия")
-        || norm.contains("редакция")
-        || norm.contains("version")
-        || norm.contains("updated")
-        || norm.contains("обновлен")
-        || norm.contains("создан")
-        || norm.contains(" от ");
+    // Не считаем датой документа произвольные ссылки вида «Приказ № 5 от 01.02.2024».
+    let has_date_context = norm.contains("дата документа")
+        || norm.contains("дата создания")
+        || norm.contains("дата обновления")
+        || norm.contains("дата редакции")
+        || norm.contains("дата выпуска")
+        || norm.contains("дата:")
+        || norm.contains("date:")
+        || norm.contains("document date")
+        || norm.contains("last updated")
+        || norm.contains("updated:")
+        || line_has_document_version(line);
     has_date_context && contains_date_value(&norm)
 }
 
@@ -1014,30 +1105,13 @@ impl Check for ReviewChecklist {
                         continue;
                     }
                     let in_review = in_review_section.is_some();
-                    let has_choice_cells = rows
-                        .iter()
-                        .skip(1)
-                        .flatten()
-                        .any(|cell| is_unselected_choice(cell));
-                    if !in_review && !has_choice_cells {
+                    if !in_review && !is_review_checklist_table(rows) {
                         continue;
                     }
                     let status_cols: Vec<usize> = rows[0]
                         .iter()
                         .enumerate()
-                        .filter(|(_, cell)| {
-                            let norm = normalize_title(cell);
-                            norm.contains("создано")
-                                || norm.contains("проверено")
-                                || norm.contains("статус")
-                                || norm.contains("выполнено")
-                                || norm.contains("отметка")
-                                || norm.contains("результат")
-                                || norm.contains("checked")
-                                || norm.contains("status")
-                                || norm.contains("done")
-                                || norm.contains("verified")
-                        })
+                        .filter(|(_, cell)| is_checklist_status_header(cell))
                         .map(|(col, _)| col)
                         .collect();
 
@@ -1424,11 +1498,6 @@ fn is_required_column_header(name: &str) -> bool {
     let keywords = [
         "parameter",
         "параметр",
-        "поле",
-        "field",
-        "name",
-        "название",
-        "имя",
         "format",
         "формат",
         "type",
@@ -1436,39 +1505,18 @@ fn is_required_column_header(name: &str) -> bool {
         "mandatory",
         "description",
         "описание",
-        "logic",
-        "логика",
         "url",
         "endpoint",
         "эндпоинт",
-        "метод",
-        "method",
-        "статус",
-        "status",
-        "код",
-        "code",
         "исходные условия",
         "предусловие",
         "действие",
-        "шаг",
         "ожидаемый результат",
-        "expected",
-        "action",
-        "сценарий",
-        "scenario",
-        "результат",
-        "значение",
-        "value",
-        "требование",
-        "requirement",
-        "ответственный",
-        "owner",
+        "expected result",
         "версия",
         "version",
-        "дата",
-        "date",
     ];
-    keywords.iter().any(|kw| norm.contains(kw))
+    keywords.iter().any(|kw| norm.contains(kw)) || is_date_label(name)
 }
 
 fn check_key_value_table(
@@ -1558,46 +1606,61 @@ fn check_multicolumn_table(
             continue;
         }
         let span = table_row_span(block, row_lines, row_idx);
+        let mut missing_cols: Vec<&str> = Vec::new();
+        let mut missing_subfields: Vec<(&str, String)> = Vec::new();
 
         for &(col_idx, col_name) in &required_cols {
             let value = row.get(col_idx).map(String::as_str).unwrap_or("").trim();
             if is_placeholder(value) {
-                findings.push(rule_finding(
-                    "required-table-field",
-                    format!("required-table-field-{}-{row_idx}-{col_idx}", block.id.0),
-                    Scope::Set,
-                    Criterion::Complete,
-                    vec![Evidence {
-                        quote: quote.clone(),
-                        location: span,
-                    }],
-                    format!(
-                        "Обязательный столбец таблицы «{col_name}» не заполнен в строке {row_idx} (значение: «{value}»)."
-                    ),
-                    format!("Заполнить столбец «{col_name}» конкретным значением."),
-                ));
+                missing_cols.push(col_name);
             } else {
                 for empty_sub in find_empty_inline_subfields(value) {
-                    findings.push(rule_finding(
-                        "required-table-field",
-                        format!(
-                            "required-table-field-{}-{row_idx}-{col_idx}-{}",
-                            block.id.0,
-                            empty_sub.to_lowercase().replace(' ', "-")
-                        ),
-                        Scope::Set,
-                        Criterion::Complete,
-                        vec![Evidence {
-                            quote: quote.clone(),
-                            location: span,
-                        }],
-                        format!(
-                            "В столбце таблицы «{col_name}» не заполнено значение для «{empty_sub}»."
-                        ),
-                        format!("Указать фактическое значение «{empty_sub}» в столбце «{col_name}»."),
-                    ));
+                    missing_subfields.push((col_name, empty_sub));
                 }
             }
+        }
+
+        if !missing_cols.is_empty() {
+            let cols_list = missing_cols
+                .iter()
+                .map(|name| format!("«{name}»"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let explanation = if missing_cols.len() == 1 {
+                format!("Обязательный столбец таблицы {cols_list} не заполнен в строке {row_idx}.")
+            } else {
+                format!("Обязательные столбцы таблицы {cols_list} не заполнены в строке {row_idx}.")
+            };
+            findings.push(rule_finding(
+                "required-table-field",
+                format!("required-table-field-{}-{row_idx}", block.id.0),
+                Scope::Set,
+                Criterion::Complete,
+                vec![Evidence {
+                    quote: quote.clone(),
+                    location: span,
+                }],
+                explanation,
+                format!("Заполнить обязательные столбцы ({cols_list}) конкретными значениями."),
+            ));
+        }
+        for (col_name, empty_sub) in missing_subfields {
+            findings.push(rule_finding(
+                "required-table-field",
+                format!(
+                    "required-table-field-{}-{row_idx}-{}",
+                    block.id.0,
+                    empty_sub.to_lowercase().replace(' ', "-")
+                ),
+                Scope::Set,
+                Criterion::Complete,
+                vec![Evidence {
+                    quote: quote.clone(),
+                    location: span,
+                }],
+                format!("В столбце таблицы «{col_name}» не заполнено значение для «{empty_sub}»."),
+                format!("Указать фактическое значение «{empty_sub}» в столбце «{col_name}»."),
+            ));
         }
     }
 }
@@ -1768,8 +1831,12 @@ mod tests {
 
     #[tokio::test]
     async fn version_date_rule_fires_when_missing_and_passes_when_present() {
-        let missing_both =
-            "# Регламент переводов\n\n## Описание\n\nПереводы выполняются в тенге.\n";
+        let missing_both = concat!(
+            "# Регламент переводов\n\n",
+            "## Описание\n\n",
+            "Переводы выполняются в тенге согласно Приказу № 5 от 01.02.2024.\n\n",
+            "| Дата операции | Сумма |\n| --- | --- |\n| 2026-01-01 | 5000 |\n"
+        );
         let findings = run_single_rule(missing_both, DocumentVersionDate).await;
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].id, "document-version-date-missing");
@@ -1852,6 +1919,17 @@ mod tests {
             "| Проверена безопасность | Не требуется |\n"
         );
         let findings = run_single_rule(completed, ReviewChecklist).await;
+        assert!(findings.is_empty(), "{findings:#?}");
+
+        // Таблица с «Да / Нет» вне раздела ревью (описание типа поля) не является чек-листом.
+        let boolean_field_table = concat!(
+            "# Документ\n\n",
+            "## Параметры карточки\n\n",
+            "| Поле | Значение |\n",
+            "| --- | --- |\n",
+            "| Признак блокировки | Да / Нет |\n"
+        );
+        let findings = run_single_rule(boolean_field_table, ReviewChecklist).await;
         assert!(findings.is_empty(), "{findings:#?}");
     }
 

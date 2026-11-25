@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{Detector, Evidence, Finding};
+use crate::{Detector, Evidence, Finding, Scope};
 
 pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
     let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
@@ -21,21 +21,61 @@ fn should_merge(left: &Finding, right: &Finding) -> bool {
     if left.scope != right.scope {
         return false;
     }
+    // Не сливаем подтверждённую находку с неподтверждённой, чтобы пересказ LLM
+    // не обнулял verified у точной находки правила или другой стадии.
+    if left.verified != right.verified {
+        return false;
+    }
     if !quotes_overlap(&left.evidence, &right.evidence) {
         return false;
     }
+
     let left_stages = finding_stages(left);
     let right_stages = finding_stages(right);
-    let different_stage = left_stages.is_disjoint(&right_stages);
-    if different_stage {
+    let same_criteria = shares_criterion(left, right);
+
+    // Разные детерминированные правила проверяют независимые инварианты документа —
+    // их нельзя сливать друг с другом даже при совпадении цитаты (например, заголовка H1).
+    if is_pure_rule(left) && is_pure_rule(right) && left_stages.is_disjoint(&right_stages) {
+        return false;
+    }
+
+    // На уровне документа находки с запасной якорной цитатой (например, *-missing -> H1)
+    // сливаем только при совпадении критерия.
+    if matches!(left.scope, Scope::Set)
+        && (uses_fallback_anchor(left) || uses_fallback_anchor(right))
+        && !same_criteria
+    {
+        return false;
+    }
+
+    if left_stages.is_disjoint(&right_stages) {
         return true;
     }
     // Внутри одной стадии сливаем только точные дубликаты по одному и тому же критерию.
+    same_criteria
+}
+
+fn shares_criterion(left: &Finding, right: &Finding) -> bool {
     let left_criteria = left.all_criteria();
     right
         .all_criteria()
         .into_iter()
         .any(|criterion| left_criteria.contains(&criterion))
+}
+
+fn is_pure_rule(finding: &Finding) -> bool {
+    finding
+        .all_detectors()
+        .into_iter()
+        .all(|detector| matches!(detector, Detector::Rule(_)))
+}
+
+fn uses_fallback_anchor(finding: &Finding) -> bool {
+    finding
+        .all_ids()
+        .into_iter()
+        .any(|id| id.ends_with("-missing"))
 }
 
 fn finding_stages(finding: &Finding) -> HashSet<String> {
@@ -403,5 +443,106 @@ mod tests {
 
         let merged = merge_findings(vec![first, second]);
         assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn does_not_merge_verified_finding_with_unverified_paraphrase() {
+        let mut verified_rule = make_finding(
+            "vague-term-001",
+            Scope::Requirement("R-003".into()),
+            Criterion::Unambiguous,
+            Severity::Medium,
+            "Сервис отвечает быстро на запросы пользователя.",
+            18,
+            Detector::Rule("vague-terms".into()),
+        );
+        verified_rule.verified = true;
+
+        let mut unverified_llm = make_finding(
+            "ambiguity-001",
+            Scope::Requirement("R-003".into()),
+            Criterion::Unambiguous,
+            Severity::High,
+            "Сервис отвечает быстро на запросы клиентов",
+            18,
+            Detector::Llm("ambiguity:test".into()),
+        );
+        unverified_llm.verified = false;
+
+        let merged = merge_findings(vec![verified_rule, unverified_llm]);
+        assert_eq!(merged.len(), 2);
+        assert!(merged[0].verified);
+        assert_eq!(merged[0].severity, Severity::Medium);
+        assert!(!merged[1].verified);
+    }
+
+    #[test]
+    fn does_not_merge_unrelated_document_level_rules_sharing_fallback_heading() {
+        let mut testing_missing = make_finding(
+            "testing-section-missing",
+            Scope::Set,
+            Criterion::SetComplete,
+            Severity::Medium,
+            "Спецификация платёжного шлюза",
+            1,
+            Detector::Rule("testing-section".into()),
+        );
+        testing_missing.verified = true;
+
+        let mut version_missing = make_finding(
+            "document-version-date-missing",
+            Scope::Set,
+            Criterion::Conforming,
+            Severity::Medium,
+            "Спецификация платёжного шлюза",
+            1,
+            Detector::Rule("document-version-date".into()),
+        );
+        version_missing.verified = true;
+
+        let mut unrelated_set = make_finding(
+            "set_checks-001",
+            Scope::Set,
+            Criterion::Ranked,
+            Severity::Low,
+            "Спецификация платёжного шлюза",
+            1,
+            Detector::Llm("set_checks:test".into()),
+        );
+        unrelated_set.verified = true;
+
+        let merged = merge_findings(vec![testing_missing, version_missing, unrelated_set]);
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn merges_set_level_llm_findings_sharing_real_quote() {
+        let mut set_check = make_finding(
+            "set_checks-001",
+            Scope::Set,
+            Criterion::Consistent,
+            Severity::Medium,
+            "Месяц определяется по дате совершения покупки в Алматы.",
+            38,
+            Detector::Llm("set_checks:test".into()),
+        );
+        set_check.verified = true;
+
+        let mut ambiguity = make_finding(
+            "ambiguity-001",
+            Scope::Set,
+            Criterion::Unambiguous,
+            Severity::High,
+            "в Алматы",
+            38,
+            Detector::Llm("ambiguity:test".into()),
+        );
+        ambiguity.verified = true;
+
+        let merged = merge_findings(vec![set_check, ambiguity]);
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].verified);
+        assert_eq!(merged[0].severity, Severity::High);
+        assert_eq!(merged[0].all_detectors().len(), 2);
     }
 }

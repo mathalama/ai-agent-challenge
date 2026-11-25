@@ -602,3 +602,100 @@ async fn pipeline_merges_duplicate_cross_stage_findings_before_verify_and_render
     assert!(md.contains("Полнота требования"));
     assert!(md.contains("Однозначность"));
 }
+
+struct UnverifiedParaphraseProvider;
+
+#[async_trait]
+impl LlmProvider for UnverifiedParaphraseProvider {
+    fn model(&self) -> &str {
+        "test-paraphrase"
+    }
+
+    async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == "segment" {
+            return MockProvider.generate(request).await;
+        }
+        let json = match request.stage.as_str() {
+            "ambiguity" => serde_json::json!([
+                {
+                    "requirement_id": "R-001",
+                    "criterion": "unambiguous",
+                    "severity": "high",
+                    "evidence": [{
+                        "quote": "Сервис отвечает быстро на запросы клиентов",
+                        "location": {"start_line": 3, "end_line": 3, "page": null}
+                    }],
+                    "explanation": "Формулировка «быстро» не задаёт измеримого SLA.",
+                    "suggestion": "Указать предельное время ответа в миллисекундах."
+                }
+            ]),
+            _ => serde_json::json!([]),
+        };
+        Ok(LlmResponse {
+            json,
+            usage: Usage::default(),
+            model: self.model().into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn unverified_llm_paraphrase_does_not_poison_verified_rule_finding() {
+    let source = concat!(
+        "# Спецификация (версия 1.0 от 2026-03-10)\n\n",
+        "* **Ф-1.** Сервис отвечает быстро на запросы пользователя.\n\n",
+        "## Тестирование и приёмка\n\n",
+        "Проверить время ответа сервиса под нагрузкой.\n"
+    );
+    let document = ParserRegistry::default()
+        .parse(Path::new("spec.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &UnverifiedParaphraseProvider, &checks);
+
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    // Подтверждённое правило vague-terms и неподтверждённый пересказ ambiguity не сливаются.
+    assert_eq!(ctx.findings.len(), 2, "{:#?}", ctx.findings);
+    let rule_finding = ctx
+        .findings
+        .iter()
+        .find(|f| matches!(&f.detector, Detector::Rule(id) if id == "vague-terms"))
+        .expect("ожидалась находка правила vague-terms");
+    assert!(rule_finding.verified);
+    assert_eq!(rule_finding.severity, Severity::Medium);
+
+    let llm_finding = ctx
+        .findings
+        .iter()
+        .find(|f| matches!(&f.detector, Detector::Llm(_)))
+        .expect("ожидалась находка LLM ambiguity");
+    assert!(!llm_finding.verified);
+
+    let passport = RunPassport {
+        document_title: ctx.document.title.clone(),
+        date: "2026-03-10".into(),
+        model: "test-paraphrase".into(),
+        agent_version: "0.1.0".into(),
+    };
+    let report = Report::from_run(ctx, passport);
+    assert!(matches!(report.readiness, Readiness::Blocked));
+}
+
+#[tokio::test]
+async fn weak_document_keeps_separate_missing_section_and_version_findings() {
+    let source = "# Спецификация\n\n* **Ф-1.** Сохранять настройки профиля.\n";
+    let document = ParserRegistry::default()
+        .parse(Path::new("spec.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &MockProvider, &checks);
+
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    let ids: Vec<&str> = ctx.findings.iter().map(|f| f.id.as_str()).collect();
+    assert!(ids.contains(&"testing-section-missing"), "{ids:?}");
+    assert!(ids.contains(&"document-version-date-missing"), "{ids:?}");
+    assert!(ids.contains(&"acceptance-criteria-missing"), "{ids:?}");
+    assert!(ctx.findings.iter().all(|f| f.verified));
+}
