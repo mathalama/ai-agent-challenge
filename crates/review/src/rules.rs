@@ -285,9 +285,16 @@ fn is_checklist_status_header(cell: &str) -> bool {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    norm == "статус"
-        || norm == "status"
-        || norm.contains("создано или доступно")
+    matches!(
+        norm.as_str(),
+        "статус"
+            | "status"
+            | "статус проверки"
+            | "статус ревью"
+            | "статус выполнения"
+            | "review status"
+            | "check status"
+    ) || norm.contains("создано или доступно")
         || norm.contains("проверено")
         || norm.contains("выполнено")
         || norm.contains("отметка")
@@ -586,150 +593,7 @@ impl Check for DocumentVersionDate {
     }
 
     async fn run(&self, ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
-        let mut has_version = false;
-        let mut has_date = false;
-        let mut explicit_missing_evidence: Option<Evidence> = None;
-        let mut in_metadata_section: Option<u8> = None;
-
-        for block in &ctx.document.blocks {
-            match &block.content {
-                BlockContent::Table { rows, row_lines } => {
-                    if is_review_checklist_table(rows) {
-                        continue;
-                    }
-                    // Проверяем колоночную таблицу истории версий (столбцы «Версия» и «Дата»).
-                    // Внутри таблицы со столбцом версии или в разделе метаданных подходит любая подпись с «дата» / «date».
-                    if let Some(header) = rows.first() {
-                        let version_col = header.iter().position(|c| is_version_label(c));
-                        let date_col = if version_col.is_some() || in_metadata_section.is_some() {
-                            header.iter().position(|c| is_any_date_label(c))
-                        } else {
-                            None
-                        };
-                        if version_col.is_some() || date_col.is_some() {
-                            for (row_idx, row) in rows.iter().enumerate().skip(1) {
-                                if let Some(col) = version_col
-                                    && let Some(cell) = row.get(col)
-                                {
-                                    if !is_placeholder(cell) && contains_version_number(cell) {
-                                        has_version = true;
-                                    } else if explicit_missing_evidence.is_none()
-                                        && !row_quote(row).is_empty()
-                                    {
-                                        explicit_missing_evidence = Some(Evidence {
-                                            quote: row_quote(row),
-                                            location: table_row_span(block, row_lines, row_idx),
-                                        });
-                                    }
-                                }
-                                if let Some(col) = date_col
-                                    && let Some(cell) = row.get(col)
-                                {
-                                    if !is_placeholder(cell) && contains_date_value(cell) {
-                                        has_date = true;
-                                    } else if explicit_missing_evidence.is_none()
-                                        && !row_quote(row).is_empty()
-                                    {
-                                        explicit_missing_evidence = Some(Evidence {
-                                            quote: row_quote(row),
-                                            location: table_row_span(block, row_lines, row_idx),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Проверяем таблицу ключ–значение (2 столбца: Поле | Значение).
-                    if rows.first().is_some_and(|header| header.len() == 2) {
-                        for (row_idx, row) in rows.iter().enumerate().skip(1) {
-                            if row.len() < 2 {
-                                continue;
-                            }
-                            let key = &row[0];
-                            let value = &row[1];
-                            let version_key = is_version_label(key);
-                            let date_key = if in_metadata_section.is_some() {
-                                is_any_date_label(key)
-                            } else {
-                                is_date_label(key)
-                            };
-                            if version_key {
-                                if !is_placeholder(value) && contains_version_number(value) {
-                                    has_version = true;
-                                } else if explicit_missing_evidence.is_none()
-                                    && !row_quote(row).is_empty()
-                                {
-                                    explicit_missing_evidence = Some(Evidence {
-                                        quote: row_quote(row),
-                                        location: table_row_span(block, row_lines, row_idx),
-                                    });
-                                }
-                            }
-                            if date_key {
-                                if !is_placeholder(value) && contains_date_value(value) {
-                                    has_date = true;
-                                } else if explicit_missing_evidence.is_none()
-                                    && !row_quote(row).is_empty()
-                                {
-                                    explicit_missing_evidence = Some(Evidence {
-                                        quote: row_quote(row),
-                                        location: table_row_span(block, row_lines, row_idx),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                BlockContent::Heading { level, text } => {
-                    if let Some(meta_level) = in_metadata_section
-                        && *level <= meta_level
-                    {
-                        in_metadata_section = None;
-                    }
-                    if is_document_metadata_title(text) {
-                        in_metadata_section = Some(*level);
-                    }
-                    for line in text.lines() {
-                        if mentions_missing_version_or_date(line) {
-                            if explicit_missing_evidence.is_none() && !line.trim().is_empty() {
-                                explicit_missing_evidence = Some(Evidence {
-                                    quote: line.trim().to_string(),
-                                    location: block.location,
-                                });
-                            }
-                            continue;
-                        }
-                        if line_has_document_version(line) {
-                            has_version = true;
-                        }
-                        if line_has_document_date(line) {
-                            has_date = true;
-                        }
-                    }
-                }
-                BlockContent::Paragraph { text } | BlockContent::ListItem { text } => {
-                    for line in text.lines() {
-                        if mentions_missing_version_or_date(line) {
-                            if explicit_missing_evidence.is_none() && !line.trim().is_empty() {
-                                explicit_missing_evidence = Some(Evidence {
-                                    quote: line.trim().to_string(),
-                                    location: block.location,
-                                });
-                            }
-                            continue;
-                        }
-                        if line_has_document_version(line) {
-                            has_version = true;
-                        }
-                        if line_has_document_date(line) {
-                            has_date = true;
-                        }
-                    }
-                }
-                BlockContent::Code { .. } => {}
-            }
-        }
+        let (has_version, has_date, explicit_missing_evidence) = scan_document_version_date(ctx);
 
         if has_version && has_date {
             return Ok(Vec::new());
@@ -771,6 +635,155 @@ impl Check for DocumentVersionDate {
         finding.fallback_evidence = used_fallback;
         Ok(vec![finding])
     }
+}
+
+fn scan_document_version_date(ctx: &RunContext<'_>) -> (bool, bool, Option<Evidence>) {
+    let mut has_version = false;
+    let mut has_date = false;
+    let mut explicit_missing_evidence: Option<Evidence> = None;
+    let mut in_metadata_section: Option<u8> = None;
+
+    for block in &ctx.document.blocks {
+        match &block.content {
+            BlockContent::Table { rows, row_lines } => {
+                if is_review_checklist_table(rows) {
+                    continue;
+                }
+                // Проверяем колоночную таблицу истории версий (столбцы «Версия» и «Дата»).
+                // Внутри таблицы со столбцом версии или в разделе метаданных подходит любая подпись с «дата» / «date».
+                if let Some(header) = rows.first() {
+                    let version_col = header.iter().position(|c| is_version_label(c));
+                    let date_col = if version_col.is_some() || in_metadata_section.is_some() {
+                        header.iter().position(|c| is_any_date_label(c))
+                    } else {
+                        None
+                    };
+                    if version_col.is_some() || date_col.is_some() {
+                        for (row_idx, row) in rows.iter().enumerate().skip(1) {
+                            if let Some(col) = version_col
+                                && let Some(cell) = row.get(col)
+                            {
+                                if !is_placeholder(cell) && contains_version_number(cell) {
+                                    has_version = true;
+                                } else if explicit_missing_evidence.is_none()
+                                    && !row_quote(row).is_empty()
+                                {
+                                    explicit_missing_evidence = Some(Evidence {
+                                        quote: row_quote(row),
+                                        location: table_row_span(block, row_lines, row_idx),
+                                    });
+                                }
+                            }
+                            if let Some(col) = date_col
+                                && let Some(cell) = row.get(col)
+                            {
+                                if !is_placeholder(cell) && contains_date_value(cell) {
+                                    has_date = true;
+                                } else if explicit_missing_evidence.is_none()
+                                    && !row_quote(row).is_empty()
+                                {
+                                    explicit_missing_evidence = Some(Evidence {
+                                        quote: row_quote(row),
+                                        location: table_row_span(block, row_lines, row_idx),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Проверяем таблицу ключ–значение (2 столбца: Поле | Значение).
+                if rows.first().is_some_and(|header| header.len() == 2) {
+                    for (row_idx, row) in rows.iter().enumerate().skip(1) {
+                        if row.len() < 2 {
+                            continue;
+                        }
+                        let key = &row[0];
+                        let value = &row[1];
+                        let version_key = is_version_label(key);
+                        let date_key = if in_metadata_section.is_some() {
+                            is_any_date_label(key)
+                        } else {
+                            is_date_label(key)
+                        };
+                        if version_key {
+                            if !is_placeholder(value) && contains_version_number(value) {
+                                has_version = true;
+                            } else if explicit_missing_evidence.is_none()
+                                && !row_quote(row).is_empty()
+                            {
+                                explicit_missing_evidence = Some(Evidence {
+                                    quote: row_quote(row),
+                                    location: table_row_span(block, row_lines, row_idx),
+                                });
+                            }
+                        }
+                        if date_key {
+                            if !is_placeholder(value) && contains_date_value(value) {
+                                has_date = true;
+                            } else if explicit_missing_evidence.is_none()
+                                && !row_quote(row).is_empty()
+                            {
+                                explicit_missing_evidence = Some(Evidence {
+                                    quote: row_quote(row),
+                                    location: table_row_span(block, row_lines, row_idx),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            BlockContent::Heading { level, text } => {
+                if let Some(meta_level) = in_metadata_section
+                    && *level <= meta_level
+                {
+                    in_metadata_section = None;
+                }
+                if is_document_metadata_title(text) {
+                    in_metadata_section = Some(*level);
+                }
+                for line in text.lines() {
+                    if mentions_missing_version_or_date(line) {
+                        if explicit_missing_evidence.is_none() && !line.trim().is_empty() {
+                            explicit_missing_evidence = Some(Evidence {
+                                quote: line.trim().to_string(),
+                                location: block.location,
+                            });
+                        }
+                        continue;
+                    }
+                    if line_has_document_version(line) {
+                        has_version = true;
+                    }
+                    if line_has_document_date(line) {
+                        has_date = true;
+                    }
+                }
+            }
+            BlockContent::Paragraph { text } | BlockContent::ListItem { text } => {
+                for line in text.lines() {
+                    if mentions_missing_version_or_date(line) {
+                        if explicit_missing_evidence.is_none() && !line.trim().is_empty() {
+                            explicit_missing_evidence = Some(Evidence {
+                                quote: line.trim().to_string(),
+                                location: block.location,
+                            });
+                        }
+                        continue;
+                    }
+                    if line_has_document_version(line) {
+                        has_version = true;
+                    }
+                    if line_has_document_date(line) {
+                        has_date = true;
+                    }
+                }
+            }
+            BlockContent::Code { .. } => {}
+        }
+    }
+
+    (has_version, has_date, explicit_missing_evidence)
 }
 
 fn is_document_metadata_title(text: &str) -> bool {
@@ -907,24 +920,70 @@ fn line_has_document_date(line: &str) -> bool {
     if line_has_document_version(line) && contains_date_value(line) {
         return true;
     }
-    // Проверяем подписи вида «Дата изменения: 15.03.2026», «Дата утверждения — 2026-04-01»
-    // единой функцией is_date_label, что и для таблиц.
-    for segment in line.split([';', '|', ',']) {
-        let trimmed = segment.trim();
-        let split = trimmed
-            .split_once(':')
-            .or_else(|| trimmed.split_once(" — "))
-            .or_else(|| trimmed.split_once(" – "))
-            .or_else(|| trimmed.split_once(" - "));
-        if let Some((label, value)) = split
-            && is_date_label(label)
-            && !is_placeholder(value)
-            && contains_date_value(value)
-        {
-            return true;
+    // Проверяем все подписи вида «Дата: 15.03.2026», «Автор: Иванов И.И. Дата: 15.03.2026»,
+    // «Date: March 15, 2026» единой функцией is_date_label, не разрывая по запятой.
+    for segment in line.split([';', '|']) {
+        // 1. Все двоеточия в сегменте (пропуская «://» и время «HH:MM»).
+        for (colon_idx, ch) in segment.char_indices() {
+            if ch != ':' || segment[colon_idx..].starts_with("://") {
+                continue;
+            }
+            let prev = segment[..colon_idx].chars().next_back();
+            let next = segment[colon_idx + 1..].chars().next();
+            if prev.is_some_and(|c| c.is_ascii_digit()) && next.is_some_and(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+            let label = extract_label_before(&segment[..colon_idx]);
+            let value = extract_value_after(&segment[colon_idx + 1..]);
+            if is_date_label(label) && !is_placeholder(value) && contains_date_value(value) {
+                return true;
+            }
+        }
+        // 2. Разделители тире («Дата — 2026-04-01», «Дата - 15.03.2026»).
+        for sep in [" — ", " – ", " - "] {
+            for (pos, _) in segment.match_indices(sep) {
+                let label = extract_label_before(&segment[..pos]);
+                let value = extract_value_after(&segment[pos + sep.len()..]);
+                if is_date_label(label) && !is_placeholder(value) && contains_date_value(value) {
+                    return true;
+                }
+            }
         }
     }
     false
+}
+
+fn extract_label_before(prefix: &str) -> &str {
+    let mut start = 0;
+    let bytes = prefix.as_bytes();
+    for (idx, ch) in prefix.char_indices() {
+        if matches!(ch, ',' | ':') {
+            start = idx + ch.len_utf8();
+        } else if ch == '.' {
+            let next_idx = idx + ch.len_utf8();
+            if bytes.get(next_idx).is_some_and(|b| b.is_ascii_whitespace()) {
+                start = next_idx;
+            }
+        }
+    }
+    prefix[start..].trim()
+}
+
+fn extract_value_after(rest: &str) -> &str {
+    let trimmed = rest.trim_start();
+    for (idx, ch) in trimmed.char_indices() {
+        if ch == ':' && !trimmed[idx..].starts_with("://") {
+            let prev = trimmed[..idx].chars().next_back();
+            let next = trimmed[idx + 1..].chars().next();
+            if prev.is_some_and(|c| c.is_ascii_digit()) && next.is_some_and(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+            return trimmed[..idx].trim();
+        }
+    }
+    trimmed.trim()
 }
 
 fn contains_date_value(text: &str) -> bool {
@@ -1202,7 +1261,13 @@ impl Check for ReviewChecklist {
                     let status_cols: Vec<usize> = rows[0]
                         .iter()
                         .enumerate()
-                        .filter(|(_, cell)| is_checklist_status_header(cell))
+                        .filter(|(_, cell)| {
+                            is_checklist_status_header(cell)
+                                || (in_review && {
+                                    let norm = normalize_title(cell);
+                                    norm.contains("статус") || norm.contains("status")
+                                })
+                        })
                         .map(|(col, _)| col)
                         .collect();
 
@@ -1507,6 +1572,7 @@ impl Check for RequiredTableFields {
     async fn run(&self, ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
         let mut findings = Vec::new();
         let mut in_approvers_section: Option<u8> = None;
+        let (doc_has_version, doc_has_date, _) = scan_document_version_date(ctx);
 
         for block in &ctx.document.blocks {
             match &block.content {
@@ -1530,7 +1596,14 @@ impl Check for RequiredTableFields {
                     }
                     let header = &rows[0];
                     if header.len() == 2 && is_key_value_table(header) {
-                        check_key_value_table(block, rows, row_lines, &mut findings);
+                        check_key_value_table(
+                            block,
+                            rows,
+                            row_lines,
+                            doc_has_version,
+                            doc_has_date,
+                            &mut findings,
+                        );
                     } else if header.len() >= 3 {
                         check_multicolumn_table(block, rows, row_lines, &mut findings);
                     }
@@ -1614,10 +1687,36 @@ fn is_required_column_header(name: &str) -> bool {
     keywords.iter().any(|kw| norm.contains(kw)) || is_date_label(name)
 }
 
+fn is_exact_doc_version_key(key: &str) -> bool {
+    let norm = normalize_title(key)
+        .trim_matches(|ch: char| matches!(ch, '*' | '_' | ':' | ' '))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    matches!(
+        norm.as_str(),
+        "версия" | "версия документа" | "редакция" | "version" | "document version"
+    )
+}
+
+fn is_exact_doc_date_key(key: &str) -> bool {
+    let norm = normalize_title(key)
+        .trim_matches(|ch: char| matches!(ch, '*' | '_' | ':' | ' '))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    matches!(
+        norm.as_str(),
+        "дата" | "дата документа" | "дата редакции" | "date" | "document date"
+    )
+}
+
 fn check_key_value_table(
     block: &Block,
     rows: &[Vec<String>],
     row_lines: &[usize],
+    doc_has_version: bool,
+    doc_has_date: bool,
     findings: &mut Vec<Finding>,
 ) {
     for (row_idx, row) in rows.iter().enumerate().skip(1) {
@@ -1626,10 +1725,12 @@ fn check_key_value_table(
         }
         let key = row[0].trim();
         let value = row[1].trim();
+        // Пропускаем «Версия» / «Дата» документа только когда DocumentVersionDate
+        // само сообщит об их отсутствии, чтобы не терять «Версия API | —» или «Дата вступления в силу | —».
         if key.is_empty()
             || is_optional_field_name(key)
-            || is_version_label(key)
-            || is_date_label(key)
+            || (!doc_has_version && is_exact_doc_version_key(key))
+            || (!doc_has_date && is_exact_doc_date_key(key))
         {
             continue;
         }
@@ -1982,6 +2083,22 @@ mod tests {
         );
         let findings = run_single_rule(present_history_table, DocumentVersionDate).await;
         assert!(findings.is_empty(), "{findings:#?}");
+
+        let present_second_colon = concat!(
+            "# Регламент переводов\n\n",
+            "Версия: 2.1\n\n",
+            "Автор: Иванов И.И. Дата: 15.03.2026\n"
+        );
+        let findings = run_single_rule(present_second_colon, DocumentVersionDate).await;
+        assert!(findings.is_empty(), "{findings:#?}");
+
+        let present_english_comma_date = concat!(
+            "# Transfer Spec\n\n",
+            "Version: 1.0\n\n",
+            "Author: Jane Doe, Date: March 15, 2026\n"
+        );
+        let findings = run_single_rule(present_english_comma_date, DocumentVersionDate).await;
+        assert!(findings.is_empty(), "{findings:#?}");
     }
 
     #[tokio::test]
@@ -2023,6 +2140,16 @@ mod tests {
         let findings = run_single_rule(unmarked, ReviewChecklist).await;
         assert_eq!(findings.len(), 1);
         assert!(findings[0].explanation.contains("2 из 2"));
+
+        let unmarked_review_status_col = concat!(
+            "# Документ\n\n",
+            "## Ревью требований\n\n",
+            "| Проверка | Статус проверки |\n",
+            "| --- | --- |\n",
+            "| Проверены лимиты | — |\n"
+        );
+        let findings = run_single_rule(unmarked_review_status_col, ReviewChecklist).await;
+        assert_eq!(findings.len(), 1, "{findings:#?}");
 
         let unmarked_tasks = concat!(
             "# Документ\n\n",
@@ -2137,11 +2264,13 @@ mod tests {
     #[tokio::test]
     async fn required_table_fields_rule_catches_dashes_and_inline_prod_url_and_ignores_optional() {
         let bad = concat!(
-            "# Контракт API\n\n",
+            "# Контракт API (версия 1.0 от 2026-03-10)\n\n",
             "| Поле | Значение |\n",
             "| --- | --- |\n",
             "| Endpoint | Dev: `/v1/orders` . Prod: — |\n",
             "| OpenAPI | — |\n",
+            "| Версия API | — |\n",
+            "| Дата вступления в силу | — |\n",
             "| Примечания | — |\n\n",
             "| Parameter | Type | Description | DB field |\n",
             "| --- | --- | --- | --- |\n",
@@ -2149,9 +2278,19 @@ mod tests {
             "| `status` | — | Статус заказа | — |\n"
         );
         let findings = run_single_rule(bad, RequiredTableFields).await;
-        assert_eq!(findings.len(), 3, "{findings:#?}");
+        assert_eq!(findings.len(), 5, "{findings:#?}");
         assert!(findings.iter().any(|f| f.explanation.contains("Prod")));
         assert!(findings.iter().any(|f| f.explanation.contains("OpenAPI")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.explanation.contains("Версия API"))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.explanation.contains("Дата вступления в силу"))
+        );
         assert!(findings.iter().any(|f| f.explanation.contains("Type")));
 
         let good = concat!(
