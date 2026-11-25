@@ -172,11 +172,13 @@ impl RetryProvider {
                     });
                     ("http", Some(*status), delay)
                 }
+                // Обрыв соединения при чтении тела reqwest сообщает как ошибку декодирования.
                 LlmError::Transport(error)
                     if error.is_timeout()
                         || error.is_connect()
                         || error.is_request()
-                        || error.is_body() =>
+                        || error.is_body()
+                        || error.is_decode() =>
                 {
                     ("transport", None, transient_delays.next())
                 }
@@ -500,6 +502,39 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.is_timeout());
+        let retry = RetryProvider::new(Box::new(Replies(Mutex::new(
+            vec![Err(LlmError::Transport(error)), Ok(reply(json!(42)))].into_iter(),
+        ))));
+        let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        assert_eq!(retry.generate(&request).await.unwrap().json, 42);
+    }
+
+    #[tokio::test]
+    async fn response_body_cut_off_mid_transfer_is_retried() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.read(&mut [0; 1024]).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"choi")
+                .unwrap();
+        });
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.is_decode(), "{error:?}");
         let retry = RetryProvider::new(Box::new(Replies(Mutex::new(
             vec![Err(LlmError::Transport(error)), Ok(reply(json!(42)))].into_iter(),
         ))));
