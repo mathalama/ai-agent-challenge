@@ -66,7 +66,7 @@ fn plain_text_preserves_paragraph_lines_and_reports_unsupported_formats() {
         matches!(&document.blocks[0].content, BlockContent::Paragraph { text } if text == "One\nTwo")
     );
 
-    for format in ["pdf", "rtf"] {
+    for format in ["rtf", "odt"] {
         let name = format!("example.{format}");
         assert!(matches!(
             registry.parse(Path::new(&name), b""),
@@ -118,4 +118,18 @@ fn quote_verification_uses_table_rows_and_page_coordinates() {
     assert!(multi.contains_quote(row, "one | three"));
     assert!(multi.contains_quote(row, "one | | three"));
     assert!(!multi.contains_quote(row, "A | B | C"));
+
+    // Перенос с дефисом в Markdown не ломает цитаты с пробелом («интернет- банк»),
+    // но также позволяет подтверждать склеенный перенос («обработка»).
+    let wrapped = ParserRegistry::default()
+        .parse(
+            Path::new("wrapped.md"),
+            "Оплата через интернет-\nбанк и обра-\nботка платежа.".as_bytes(),
+        )
+        .unwrap();
+    let span = wrapped.blocks[0].location;
+    assert!(wrapped.contains_quote(span, "интернет- банк"));
+    assert!(wrapped.contains_quote(span, "интернет-\nбанк"));
+    assert!(wrapped.contains_quote(span, "обработка платежа"));
+    assert!(wrapped.contains_quote(span, "обра-\nботка платежа"));
 }

@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+lopdf.workspace = true
+pdfsink-rs.workspace = true
 pulldown-cmark.workspace = true
 quick-xml.workspace = true
 schemars.workspace = true
