@@ -130,7 +130,8 @@ impl RetryProvider {
         request: &LlmRequest,
         validator: &jsonschema::Validator,
     ) -> Result<LlmResponse> {
-        let mut transient_delays = [250, 500, 1000].into_iter().map(Duration::from_millis);
+        // Перегрузка провайдера (503) обычно длится десятки секунд, поэтому паузы растут до минуты.
+        let mut transient_delays = [5, 15, 30, 60].into_iter().map(Duration::from_secs);
         let mut retry_invalid_response = true;
         loop {
             let started = Instant::now();
@@ -464,5 +465,45 @@ mod tests {
         let start = Instant::now();
         provider.generate(&request).await.unwrap();
         assert_eq!(start.elapsed(), Duration::from_secs(84));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn overloaded_provider_is_retried_with_growing_delays() {
+        let overloaded = || {
+            Err(LlmError::Http {
+                status: 503,
+                message: "high demand".into(),
+                retry_after: None,
+            })
+        };
+        let provider = RetryProvider::new(Box::new(Replies(Mutex::new(
+            vec![
+                overloaded(),
+                overloaded(),
+                overloaded(),
+                overloaded(),
+                Ok(reply(json!(42))),
+            ]
+            .into_iter(),
+        ))));
+        let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        let start = Instant::now();
+        assert_eq!(provider.generate(&request).await.unwrap().json, 42);
+        assert_eq!(start.elapsed(), Duration::from_secs(5 + 15 + 30 + 60));
+
+        let exhausted = RetryProvider::new(Box::new(Replies(Mutex::new(
+            vec![
+                overloaded(),
+                overloaded(),
+                overloaded(),
+                overloaded(),
+                overloaded(),
+            ]
+            .into_iter(),
+        ))));
+        assert!(matches!(
+            exhausted.generate(&request).await,
+            Err(LlmError::Http { status: 503, .. })
+        ));
     }
 }
