@@ -234,33 +234,67 @@ fn merge_into(target: &mut Finding, other: Finding) {
     target.severity = target.severity.max(other.severity);
     merge_evidence(&mut target.evidence, other.evidence);
 
-    let target_norm = normalize_text(&target.explanation);
-    let other_norm = normalize_text(&other.explanation);
-    if !other_norm.is_empty() && !target_norm.contains(&other_norm) {
-        if !target.explanation.trim_end().ends_with(['.', '!', '?']) {
-            target.explanation.push('.');
-        }
-        target.explanation.push(' ');
-        target.explanation.push_str(other.explanation.trim());
-    }
-
+    append_distinct_sentences(&mut target.explanation, &other.explanation);
     match (&mut target.suggestion, other.suggestion) {
         (None, Some(suggestion)) => target.suggestion = Some(suggestion),
-        (Some(existing), Some(addition)) => {
-            let existing_norm = normalize_text(existing);
-            let addition_norm = normalize_text(&addition);
-            if !addition_norm.is_empty() && !existing_norm.contains(&addition_norm) {
-                if !existing.trim_end().ends_with(['.', '!', '?']) {
-                    existing.push('.');
-                }
-                existing.push(' ');
-                existing.push_str(addition.trim());
-            }
-        }
+        (Some(existing), Some(addition)) => append_distinct_sentences(existing, &addition),
         _ => {}
     }
 
     target.fallback_evidence = target.fallback_evidence && other.fallback_evidence;
+}
+
+fn append_distinct_sentences(target: &mut String, addition: &str) {
+    for sentence in sentences(addition) {
+        if sentences(target).any(|existing| similar_sentences(existing, sentence)) {
+            continue;
+        }
+        if !target.trim().is_empty() {
+            if !target.trim_end().ends_with(['.', '!', '?']) {
+                target.push('.');
+            }
+            target.push(' ');
+        }
+        target.push_str(sentence);
+    }
+}
+
+fn sentences(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices(['.', '!', '?'])
+        .filter_map(|(index, _)| {
+            let end = index + 1;
+            text[end..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+                .then_some(end)
+        })
+        .chain(std::iter::once(text.len()))
+        .scan(0, move |start, end| {
+            let sentence = text[*start..end].trim();
+            *start = end;
+            Some(sentence)
+        })
+        .filter(|sentence| !sentence.is_empty())
+}
+
+fn similar_sentences(left: &str, right: &str) -> bool {
+    let left = normalize_text(left);
+    let right = normalize_text(right);
+    if left.trim_end_matches(['.', '!', '?']) == right.trim_end_matches(['.', '!', '?']) {
+        return true;
+    }
+    let negated = |text: &str| {
+        text.split(|ch: char| !ch.is_alphanumeric())
+            .any(|word| matches!(word, "не" | "без" | "нельзя" | "запрещено"))
+    };
+    if negated(&left) != negated(&right) {
+        return false;
+    }
+    let left: HashSet<_> = content_words(&left).into_iter().collect();
+    let right: HashSet<_> = content_words(&right).into_iter().collect();
+    let shared = left.intersection(&right).count();
+    shared >= 3 && shared * 4 >= left.len().max(right.len()) * 3
 }
 
 fn merge_evidence(target: &mut Vec<Evidence>, incoming: Vec<Evidence>) {
@@ -323,6 +357,38 @@ mod tests {
             fallback_evidence: false,
             verified: false,
         }
+    }
+
+    #[test]
+    fn keeps_new_sentences_when_merging_repeated_recommendations() {
+        let mut first = make_finding(
+            "set_checks-001",
+            Scope::Set,
+            Criterion::Consistent,
+            Severity::High,
+            "Динамический QR-код действует 15 минут.",
+            16,
+            Detector::Llm("set_checks:test".into()),
+        );
+        first.explanation =
+            "Срок действия динамического QR-кода различается в разделах спецификации.".into();
+        let suggestion = "Привести значение срока действия динамического QR-кода к единому значению во всех разделах спецификации (например, 15 минут).";
+        first.suggestion = Some(suggestion.into());
+        let mut duplicate = first.clone();
+        duplicate.id = "ambiguity-001".into();
+        duplicate.detector = Detector::Llm("ambiguity:test".into());
+        duplicate.explanation = "Срок действия динамического QR-кода различается в разделах документации. В тестах нужен сценарий просрочки.".into();
+        duplicate.suggestion = Some("Привести значение срока действия динамического QR-кода к единому значению (15 минут или 10 минут) во всех разделах документации. Добавить приёмочный тест.".into());
+
+        let merged = merge_findings(vec![first, duplicate]);
+        assert_eq!(
+            merged[0].explanation,
+            "Срок действия динамического QR-кода различается в разделах спецификации. В тестах нужен сценарий просрочки."
+        );
+        assert_eq!(
+            merged[0].suggestion,
+            Some(format!("{suggestion} Добавить приёмочный тест."))
+        );
     }
 
     #[test]
