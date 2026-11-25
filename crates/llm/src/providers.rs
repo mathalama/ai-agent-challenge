@@ -231,6 +231,24 @@ impl LlmProvider for MockProvider {
             }
             "set_checks" => crate::mock_review::findings(&request.user_text)?,
             "clarify" => crate::mock_review::questions(&request.user_text)?,
+            "chat" => {
+                let input: Value = serde_json::from_str(&request.user_text)?;
+                let report = &input["report"];
+                let evidence = report["findings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|finding| finding["verified"] == true)
+                    .find_map(|finding| finding["evidence"].as_array()?.first());
+                json!({
+                    "text": format!(
+                        "В отчёте по документу «{}» найдено замечаний: {}.",
+                        report["passport"]["document_title"].as_str().unwrap_or("Документ"),
+                        report["summary"]["finding_count"].as_u64().unwrap_or(0),
+                    ),
+                    "citations": evidence.into_iter().collect::<Vec<_>>(),
+                })
+            }
             "facts" | "rules" | "requirement_checks" | "consistency" | "ambiguity" | "verify" => {
                 json!([])
             }

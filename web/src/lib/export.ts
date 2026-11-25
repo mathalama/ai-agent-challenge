@@ -2,19 +2,27 @@ import { CRITERIA, DETECTOR_KIND, READINESS, SEVERITY, SEVERITY_ORDER, TOPICS } 
 import { findingsForRequirement, worstSeverity } from './selectors';
 import type { Answer, Evidence, Report } from './types';
 
-/** Отчёт с ответами пользователя в поле finding_answers, как в схеме. */
+/** Отчёт с ответами по связанным находкам и требованиям. */
 export function reportWithAnswers(report: Report, answers: Record<string, string>): Report {
   const finding_answers: Record<string, Answer[]> = { ...(report.finding_answers ?? {}) };
+  const requirement_answers: Record<string, Answer[]> = { ...(report.requirement_answers ?? {}) };
+  const standalone_answers = { ...(report.standalone_answers ?? {}) };
   for (const q of report.questions) {
     const text = answers[q.id];
     if (!text) continue;
+    if (q.related.length === 0) standalone_answers[q.id] = text;
     for (const rel of q.related) {
-      if (rel.kind !== 'finding') continue;
-      const list = (finding_answers[rel.id] ??= []).filter((a) => a.question_id !== q.id);
-      finding_answers[rel.id] = [...list, { question_id: q.id, text }];
+      const related = rel.kind === 'finding' ? finding_answers : requirement_answers;
+      const list = (related[rel.id] ?? []).filter((a) => a.question_id !== q.id);
+      related[rel.id] = [...list, { question_id: q.id, text }];
     }
   }
-  return Object.keys(finding_answers).length > 0 ? { ...report, finding_answers } : report;
+  return {
+    ...report,
+    ...(Object.keys(finding_answers).length > 0 && { finding_answers }),
+    ...(Object.keys(requirement_answers).length > 0 && { requirement_answers }),
+    ...(Object.keys(standalone_answers).length > 0 && { standalone_answers }),
+  };
 }
 
 const cell = (s: string) => s.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ');

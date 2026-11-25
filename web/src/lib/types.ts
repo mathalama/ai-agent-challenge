@@ -90,11 +90,18 @@ export interface Report {
     [k: string]: Answer[];
   };
   findings: Finding[];
+  incomplete_stages?: string[];
   passport: RunPassport;
   questions: Question[];
   readiness: Readiness;
+  requirement_answers?: {
+    [k: string]: Answer[];
+  };
   requirements: Requirement[];
   schema_version: ReportSchemaVersion;
+  standalone_answers?: {
+    [k: string]: string;
+  };
   summary: ReportSummary;
   unmatched_answers?: {
     [k: string]: string;

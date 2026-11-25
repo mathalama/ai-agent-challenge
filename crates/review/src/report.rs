@@ -9,8 +9,8 @@ use schemars::{JsonSchema, Schema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Finding, FindingId, Question, RelatedId, Requirement, RunContext, RunPassport, Scope,
-    Severity,
+    Answer, Finding, FindingId, Question, RelatedId, Requirement, RequirementId, RunContext,
+    RunPassport, Scope, Severity,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -27,6 +27,10 @@ pub struct Report {
     pub questions: Vec<Question>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub finding_answers: BTreeMap<FindingId, Vec<Answer>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requirement_answers: BTreeMap<RequirementId, Vec<Answer>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub standalone_answers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unmatched_answers: BTreeMap<String, String>,
 }
@@ -87,30 +91,10 @@ impl Report {
     }
 
     pub fn with_answers(
-        mut ctx: RunContext<'_>,
+        ctx: RunContext<'_>,
         passport: RunPassport,
         answers: &BTreeMap<String, String>,
     ) -> Self {
-        let mut unmatched_answers = answers.clone();
-        let mut finding_answers = BTreeMap::<_, Vec<_>>::new();
-        ctx.questions.retain(|question| {
-            let Some(text) = unmatched_answers.remove(&question.id) else {
-                return true;
-            };
-            if text.trim().is_empty() {
-                return true;
-            }
-            for related in &question.related {
-                if let RelatedId::Finding(id) = related {
-                    finding_answers.entry(id.clone()).or_default().push(Answer {
-                        question_id: question.id.clone(),
-                        text: text.clone(),
-                    });
-                }
-            }
-            false
-        });
-
         let summary = ReportSummary {
             requirement_count: ctx.requirements.len(),
             finding_count: ctx.findings.len(),
@@ -130,7 +114,7 @@ impl Report {
             ctx.checks_complete && !ctx.requirements.is_empty(),
             ctx.findings.iter(),
         );
-        Self {
+        let mut report = Self {
             schema_version: ReportSchemaVersion::V1,
             passport,
             blocks: ctx.document.blocks,
@@ -140,8 +124,50 @@ impl Report {
             readiness,
             incomplete_stages: ctx.incomplete_stages,
             questions: ctx.questions,
-            finding_answers,
-            unmatched_answers,
+            finding_answers: BTreeMap::new(),
+            requirement_answers: BTreeMap::new(),
+            standalone_answers: BTreeMap::new(),
+            unmatched_answers: answers.clone(),
+        };
+        for question in std::mem::take(&mut report.questions) {
+            match report.unmatched_answers.remove(&question.id) {
+                Some(text) if !text.trim().is_empty() => report.record_answer(&question, &text),
+                _ => report.questions.push(question),
+            }
+        }
+        report
+    }
+
+    /// Снимает открытый вопрос и прикрепляет ответ к связанным находкам и требованиям.
+    pub fn answer_question(&mut self, id: &str, text: &str) -> bool {
+        if text.trim().is_empty() {
+            return false;
+        }
+        let Some(index) = self.questions.iter().position(|question| question.id == id) else {
+            return false;
+        };
+        let question = self.questions.remove(index);
+        self.record_answer(&question, text);
+        true
+    }
+
+    fn record_answer(&mut self, question: &Question, text: &str) {
+        if question.related.is_empty() {
+            self.standalone_answers
+                .insert(question.id.clone(), text.to_owned());
+            return;
+        }
+        for related in &question.related {
+            let answers = match related {
+                RelatedId::Finding(id) => self.finding_answers.entry(id.clone()).or_default(),
+                RelatedId::Requirement(id) => {
+                    self.requirement_answers.entry(id.clone()).or_default()
+                }
+            };
+            answers.push(Answer {
+                question_id: question.id.clone(),
+                text: text.to_owned(),
+            });
         }
     }
 }
@@ -307,11 +333,32 @@ impl ReportRenderer for MarkdownRenderer {
             }
         }
 
-        if !report.unmatched_answers.is_empty() {
-            output.push_str("\n### Ответы без текущего вопроса\n\n");
-            for (id, text) in &report.unmatched_answers {
-                writeln!(output, "- **{}** — {}", markdown(id), markdown(text))
+        if !report.requirement_answers.is_empty() {
+            output.push_str("\n### Ответы по требованиям\n\n");
+            for (id, answers) in &report.requirement_answers {
+                for answer in answers {
+                    writeln!(
+                        output,
+                        "- **{}** · ответ {} — {}",
+                        markdown(id),
+                        markdown(&answer.question_id),
+                        markdown(&answer.text)
+                    )
                     .expect("запись в строку");
+                }
+            }
+        }
+
+        for (title, answers) in [
+            ("Ответы на общие вопросы", &report.standalone_answers),
+            ("Ответы без текущего вопроса", &report.unmatched_answers),
+        ] {
+            if !answers.is_empty() {
+                writeln!(output, "\n### {title}\n").expect("запись в строку");
+                for (id, text) in answers {
+                    writeln!(output, "- **{}** — {}", markdown(id), markdown(text))
+                        .expect("запись в строку");
+                }
             }
         }
 
@@ -704,6 +751,8 @@ mod tests {
             incomplete_stages: Vec::new(),
             questions,
             finding_answers: BTreeMap::new(),
+            requirement_answers: BTreeMap::new(),
+            standalone_answers: BTreeMap::new(),
             unmatched_answers: BTreeMap::new(),
         };
         let rendered = MarkdownRenderer.render(&report).unwrap();
@@ -737,6 +786,14 @@ mod tests {
             evidence: Vec::new(),
             related: vec![RelatedId::Finding("critical".into())],
         });
+        let mut requirement_question = ctx.questions[0].clone();
+        requirement_question.id = "Q-2".into();
+        requirement_question.related = vec![RelatedId::Requirement("R-1".into())];
+        ctx.questions.push(requirement_question.clone());
+        let mut standalone_question = ctx.questions[0].clone();
+        standalone_question.id = "Q-3".into();
+        standalone_question.related.clear();
+        ctx.questions.push(standalone_question.clone());
         let passport = RunPassport {
             document_title: "Требования".into(),
             date: String::new(),
@@ -744,11 +801,13 @@ mod tests {
             agent_version: String::new(),
         };
 
-        let report = Report::with_answers(
+        let mut report = Report::with_answers(
             ctx,
             passport,
             &BTreeMap::from([
                 ("Q-1".into(), "не знаю".into()),
+                ("Q-2".into(), "30 дней".into()),
+                ("Q-3".into(), "По согласованию".into()),
                 ("Q-old".into(), "предыдущее решение".into()),
             ]),
         );
@@ -758,6 +817,8 @@ mod tests {
         assert!(report.questions.is_empty());
         let markdown = MarkdownRenderer.render(&report).unwrap();
         assert!(markdown.contains("Ответ Q-1 — не знаю"));
+        assert!(markdown.contains("**R-1** · ответ Q-2 — 30 дней"));
+        assert!(markdown.contains("**Q-3** — По согласованию"));
         assert!(markdown.contains("Находок с ответами — 1"));
         assert!(!markdown.contains("Показано 7 из"));
         assert!(markdown.contains("[critical](#finding-1)"));
@@ -768,6 +829,24 @@ mod tests {
             json["finding_answers"]["critical"][0],
             serde_json::json!({"question_id": "Q-1", "text": "не знаю"}),
         );
+        let stored = json["requirement_answers"]["R-1"].clone();
+        assert_eq!(json["standalone_answers"]["Q-3"], "По согласованию");
+        assert!(json["unmatched_answers"].get("Q-3").is_none());
+        assert_eq!(
+            stored,
+            serde_json::json!([{"question_id": "Q-2", "text": "30 дней"}])
+        );
+        report.requirement_answers.clear();
+        report.questions.push(requirement_question);
+        assert!(report.answer_question("Q-2", "30 дней"));
+        assert_eq!(
+            serde_json::to_value(&report.requirement_answers["R-1"]).unwrap(),
+            stored
+        );
+        report.questions.push(standalone_question);
+        assert!(report.answer_question("Q-3", "Уточнено"));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["standalone_answers"]["Q-3"], "Уточнено");
     }
 
     #[test]
@@ -866,6 +945,8 @@ mod tests {
             incomplete_stages: Vec::new(),
             questions: Vec::new(),
             finding_answers: BTreeMap::new(),
+            requirement_answers: BTreeMap::new(),
+            standalone_answers: BTreeMap::new(),
             unmatched_answers: BTreeMap::new(),
         };
 

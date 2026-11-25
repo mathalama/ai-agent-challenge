@@ -6,12 +6,13 @@ use std::{env, num::NonZeroU32, time::Duration};
 use async_trait::async_trait;
 use reqwest::{
     Client,
-    header::{HeaderValue, RETRY_AFTER},
+    header::{CONTENT_TYPE, HeaderValue, RETRY_AFTER},
 };
 use serde_json::{Map, Value, json};
 
 use crate::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, Result, Usage, providers::retry_after_header,
+    LlmError, LlmProvider, LlmRequest, LlmResponse, ReasoningCallback, Result, Usage,
+    providers::retry_after_header,
 };
 
 const MAX_TOKENS_VAR: &str = "OPENAI_MAX_TOKENS";
@@ -142,6 +143,55 @@ impl OpenAiProvider {
         }
         body
     }
+
+    async fn complete(
+        &self,
+        request: &LlmRequest,
+        on_delta: Option<&ReasoningCallback<'_>>,
+    ) -> Result<LlmResponse> {
+        let mut body = self.request_body(request);
+        if on_delta.is_some() {
+            body["stream"] = json!(true);
+            body["stream_options"] = json!({"include_usage": true});
+        }
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .header("Authorization", self.api_key.clone())
+            .json(&body)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let retry_after = response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(retry_after_header);
+            let body = response.json::<Value>().await.unwrap_or_default();
+            let message = body["error"]["message"]
+                .as_str()
+                .or_else(|| body["message"].as_str())
+                .unwrap_or_else(|| status.canonical_reason().unwrap_or("Ошибка провайдера"));
+            let secret = self.api_key.to_str().unwrap_or_default();
+            let secret = secret.strip_prefix("Bearer ").unwrap_or(secret);
+            return Err(LlmError::Http {
+                status: status.as_u16(),
+                message: message.replace(secret, "[скрыто]"),
+                retry_after,
+            });
+        }
+        if let Some(on_delta) = on_delta
+            && response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/event-stream"))
+        {
+            return read_stream(response, self.model(), on_delta).await;
+        }
+        let body = serde_json::from_slice(&response.bytes().await?)?;
+        decode_chat_response(&body, self.model(), request.include_reasoning)
+    }
 }
 
 fn parse_max_tokens(value: Option<&str>) -> Result<Option<NonZeroU32>> {
@@ -189,54 +239,133 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .header("Authorization", self.api_key.clone())
-            .json(&self.request_body(request))
-            .send()
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(retry_after_header);
-            let body = response.json::<Value>().await.unwrap_or_default();
-            let message = body["error"]["message"]
-                .as_str()
-                .or_else(|| body["message"].as_str())
-                .unwrap_or_else(|| status.canonical_reason().unwrap_or("Ошибка провайдера"));
-            let secret = self.api_key.to_str().unwrap_or_default();
-            let secret = secret.strip_prefix("Bearer ").unwrap_or(secret);
-            return Err(LlmError::Http {
-                status: status.as_u16(),
-                message: message.replace(secret, "[скрыто]"),
-                retry_after,
-            });
-        }
-        let body = serde_json::from_slice(&response.bytes().await?)?;
-        decode_chat_response(&body, self.model(), request.include_reasoning)
+        self.complete(request, None).await
     }
+
+    async fn generate_with_reasoning(
+        &self,
+        request: &LlmRequest,
+        on_delta: &ReasoningCallback<'_>,
+    ) -> Result<LlmResponse> {
+        self.complete(request, request.include_reasoning.then_some(on_delta))
+            .await
+    }
+}
+
+async fn read_stream(
+    mut response: reqwest::Response,
+    model: &str,
+    on_delta: &ReasoningCallback<'_>,
+) -> Result<LlmResponse> {
+    let mut stream = ChatStream::default();
+    let mut buffer = Vec::new();
+    while !stream.done {
+        let Some(chunk) = response.chunk().await? else {
+            break;
+        };
+        buffer.extend_from_slice(&chunk);
+        let mut consumed = 0;
+        while let Some(end) = buffer[consumed..].iter().position(|byte| *byte == b'\n') {
+            let line = &buffer[consumed..consumed + end];
+            consumed += end + 1;
+            stream.line(line, on_delta)?;
+            if stream.done {
+                break;
+            }
+        }
+        buffer.drain(..consumed);
+    }
+    if !stream.done {
+        stream.line(&buffer, on_delta)?;
+        stream.line(b"", on_delta)?;
+    }
+    stream.finish(model)
+}
+
+#[derive(Default)]
+struct ChatStream {
+    data: Vec<u8>,
+    content: String,
+    reasoning: String,
+    finish_reason: Option<String>,
+    usage: Option<Value>,
+    done: bool,
+}
+
+impl ChatStream {
+    fn line(&mut self, line: &[u8], on_delta: &dyn Fn(&str)) -> Result<()> {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(data) = line.strip_prefix(b"data:") {
+            if !self.data.is_empty() {
+                self.data.push(b'\n');
+            }
+            self.data
+                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
+        } else if line.is_empty() && !self.data.is_empty() {
+            let data = std::mem::take(&mut self.data);
+            if data == b"[DONE]" {
+                self.done = true;
+                return Ok(());
+            }
+            let chunk: Value = serde_json::from_slice(&data)?;
+            if let Some(usage) = chunk.get("usage").filter(|value| !value.is_null()) {
+                self.usage = Some(usage.clone());
+            }
+            let choice = &chunk["choices"][0];
+            let delta = &choice["delta"];
+            if let Some(text) = delta["content"].as_str() {
+                self.content.push_str(text);
+            }
+            if let Some(text) = reasoning_text(delta) {
+                self.reasoning.push_str(text);
+                on_delta(text);
+            }
+            if let Some(reason) = choice["finish_reason"].as_str() {
+                self.finish_reason = Some(reason.into());
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, model: &str) -> Result<LlmResponse> {
+        if !self.done && self.finish_reason.is_none() {
+            return Err(LlmError::IncompleteStream);
+        }
+        decode_chat_response(
+            &json!({
+                "choices": [{
+                    "message": { "content": self.content, "reasoning": self.reasoning },
+                    "finish_reason": self.finish_reason,
+                }],
+                "usage": self.usage,
+            }),
+            model,
+            true,
+        )
+    }
+}
+
+fn reasoning_text(message: &Value) -> Option<&str> {
+    ["reasoning_content", "reasoning"]
+        .into_iter()
+        .filter_map(|field| message[field].as_str())
+        .find(|text| !text.is_empty())
 }
 
 fn decode_chat_response(body: &Value, model: &str, include_reasoning: bool) -> Result<LlmResponse> {
     let choice = &body["choices"][0];
     let finish_reason = choice["finish_reason"].as_str();
-    let usage = body.get("usage").map(|usage| Usage {
-        input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
-        output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
-    });
+    let usage = body
+        .get("usage")
+        .filter(|value| !value.is_null())
+        .map(|usage| Usage {
+            input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
+            output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
+        });
     let message = &choice["message"];
-    let reasoning = if include_reasoning {
-        ["reasoning_content", "reasoning"]
-            .into_iter()
-            .filter_map(|field| message[field].as_str())
-            .find(|text| !text.is_empty())
-            .map(str::to_owned)
-    } else {
-        None
-    };
+    let reasoning = include_reasoning
+        .then(|| reasoning_text(message).map(str::to_owned))
+        .flatten();
     let Some(content) = message["content"]
         .as_str()
         .filter(|_| finish_reason == Some("stop"))
@@ -284,6 +413,78 @@ fn strip_code_fence(content: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn streaming_emits_reasoning_before_json_is_complete() {
+        use std::{
+            io::{BufRead, BufReader, Read, Write},
+            net::TcpListener,
+            sync::mpsc,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut provider = provider(ResponseFormat::JsonObject);
+        provider.endpoint = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+        let (notify, notified) = mpsc::channel();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut input = BufReader::new(&socket);
+            let mut size = 0;
+            for line in input.by_ref().lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    size = value.trim().parse().unwrap();
+                }
+            }
+            let mut bytes = vec![0; size];
+            input.read_exact(&mut bytes).unwrap();
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(request["stream"], true);
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
+            let first =
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Сверяю \"}}]}\r\n\r\n";
+            let cut = first.find('С').unwrap() + 1;
+            let mut chunk = |bytes: &[u8]| {
+                write!(socket, "{:x}\r\n", bytes.len()).unwrap();
+                socket.write_all(bytes).unwrap();
+                socket.write_all(b"\r\n").unwrap();
+            };
+            chunk(&first.as_bytes()[..cut]);
+            chunk(&first.as_bytes()[cut..]);
+            assert_eq!(
+                notified.recv_timeout(Duration::from_secs(5)).unwrap(),
+                "Сверяю "
+            );
+            chunk(concat!(
+                "data: {\"choices\":[{\"delta\":{\"reasoning\":\"строки\",\"content\":\"{\\\"result\\\":\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"42}\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":9}}\n\n",
+                "data: [DONE]\n\n"
+            ).as_bytes());
+            socket.write_all(b"0\r\n\r\n").unwrap();
+        });
+        let mut request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        request.include_reasoning = true;
+        let response = provider
+            .generate_with_reasoning(&request, &|delta| {
+                if delta == "Сверяю " {
+                    notify.send(delta.to_owned()).unwrap();
+                }
+            })
+            .await
+            .unwrap();
+        peer.join().unwrap();
+        assert_eq!(response.json, 42);
+        assert_eq!(response.reasoning.as_deref(), Some("Сверяю строки"));
+        assert_eq!(response.usage.input_tokens, 7);
+        assert_eq!(response.usage.output_tokens, 9);
+    }
 
     #[test]
     fn chat_decodes_optional_reasoning_fields() {

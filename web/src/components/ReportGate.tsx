@@ -23,7 +23,7 @@ export function ReportGate({ children }: { children: (report: Report) => ReactNo
       <div className="max-w-md space-y-3">
         <h2 className="text-lg font-semibold">Отчёта пока нет</h2>
         <p className="text-ink-2">Загрузите документ на старте, чтобы получить результат проверки.</p>
-        <ButtonLink to="/" variant="primary">На старт</ButtonLink>
+        <ButtonLink to="/" variant="primary">В чат</ButtonLink>
       </div>
     );
   }

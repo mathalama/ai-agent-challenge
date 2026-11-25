@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ThinkingOrb } from 'thinking-orbs';
-import { Button } from '../components/Button';
+import { Button, ButtonLink } from '../components/Button';
 import { formatLocation } from '../components/FindingCard';
 import { RecheckChanges } from '../components/RecheckChanges';
 import { ReportGate } from '../components/ReportGate';
@@ -13,6 +13,7 @@ import type { Question, Report } from '../lib/types';
 const RECHECK_MS = 2600;
 
 function QuestionCard({ q, report }: { q: Question; report: Report }) {
+  const live = useReportStore((s) => s.mode === 'live');
   const answer = useReportStore((s) => s.answers[q.id] ?? '');
   const setAnswer = useReportStore((s) => s.setAnswer);
   const clearAnswer = useReportStore((s) => s.clearAnswer);
@@ -58,7 +59,9 @@ function QuestionCard({ q, report }: { q: Question; report: Report }) {
         )}
       </div>
 
-      <fieldset className="space-y-2">
+      {live ? (
+        <ButtonLink to={`/?answer=${encodeURIComponent(q.id)}`}>Ответить в чате</ButtonLink>
+      ) : <fieldset className="space-y-2">
         <legend className="sr-only">Ответ на вопрос {q.id}</legend>
         {q.options.map((o) => (
           <label
@@ -90,7 +93,7 @@ function QuestionCard({ q, report }: { q: Question; report: Report }) {
             Очистить ответ
           </button>
         )}
-      </fieldset>
+      </fieldset>}
     </article>
   );
 }
@@ -102,6 +105,7 @@ type Phase =
   | { name: 'done'; after: Report };
 
 function QuestionsView({ report }: { report: Report }) {
+  const live = useReportStore((s) => s.mode === 'live');
   const answers = useReportStore((s) => s.answers);
   const [phase, setPhase] = useState<Phase>({ name: 'idle' });
   const result = useRef<HTMLDivElement>(null);
@@ -127,7 +131,7 @@ function QuestionsView({ report }: { report: Report }) {
       <header className="space-y-1">
         <h1 className="text-3xl font-semibold tracking-[-0.02em]">Вопросы к автору</h1>
         <p className="text-ink-2">
-          Спорные места, которые агент не может решить по тексту. Ответьте и перепроверьте документ.
+          {live ? 'Ответьте на уточняющие вопросы в чате.' : 'Спорные места, которые агент не может решить по тексту. Ответьте и перепроверьте документ.'}
         </p>
       </header>
 
@@ -143,14 +147,14 @@ function QuestionsView({ report }: { report: Report }) {
         </ul>
       )}
 
-      <div className="sticky bottom-4 flex flex-wrap items-center gap-3 rounded-2xl bg-surface/95 p-4 ring-1 ring-line-strong backdrop-blur">
+      {!live && <div className="sticky bottom-4 flex flex-wrap items-center gap-3 rounded-2xl bg-surface/95 p-4 ring-1 ring-line-strong backdrop-blur">
         <p className="tabular flex-1 text-sm text-ink-2">
           Отвечено {answered} из {report.questions.length}
         </p>
         <Button disabled={answered === 0 || phase.name === 'running'} onClick={() => void recheck()}>
           Перепроверить с ответами
         </Button>
-      </div>
+      </div>}
 
       {phase.name === 'running' && (
         <div role="status" className="flex items-center gap-4 rounded-2xl bg-surface p-5 ring-1 ring-line">

@@ -2,7 +2,7 @@
 
 use std::{
     fs::File,
-    io::{self, BufWriter, Write},
+    io::{self, BufWriter, IsTerminal, Write},
     path::Path,
     sync::Mutex,
 };
@@ -10,10 +10,85 @@ use std::{
 use review::{ProgressEvent, ProgressSink};
 
 /// Печатает ход прогона в stderr, чтобы stdout оставался для результатов.
-pub struct ConsoleProgress;
+#[derive(Default)]
+pub struct ConsoleProgress(Mutex<ReasoningOutput>);
+
+#[derive(Default)]
+struct ReasoningOutput {
+    stage: String,
+    count: usize,
+    at_line_start: bool,
+}
+
+impl ConsoleProgress {
+    pub fn reasoning(&self, stage: &str, delta: &str, complete: bool) {
+        let mut state = self.0.lock().expect("блокировка вывода рассуждений");
+        if complete || state.stage != stage {
+            state.finish();
+        }
+        let mut stderr = io::stderr().lock();
+        let gray = stderr.is_terminal();
+        if state.count == 0 {
+            let _ = writeln!(stderr, "      Рассуждение · {stage}");
+            state.stage = stage.into();
+            state.at_line_start = true;
+        }
+        if gray {
+            let _ = write!(stderr, "\x1b[90m");
+        }
+        for line in delta.split_inclusive('\n') {
+            if state.at_line_start {
+                let _ = write!(stderr, "        ");
+            }
+            let text: String = line
+                .chars()
+                .filter(|ch| !ch.is_control() || *ch == '\n')
+                .collect();
+            let _ = write!(stderr, "{text}");
+            state.at_line_start = line.ends_with('\n');
+        }
+        if gray {
+            let _ = write!(stderr, "\x1b[0m");
+        }
+        let _ = stderr.flush();
+        drop(stderr);
+        state.count += delta.chars().count();
+        if complete {
+            state.finish();
+        }
+    }
+
+    pub fn flush_reasoning(&self) {
+        self.0
+            .lock()
+            .expect("блокировка вывода рассуждений")
+            .finish();
+    }
+}
+
+impl ReasoningOutput {
+    fn finish(&mut self) {
+        if self.count > 0 {
+            if !self.at_line_start {
+                eprintln!();
+            }
+            eprintln!("      рассуждение: {} симв.", self.count);
+            *self = Self::default();
+        }
+    }
+}
 
 impl ProgressSink for ConsoleProgress {
     fn emit(&self, event: &ProgressEvent) {
+        match event {
+            ProgressEvent::LlmReasoning { stage, text } => {
+                return self.reasoning(stage, text, true);
+            }
+            ProgressEvent::LlmReasoningDelta { stage, delta } => {
+                return self.reasoning(stage, delta, false);
+            }
+            _ => self.flush_reasoning(),
+        }
         if let Some(line) = console_line(event) {
             eprintln!("{line}");
         }
@@ -122,6 +197,9 @@ fn console_line(event: &ProgressEvent) -> Option<String> {
         ProgressEvent::RunFinished {
             succeeded: false, ..
         } => return None,
+        ProgressEvent::LlmReasoning { .. } | ProgressEvent::LlmReasoningDelta { .. } => {
+            return None;
+        }
     })
 }
 

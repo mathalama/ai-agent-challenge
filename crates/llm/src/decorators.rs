@@ -4,7 +4,10 @@ use std::{
     io::{self, Write},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -16,7 +19,7 @@ use tokio::{
     time::{Instant, sleep, sleep_until},
 };
 
-use crate::{LlmError, LlmProvider, LlmRequest, LlmResponse, Result, Usage};
+use crate::{LlmError, LlmProvider, LlmRequest, LlmResponse, ReasoningCallback, Result, Usage};
 
 pub struct CachedProvider {
     inner: RetryProvider,
@@ -59,6 +62,9 @@ impl LlmProvider for CachedProvider {
             && validate_response(&validator, request, &cached).is_ok()
         {
             cached.usage = Usage::default();
+            self.inner
+                .trace
+                .reasoning(request, cached.reasoning.as_deref(), false);
             self.inner
                 .trace
                 .record(request, started, Ok(&cached), &cached.model, true, true);
@@ -106,13 +112,17 @@ fn write_cache_entry(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub struct RetryProvider {
-    inner: Box<dyn LlmProvider>,
+    inner: Arc<dyn LlmProvider>,
     trace: TraceLog,
     include_reasoning: bool,
 }
 
 impl RetryProvider {
     pub fn new(inner: Box<dyn LlmProvider>) -> Self {
+        Self::from_shared(inner.into())
+    }
+
+    pub fn from_shared(inner: Arc<dyn LlmProvider>) -> Self {
         Self {
             inner,
             trace: TraceLog::default(),
@@ -149,7 +159,27 @@ impl RetryProvider {
         let mut retry_invalid_response = true;
         loop {
             let started = Instant::now();
-            let error = match self.inner.generate(request).await {
+            let streamed = AtomicBool::new(false);
+            let response = if request.include_reasoning && self.trace.on_reasoning.is_some() {
+                self.inner
+                    .generate_with_reasoning(request, &|delta| {
+                        if !delta.is_empty() {
+                            streamed.store(true, Ordering::Relaxed);
+                            self.trace.reasoning(request, Some(delta), true);
+                        }
+                    })
+                    .await
+            } else {
+                self.inner.generate(request).await
+            };
+            if !streamed.into_inner() {
+                let reasoning = match &response {
+                    Ok(response) => response.reasoning.as_deref(),
+                    Err(error) => error.reasoning(),
+                };
+                self.trace.reasoning(request, reasoning, false);
+            }
+            let error = match response {
                 Ok(response) => {
                     let validation = validate_response(validator, request, &response);
                     self.trace.record(
@@ -196,6 +226,7 @@ impl RetryProvider {
                 {
                     ("transport", None, transient_delays.next())
                 }
+                LlmError::IncompleteStream => ("transport", None, transient_delays.next()),
                 LlmError::SchemaMismatch(_) | LlmError::Json(_) | LlmError::ResponseJson { .. }
                     if retry_invalid_response =>
                 {
@@ -254,6 +285,12 @@ impl RateLimitedProvider {
             next_request: AsyncMutex::new(Instant::now()),
         }
     }
+
+    async fn wait_turn(&self) {
+        let mut next_request = self.next_request.lock().await;
+        sleep_until(*next_request).await;
+        *next_request = Instant::now() + self.interval;
+    }
 }
 
 #[async_trait]
@@ -263,12 +300,17 @@ impl LlmProvider for RateLimitedProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
-        {
-            let mut next_request = self.next_request.lock().await;
-            sleep_until(*next_request).await;
-            *next_request = Instant::now() + self.interval;
-        }
+        self.wait_turn().await;
         self.inner.generate(request).await
+    }
+
+    async fn generate_with_reasoning(
+        &self,
+        request: &LlmRequest,
+        on_delta: &ReasoningCallback<'_>,
+    ) -> Result<LlmResponse> {
+        self.wait_turn().await;
+        self.inner.generate_with_reasoning(request, on_delta).await
     }
 }
 
@@ -295,11 +337,13 @@ pub struct RetryNotice {
 }
 
 type RetryListener = Arc<dyn Fn(&RetryNotice) + Send + Sync>;
+type ReasoningListener = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct TraceLog {
     entries: Arc<Mutex<Vec<TraceEntry>>>,
     on_retry: Option<RetryListener>,
+    on_reasoning: Option<ReasoningListener>,
 }
 
 impl TraceLog {
@@ -307,6 +351,24 @@ impl TraceLog {
     pub fn on_retry(mut self, listener: impl Fn(&RetryNotice) + Send + Sync + 'static) -> Self {
         self.on_retry = Some(Arc::new(listener));
         self
+    }
+
+    /// Последний аргумент обработчика показывает, является ли текст частью потока.
+    pub fn on_reasoning(
+        mut self,
+        listener: impl Fn(&str, &str, bool) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_reasoning = Some(Arc::new(listener));
+        self
+    }
+
+    fn reasoning(&self, request: &LlmRequest, text: Option<&str>, delta: bool) {
+        if request.include_reasoning
+            && let (Some(listener), Some(text)) =
+                (&self.on_reasoning, text.filter(|text| !text.is_empty()))
+        {
+            listener(&request.stage, text, delta);
+        }
     }
 
     pub fn entries(&self) -> Vec<TraceEntry> {
@@ -416,7 +478,14 @@ mod tests {
     #[tokio::test]
     async fn reasoning_survives_cache_hits_without_reusing_disabled_entries() {
         let directory = tempfile::tempdir().unwrap();
-        let trace = TraceLog::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let trace = TraceLog::default().on_reasoning(move |stage, text, delta| {
+            captured
+                .lock()
+                .unwrap()
+                .push((stage.to_owned(), text.to_owned(), delta));
+        });
         let mut response = reply(json!(42));
         response.reasoning = Some("Объяснение".into());
         let provider = CachedProvider::new(
@@ -448,6 +517,26 @@ mod tests {
         assert!(entries[0].get("reasoning").is_none());
         assert_eq!(entries[1]["reasoning"], "Объяснение");
         assert_eq!(entries[2]["reasoning"], "Объяснение");
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![("test".into(), "Объяснение".into(), false); 2]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn separate_operations_share_the_same_rate_limit() {
+        let base: Arc<dyn LlmProvider> = Arc::new(RateLimitedProvider::new(
+            Box::new(crate::MockProvider),
+            NonZeroU32::new(60).unwrap(),
+        ));
+        let first = RetryProvider::from_shared(Arc::clone(&base));
+        let second = RetryProvider::from_shared(base);
+        let request =
+            LlmRequest::typed::<Vec<serde_json::Value>>("facts", "", String::new()).unwrap();
+        let start = Instant::now();
+        first.generate(&request).await.unwrap();
+        second.generate(&request).await.unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(1));
     }
 
     #[tokio::test(start_paused = true)]
