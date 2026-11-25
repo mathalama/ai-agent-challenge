@@ -1,5 +1,7 @@
+mod docx;
 mod markdown;
 
+pub use docx::DocxParser;
 pub use markdown::MarkdownParser;
 
 use std::{
@@ -128,6 +130,8 @@ pub enum DocumentError {
     Unsupported(String),
     #[error("Документ должен быть сохранён в кодировке UTF-8: {0}")]
     Encoding(#[from] str::Utf8Error),
+    #[error("Не удалось разобрать DOCX: {0}")]
+    InvalidDocx(String),
 }
 
 pub type Result<T> = std::result::Result<T, DocumentError>;
@@ -244,18 +248,5 @@ impl DocumentParser for PdfParser {
     fn parse(&self, _bytes: &[u8]) -> Result<Document> {
         // TODO(issue): извлечь текст и диапазоны страниц из PDF.
         Err(DocumentError::Unsupported("PDF".into()))
-    }
-}
-
-pub struct DocxParser;
-
-impl DocumentParser for DocxParser {
-    fn supports(&self, path: &Path) -> bool {
-        has_extension(path, &["docx"])
-    }
-
-    fn parse(&self, _bytes: &[u8]) -> Result<Document> {
-        // TODO(issue): разобрать абзацы, списки и таблицы DOCX.
-        Err(DocumentError::Unsupported("DOCX".into()))
     }
 }
