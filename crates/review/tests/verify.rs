@@ -96,7 +96,7 @@ impl LlmProvider for ReviewProvider {
             findings.push(Finding {
                 id: "F-1".into(),
                 scope: Scope::Set,
-                criterion: Criterion::Consistent,
+                criterion: Criterion::Appropriate,
                 additional_criteria: Vec::new(),
                 severity,
                 evidence: vec![Evidence {
@@ -402,8 +402,8 @@ impl LlmProvider for LanguageAndPromptProvider {
                         "quote": "Первое требование",
                         "location": {"start_line": 3, "end_line": 3, "page": null}
                     }],
-                    "explanation": "Не описан сценарий тестирования.",
-                    "suggestion": "安全"
+                    "explanation": "Не определены параметры σ и Δ.",
+                    "suggestion": "Указать значения для 安全."
                 }
             ]),
             "clarify" => serde_json::json!([
@@ -452,7 +452,7 @@ async fn validates_finding_and_question_languages_and_attaches_domain_context() 
     let document = ParserRegistry::default()
         .parse(
             Path::new("input.md"),
-            "# Документ требований\n\n* **Ф-1.** Первое требование\n* **Ф-2.** Второе требование\n"
+            "# Документ требований\n\n* **Ф-1.** Первое требование (σ и Δ)\n* **Ф-2.** Второе требование\n"
                 .as_bytes(),
         )
         .unwrap();
@@ -469,7 +469,8 @@ async fn validates_finding_and_question_languages_and_attaches_domain_context() 
         [
             "RULE-RU",
             "requirement_checks-001",
-            "requirement_checks-002"
+            "requirement_checks-002",
+            "requirement_checks-004"
         ]
     );
     assert!(ctx.findings[0].suggestion.is_none());
@@ -478,6 +479,12 @@ async fn validates_finding_and_question_languages_and_attaches_domain_context() 
         ctx.findings[2].suggestion.as_deref(),
         Some("Указать код ошибки HTTP 400 и текст сообщения.")
     );
+    assert!(ctx.findings[3].verified);
+    assert_eq!(
+        ctx.findings[3].explanation,
+        "Не определены параметры σ и Δ."
+    );
+    assert!(ctx.findings[3].suggestion.is_none());
     assert_eq!(ctx.questions.len(), 1);
     assert!(ctx.questions[0].id.starts_with("Q-"));
     assert_eq!(ctx.questions[0].priority, Severity::Medium);
@@ -666,7 +673,7 @@ impl LlmProvider for UnverifiedParaphraseProvider {
                 {
                     "requirement_id": "R-001",
                     "criterion": "unambiguous",
-                    "severity": "high",
+                    "severity": "medium",
                     "evidence": [{
                         "quote": "Сервис отвечает быстро на запросы клиентов",
                         "location": {"start_line": 3, "end_line": 3, "page": null}
@@ -687,7 +694,7 @@ impl LlmProvider for UnverifiedParaphraseProvider {
 }
 
 #[tokio::test]
-async fn verified_rule_finding_absorbs_paraphrase_without_using_its_quote() {
+async fn verified_rule_finding_keeps_its_quote_when_model_paraphrases_it() {
     let source = concat!(
         "# Спецификация (версия 1.0 от 2026-03-10)\n\n",
         "* **Ф-1.** Сервис отвечает быстро на запросы пользователя.\n\n",
@@ -702,12 +709,14 @@ async fn verified_rule_finding_absorbs_paraphrase_without_using_its_quote() {
 
     Pipeline::default().run(&mut ctx).await.unwrap();
 
-    assert_eq!(ctx.findings.len(), 1, "{:#?}", ctx.findings);
+    assert_eq!(ctx.findings.len(), 2, "{:#?}", ctx.findings);
     let rule_finding = &ctx.findings[0];
     assert!(matches!(&rule_finding.detector, Detector::Rule(id) if id == "vague-terms"));
     assert!(rule_finding.verified);
     assert_eq!(rule_finding.severity, Severity::Medium);
-    assert_eq!(rule_finding.merged_ids, ["ambiguity-001"]);
+    assert!(rule_finding.merged_ids.is_empty());
+    assert_eq!(ctx.findings[1].id, "ambiguity-001");
+    assert!(!ctx.findings[1].verified);
     assert_eq!(rule_finding.evidence.len(), 1);
     assert_eq!(
         rule_finding.evidence[0].quote,
@@ -858,7 +867,11 @@ async fn merges_single_requirement_duplicates_and_counts_critical_findings_once(
     for (stage, count, offset) in [("set_checks", 3, 0), ("ambiguity", 6, 3)] {
         for index in 1..=count {
             let id = format!("{stage}-{index:03}");
-            let expected_scope = Scope::Requirement(format!("R-{:03}", offset + index));
+            let expected_scope = if id == "set_checks-001" {
+                Scope::Set
+            } else {
+                Scope::Requirement(format!("R-{:03}", offset + index))
+            };
             assert!(
                 ctx.findings.iter().any(|finding| {
                     finding.verified

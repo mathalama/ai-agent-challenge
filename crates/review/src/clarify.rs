@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::{
     Evidence, Finding, ProgressEvent, Question, QuestionTopic, RelatedId, RunContext,
-    pipeline::Result, stages::has_cyrillic,
+    dedup::normalize_text, pipeline::Result, stages::has_cyrillic,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -72,39 +72,47 @@ pub(crate) async fn ask_questions(ctx: &mut RunContext<'_>, prompt: &str) -> Res
 }
 
 fn resolve_links(draft: &mut QuestionDraft, batch: &[&Finding]) {
-    let declared: BTreeSet<_> = draft
-        .finding_ids
-        .iter()
-        .filter(|id| batch.iter().any(|finding| finding.id == **id))
-        .cloned()
-        .collect();
-    let mentions: BTreeSet<_> = [&draft.text, &draft.why]
+    let declared: BTreeSet<_> = std::mem::take(&mut draft.finding_ids).into_iter().collect();
+    let cited: Vec<_> = std::mem::take(&mut draft.evidence)
         .into_iter()
-        .flat_map(|text| text.split(|ch: char| !ch.is_alphanumeric() && ch != '-' && ch != '_'))
+        .map(|item| (item.location, normalize_text(&item.quote)))
         .collect();
-    let cited = std::mem::take(&mut draft.evidence);
-    draft.finding_ids.clear();
     for finding in batch {
-        let explicit = mentions.contains(finding.id.as_str())
-            || (cited.is_empty() && declared.len() == 1 && declared.contains(&finding.id));
+        let declared_link = declared.contains(&finding.id);
         let selected: Vec<_> = finding
             .evidence
             .iter()
             .filter(|known| {
-                explicit
-                    || cited.iter().any(|item| {
-                        item.location == known.location
-                            && item
-                                .quote
-                                .split_whitespace()
-                                .eq(known.quote.split_whitespace())
-                    })
+                let quote = normalize_text(&known.quote);
+                cited.iter().any(|(location, text)| {
+                    !quote.is_empty()
+                        && quote == *text
+                        && (known.location == *location
+                            || declared_link
+                                && known.location.page == location.page
+                                && known.location.start_line.abs_diff(location.start_line) <= 1
+                                && known.location.end_line.abs_diff(location.end_line) <= 1)
+                })
             })
             .cloned()
             .collect();
         if !selected.is_empty() {
             draft.finding_ids.push(finding.id.clone());
             draft.evidence.extend(selected);
+        }
+    }
+
+    // Сохраняем явные ссылки из пачки, если модель не смогла скопировать цитаты.
+    if draft.finding_ids.is_empty() {
+        let declared_findings: Vec<_> = batch
+            .iter()
+            .filter(|finding| declared.contains(&finding.id))
+            .collect();
+        if !cited.is_empty() || declared_findings.len() == 1 {
+            for finding in declared_findings {
+                draft.finding_ids.push(finding.id.clone());
+                draft.evidence.extend_from_slice(&finding.evidence);
+            }
         }
     }
 }
@@ -126,6 +134,7 @@ fn build_questions(drafts: Vec<QuestionDraft>, verified: &[&Finding]) -> Result<
             .finding_ids
             .retain(|id| findings.contains_key(id.as_str()));
         if draft.finding_ids.is_empty() {
+            warn!("Отброшен уточняющий вопрос без ссылок на подтверждённые находки");
             continue;
         }
         let key = normalized(draft.text.trim_end_matches(['?', '.', '!', '…']));
@@ -250,6 +259,41 @@ mod tests {
             merged_ids: Vec::new(),
             fallback_evidence: false,
             verified: true,
+        }
+    }
+
+    #[test]
+    fn keeps_declared_links_when_model_misses_the_exact_quote() {
+        let canonical = evidence("Код устаревает после статуса «Ожидание».", 15);
+        let conflict = finding("set_checks-001", vec![canonical.clone()]);
+        let unrelated = finding("set_checks-002", vec![evidence("Лимит — 500 тенге.", 12)]);
+        let batch = [&conflict, &unrelated];
+        for (index, draft_quote) in [
+            evidence("Код устаревает после статуса “Ожидание”.", 16),
+            evidence("Код переходит в ожидание.", 20),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut draft = QuestionDraft {
+                text: "Когда код устаревает?".into(),
+                why: "От срока зависит проверка.".into(),
+                topic: QuestionTopic::Other,
+                options: vec![],
+                finding_ids: vec![conflict.id.clone()],
+                evidence: vec![draft_quote],
+            };
+            if index == 0 {
+                draft.finding_ids.push(unrelated.id.clone());
+            }
+            resolve_links(&mut draft, &batch);
+            assert_eq!(
+                draft.finding_ids.as_slice(),
+                std::slice::from_ref(&conflict.id)
+            );
+            assert_eq!(draft.evidence.len(), 1);
+            assert_eq!(draft.evidence[0].quote, canonical.quote);
+            assert_eq!(draft.evidence[0].location, canonical.location);
         }
     }
 

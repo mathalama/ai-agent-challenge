@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
+use doc::{BlockContent, Document};
 use llm::generate_typed;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -156,17 +159,14 @@ impl Stage for ScaffoldStage {
                     .await?;
             }
             Self::Verify => {
+                let greek = source_greek_symbols(&ctx.document);
                 ctx.findings.retain(|finding| {
                     if matches!(finding.detector, Detector::Llm(_))
-                        && (has_foreign_letters(&finding.explanation)
-                            || finding
-                                .suggestion
-                                .as_deref()
-                                .is_some_and(has_foreign_letters))
+                        && has_foreign_letters(&finding.explanation, &greek)
                     {
                         warn!(
                             finding_id = %finding.id,
-                            "Отброшена находка с буквами вне кириллицы и латиницы"
+                            "Отброшена находка с посторонней письменностью в пояснении"
                         );
                         return false;
                     }
@@ -180,14 +180,14 @@ impl Stage for ScaffoldStage {
                     true
                 });
                 for finding in &mut ctx.findings {
-                    if finding
-                        .suggestion
-                        .as_deref()
-                        .is_some_and(|suggestion| !has_cyrillic(suggestion))
-                    {
+                    if finding.suggestion.as_deref().is_some_and(|suggestion| {
+                        !has_cyrillic(suggestion)
+                            || matches!(finding.detector, Detector::Llm(_))
+                                && has_foreign_letters(suggestion, &greek)
+                    }) {
                         warn!(
                             finding_id = %finding.id,
-                            "Удалена рекомендация без кириллицы"
+                            "Удалена рекомендация с неподдерживаемой письменностью"
                         );
                         finding.suggestion = None;
                     }
@@ -198,7 +198,10 @@ impl Stage for ScaffoldStage {
                         });
                     crate::dedup::narrow_set_scope(finding, &ctx.requirements);
                 }
-                ctx.findings = crate::dedup::merge_findings(std::mem::take(&mut ctx.findings));
+                ctx.findings = crate::dedup::merge_findings_in_context(
+                    std::mem::take(&mut ctx.findings),
+                    &ctx.requirements,
+                );
             }
             Self::Clarify => clarify::ask_questions(ctx, &self.llm_prompt()).await?,
         }
@@ -268,13 +271,33 @@ fn set_input(requirements: &[Requirement], context: &[ContextItem]) -> Result<St
     )?)
 }
 
-fn has_foreign_letters(text: &str) -> bool {
+fn source_greek_symbols(document: &Document) -> HashSet<char> {
+    let mut symbols = HashSet::new();
+    let mut collect = |text: &str| {
+        symbols.extend(text.chars().filter(|ch| ch.script() == Script::Greek));
+    };
+    for block in &document.blocks {
+        match &block.content {
+            BlockContent::Heading { text, .. }
+            | BlockContent::Paragraph { text }
+            | BlockContent::ListItem { text }
+            | BlockContent::Code { text, .. } => collect(text),
+            BlockContent::Table { rows, .. } => {
+                rows.iter().flatten().for_each(|cell| collect(cell))
+            }
+        }
+    }
+    symbols
+}
+
+fn has_foreign_letters(text: &str, greek: &HashSet<char>) -> bool {
     text.chars().any(|character| {
         character.is_alphabetic()
-            && !matches!(
-                character.script(),
-                Script::Cyrillic | Script::Latin | Script::Common | Script::Inherited
-            )
+            && match character.script() {
+                Script::Cyrillic | Script::Latin | Script::Common | Script::Inherited => false,
+                Script::Greek => !greek.contains(&character),
+                _ => true,
+            }
     })
 }
 

@@ -1778,8 +1778,7 @@
     {
       "id": "set_checks-003",
       "scope": {
-        "kind": "requirement",
-        "id": "R-001"
+        "kind": "set"
       },
       "criterion": "set_complete",
       "severity": "medium",

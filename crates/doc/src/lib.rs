@@ -131,9 +131,9 @@ pub(crate) fn dehyphenate_multiline(text: &str) -> String {
                 result.pop();
             }
             (Some('-' | '\u{2010}'), Some(left), Some(right))
-                if left.is_alphanumeric() && right.is_alphabetic() =>
+                if left.is_alphanumeric() && right.is_alphanumeric() =>
             {
-                if should_join_hyphenated(left, right) {
+                if should_join_hyphenated(&result, left, right) {
                     result.pop();
                 }
             }
@@ -145,7 +145,19 @@ pub(crate) fn dehyphenate_multiline(text: &str) -> String {
     result
 }
 
-fn should_join_hyphenated(left: char, right: char) -> bool {
+fn should_join_hyphenated(line: &str, left: char, right: char) -> bool {
+    let prefix = line
+        .trim_end_matches(['-', '\u{2010}'])
+        .rsplit(|character: char| !character.is_alphabetic())
+        .next()
+        .unwrap_or_default();
+    // По одним координатам PDF нельзя отличить дефис сложного слова от переноса.
+    if matches!(
+        prefix.to_lowercase().as_str(),
+        "онлайн" | "офлайн" | "интернет" | "веб" | "бизнес"
+    ) {
+        return false;
+    }
     let script = left.script();
     left.is_lowercase()
         && right.is_lowercase()
