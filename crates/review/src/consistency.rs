@@ -160,7 +160,14 @@ impl Group<'_> {
             && !(fixed_duration(&a) && fixed_duration(&b))
         {
             let units = ordered_pair(a, b);
-            return (!conversions.contains(&units)).then(|| ("unit_mismatch", format!("Для сопоставляемых величин указаны разные единицы ({} и {}) без описания преобразования.", units.0, units.1)));
+            return (!conversions.contains(&units)).then(|| {
+                let first = unit_label(&units.0);
+                let second = unit_label(&units.1);
+                (
+                    "unit_mismatch",
+                    format!("Для сопоставляемых величин указаны разные единицы ({first} и {second}) без описания преобразования."),
+                )
+            });
         }
 
         match (&left.data, &right.data) {
@@ -317,12 +324,25 @@ fn normalized_unit(text: &str) -> String {
         "min" | "мин" | "мин." | "minute" | "minutes" | "минута" | "минуты" | "минут"
         | "минуту" => "min".into(),
         "h" | "ч" | "ч." | "hour" | "hours" | "час" | "часа" | "часов" => "h".into(),
+        "d" | "day" | "days" | "день" | "дня" | "дней" | "дни" | "сутки" | "суток" | "сут"
+        | "сут." => "d".into(),
+        "wk" | "week" | "weeks" | "неделя" | "недели" | "неделю" | "недель" | "нед" | "нед." => {
+            "wk".into()
+        }
+        _ => unit,
+    }
+}
+
+fn unit_label(unit: &str) -> &str {
+    match unit {
+        "kzt" => "тенге",
+        "kzt minor" => "тиын",
         _ => unit,
     }
 }
 
 fn fixed_duration(unit: &str) -> bool {
-    matches!(unit, "ms" | "s" | "min" | "h")
+    matches!(unit, "ms" | "s" | "min" | "h" | "d" | "wk")
 }
 
 fn ordered_pair<T: Ord>(left: T, right: T) -> (T, T) {

@@ -79,17 +79,23 @@ fn quantity_and_range_must_use_matching_units() {
 
 #[test]
 fn fixed_duration_units_do_not_need_a_document_conversion() {
-    check_rule(
-        FactData::Quantity {
-            value: Some(30.0),
-            unit: "секунд".into(),
-        },
-        FactData::Quantity {
-            value: Some(1.0),
-            unit: "min".into(),
-        },
-        None,
-    );
+    for (value, from, to) in [
+        (30.0, "секунд", "min"),
+        (24.0, "часа", "сутки"),
+        (7.0, "дней", "неделя"),
+    ] {
+        check_rule(
+            FactData::Quantity {
+                value: Some(value),
+                unit: from.into(),
+            },
+            FactData::Quantity {
+                value: Some(1.0),
+                unit: to.into(),
+            },
+            None,
+        );
+    }
 }
 
 #[tokio::test]
@@ -162,6 +168,7 @@ async fn verified_conversion_applies_across_entities() {
     ctx.facts[2].evidence.quote = "Вымышленное соотношение".into();
     check(&mut ctx, "").await.unwrap();
     assert!(matches!(&ctx.findings[0].detector, Detector::Rule(rule) if rule == "unit_mismatch"));
+    assert!(ctx.findings[0].explanation.contains("(тенге и тиын)"));
 }
 
 #[test]
