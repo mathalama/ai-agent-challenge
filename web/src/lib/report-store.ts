@@ -40,6 +40,7 @@ export async function loadDemoReport(): Promise<{ report: Report; stageTrace: St
 interface ReportState {
   mode: 'connecting' | 'live' | 'demo';
   sessionId: string | null;
+  sessionBusy: boolean;
   status: LoadStatus;
   error: string | null;
   report: Report | null;
@@ -70,6 +71,7 @@ interface ReportState {
 export const useReportStore = create<ReportState>((set, get) => ({
   mode: 'connecting',
   sessionId: null,
+  sessionBusy: false,
   status: 'idle',
   error: null,
   report: null,

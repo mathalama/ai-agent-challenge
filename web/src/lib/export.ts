@@ -6,9 +6,11 @@ import type { Answer, Evidence, Report } from './types';
 export function reportWithAnswers(report: Report, answers: Record<string, string>): Report {
   const finding_answers: Record<string, Answer[]> = { ...(report.finding_answers ?? {}) };
   const requirement_answers: Record<string, Answer[]> = { ...(report.requirement_answers ?? {}) };
+  const standalone_answers = { ...(report.standalone_answers ?? {}) };
   for (const q of report.questions) {
     const text = answers[q.id];
     if (!text) continue;
+    if (q.related.length === 0) standalone_answers[q.id] = text;
     for (const rel of q.related) {
       const related = rel.kind === 'finding' ? finding_answers : requirement_answers;
       const list = (related[rel.id] ?? []).filter((a) => a.question_id !== q.id);
@@ -19,6 +21,7 @@ export function reportWithAnswers(report: Report, answers: Record<string, string
     ...report,
     ...(Object.keys(finding_answers).length > 0 && { finding_answers }),
     ...(Object.keys(requirement_answers).length > 0 && { requirement_answers }),
+    ...(Object.keys(standalone_answers).length > 0 && { standalone_answers }),
   };
 }
 

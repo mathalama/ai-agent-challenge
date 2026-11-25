@@ -69,3 +69,9 @@ export async function sendChatInput(id: string, value: string | File) {
   }
   if (!response.ok) throw await failure(response);
 }
+
+export async function fetchReportExport(id: string, format: 'json' | 'md'): Promise<string> {
+  const response = await fetch(`/api/sessions/${id}/report?format=${format}`);
+  if (!response.ok) throw await failure(response);
+  return response.text();
+}

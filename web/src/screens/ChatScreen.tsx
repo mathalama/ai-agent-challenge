@@ -89,7 +89,7 @@ export function ChatScreen() {
   const [connected, setConnected] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [connectionError, setConnectionError] = useState<string>();
-  const [busy, setBusy] = useState(false);
+  const busy = useReportStore((s) => s.sessionBusy);
   const [dragging, setDragging] = useState(false);
   const [text, setText] = useState('');
   const uploadInput = useRef<HTMLInputElement>(null);
@@ -102,7 +102,7 @@ export function ChatScreen() {
     eventSource.current?.close();
     pending.current = null;
     setConnected(false);
-    setBusy(false);
+    useReportStore.setState({ sessionBusy: false });
     setSessionEnded(true);
   }
 
@@ -195,7 +195,7 @@ export function ChatScreen() {
           refreshReport();
         }
         pending.current = null;
-        setBusy(false);
+        useReportStore.setState({ sessionBusy: false });
         setItems((list) => list.map((item) => item.kind === 'reasoning' && item.value.active
           ? { ...item, value: { ...item.value, active: false } } : item));
       });
@@ -226,7 +226,7 @@ export function ChatScreen() {
   async function send(value: string | File) {
     if (!sessionId || !connected || pending.current) return;
     pending.current = typeof value === 'string' ? {} : { filename: value.name };
-    setBusy(true);
+    useReportStore.setState({ sessionBusy: true });
     setItems((list) => [...list, { kind: 'message', text: typeof value === 'string' ? value : value.name, user: true }]);
     try {
       await sendChatInput(sessionId, value);
@@ -236,7 +236,7 @@ export function ChatScreen() {
         return;
       }
       pending.current = null;
-      setBusy(false);
+      useReportStore.setState({ sessionBusy: false });
       setItems((list) => [...list, { kind: 'message', text: error instanceof Error ? error.message : String(error), error: true }]);
     }
   }

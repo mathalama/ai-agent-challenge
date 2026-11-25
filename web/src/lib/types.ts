@@ -99,6 +99,9 @@ export interface Report {
   };
   requirements: Requirement[];
   schema_version: ReportSchemaVersion;
+  standalone_answers?: {
+    [k: string]: string;
+  };
   summary: ReportSummary;
   unmatched_answers?: {
     [k: string]: string;

@@ -60,6 +60,12 @@
     "schema_version": {
       "$ref": "#/$defs/ReportSchemaVersion"
     },
+    "standalone_answers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "summary": {
       "$ref": "#/$defs/ReportSummary"
     },
