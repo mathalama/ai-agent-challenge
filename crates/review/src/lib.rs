@@ -1,6 +1,7 @@
 mod domain;
 mod pipeline;
 mod report;
+mod rules;
 pub mod segment;
 mod stages;
 

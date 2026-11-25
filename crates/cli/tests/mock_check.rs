@@ -43,7 +43,9 @@ fn mock_produces_a_report_with_all_sections() {
     assert!(report.contains("Уведомление о расходах по карте"));
     assert!(report.contains("R-001") && report.contains("Ф-1"));
     assert!(report.contains("> Ф-1. Держатель активной карты"));
-    assert!(report.contains("Нужно завершить проверки"));
+    assert!(report.contains("**Не готово.**"));
+    assert!(report.contains("[testing-section-"));
+    assert!(!report.contains("можно начинать"));
     assert!(report.contains("Вопросы отсутствуют."));
 
     let trace: serde_json::Value =
@@ -76,6 +78,6 @@ fn mock_produces_a_report_with_all_sections() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|call| call["stage"] != "clarify")
+            .any(|call| call["stage"] == "clarify")
     );
 }
