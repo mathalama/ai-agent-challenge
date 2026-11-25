@@ -42,6 +42,7 @@ fn mock_produces_a_report_with_all_sections() {
     }
     assert!(report.contains("Уведомление о расходах по карте"));
     assert!(report.contains("R-001") && report.contains("Ф-1"));
+    assert!(report.contains("> Ф-1. Держатель активной карты"));
     assert!(report.contains("Нужно завершить проверки"));
 
     let trace: serde_json::Value =

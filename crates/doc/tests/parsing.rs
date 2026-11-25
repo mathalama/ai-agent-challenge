@@ -37,8 +37,8 @@ fn markdown_keeps_source_lines_and_structures() {
         matches!(&document.blocks[2].content, BlockContent::ListItem { text } if text == "Первый")
     );
     assert!(
-        matches!(&document.blocks[4].content, BlockContent::Table { rows }
-        if rows == &[["Колонка", "Значение"], ["Имя", "x"]])
+        matches!(&document.blocks[4].content, BlockContent::Table { rows, row_lines }
+        if rows == &[["Колонка", "Значение"], ["Имя", "x"]] && row_lines == &[9, 11])
     );
     assert!(
         matches!(&document.blocks[5].content, BlockContent::Code { language: Some(language), text }
@@ -73,4 +73,34 @@ fn plain_text_preserves_paragraph_lines_and_reports_unsupported_formats() {
             Err(DocumentError::Unsupported(_))
         ));
     }
+}
+
+#[test]
+fn quote_verification_uses_table_rows_and_page_coordinates() {
+    let mut document = ParserRegistry::default()
+        .parse(Path::new("table.md"), b"| Header |\n| --- |\n| **Value** |")
+        .unwrap();
+    document.blocks[0].location.page = Some(2);
+    let cell = SourceSpan {
+        start_line: 3,
+        end_line: 3,
+        page: Some(2),
+    };
+    assert!(document.contains_quote(cell, "Value"));
+    assert!(!document.contains_quote(cell, "Header"));
+    assert!(!document.contains_quote(
+        SourceSpan {
+            page: Some(1),
+            ..cell
+        },
+        "Value"
+    ));
+    assert!(!document.contains_quote(
+        SourceSpan {
+            start_line: 2,
+            end_line: 2,
+            ..cell
+        },
+        "Value"
+    ));
 }

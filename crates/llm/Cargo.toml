@@ -5,6 +5,10 @@ edition.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+doc.workspace = true
+httpdate.workspace = true
+jsonschema.workspace = true
+reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -13,3 +17,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

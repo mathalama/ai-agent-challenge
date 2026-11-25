@@ -40,7 +40,7 @@ enum Command {
         output: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "md")]
         format: Format,
-        #[arg(long, value_enum, default_value = "mock")]
+        #[arg(long, value_enum, default_value = "gemini")]
         provider: Provider,
         #[arg(long)]
         no_cache: bool,
@@ -176,29 +176,20 @@ async fn check(
     let bytes = fs::read(input)
         .map_err(|error| format!("Не удалось прочитать «{}»: {error}", input.display()))?;
     let document = ParserRegistry::default().parse(input, &bytes)?;
-    let source = std::str::from_utf8(&bytes).map_err(doc::DocumentError::from)?;
-    let provider = match provider {
-        Provider::Mock => MockProvider,
-        Provider::Gemini => {
-            let gemini = GeminiProvider::from_env()?;
-            // TODO(issue): включить провайдер Gemini после реализации HTTP-запроса.
-            return Err(format!(
-                "Запросы к Gemini пока не реализованы (модель «{}»)",
-                gemini.model()
-            )
-            .into());
-        }
+    let provider: Box<dyn LlmProvider> = match provider {
+        Provider::Mock => Box::new(MockProvider),
+        Provider::Gemini => Box::new(RateLimitedProvider::from_env(Box::new(
+            GeminiProvider::from_env()?,
+        ))?),
     };
     let trace_log = TraceLog::default();
-    let provider: Box<dyn LlmProvider> =
-        Box::new(RateLimitedProvider::from_env(Box::new(provider))?);
     let mut provider: Box<dyn LlmProvider> = Box::new(RetryProvider::new(provider));
     if !no_cache {
         provider = Box::new(CachedProvider::new(provider, ".cache/llm"));
     }
     let provider = TracingProvider::new(provider, trace_log.clone());
     let checks = CheckRegistry::default();
-    let mut ctx = RunContext::new(document, source, &provider, &checks);
+    let mut ctx = RunContext::new(document, &provider, &checks);
     let result = Pipeline::default().run(&mut ctx).await;
     if let Some(path) = trace {
         let json = serde_json::to_string_pretty(&serde_json::json!({
@@ -215,7 +206,7 @@ async fn check(
         model: provider.model().into(),
         agent_version: AGENT_VERSION.into(),
     };
-    let report = Report::from_run(ctx, passport, false);
+    let report = Report::from_run(ctx, passport);
     let rendered = match format {
         Format::Md => MarkdownRenderer.render(&report)?,
         Format::Json => JsonRenderer.render(&report)?,

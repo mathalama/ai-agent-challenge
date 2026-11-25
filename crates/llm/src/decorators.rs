@@ -50,14 +50,22 @@ impl LlmProvider for CachedProvider {
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
         let path = self.entry_path(request)?;
+        let validator = jsonschema::validator_for(&request.response_schema)
+            .map_err(|_| LlmError::InvalidSchema)?;
         if let Ok(bytes) = tokio::fs::read(&path).await
             && let Ok(mut cached) = serde_json::from_slice::<LlmResponse>(&bytes)
+            && validator.is_valid(&cached.json)
+            && request.validate_shape(&cached.json).is_ok()
         {
             cached.usage = Usage::default();
             return Ok(cached);
         }
 
         let response = self.inner.generate(request).await?;
+        validator
+            .validate(&response.json)
+            .map_err(|error| LlmError::SchemaMismatch(error.instance_path().to_string()))?;
+        request.validate_shape(&response.json)?;
         let bytes = serde_json::to_vec(&response)?;
         let write_result =
             tokio::task::spawn_blocking(move || write_cache_entry(&path, &bytes)).await;
@@ -99,16 +107,28 @@ impl LlmProvider for RetryProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
-        for delay in [250, 500, 1000] {
-            match self.inner.generate(request).await {
-                Err(LlmError::Http {
-                    status: 429 | 500..=599,
-                    ..
-                }) => {
-                    sleep(Duration::from_millis(delay)).await;
+        for server_error_delay_ms in [250, 500, 1000] {
+            let result = self.inner.generate(request).await;
+            let Err(LlmError::Http {
+                status: status @ (429 | 500..=599),
+                retry_after,
+                ..
+            }) = &result
+            else {
+                return result;
+            };
+            let delay = retry_after.unwrap_or_else(|| {
+                if *status == 429 {
+                    Duration::from_secs(60)
+                } else {
+                    Duration::from_millis(server_error_delay_ms)
                 }
-                result => return result,
+            });
+            if delay > Duration::from_secs(120) {
+                return result;
             }
+            tracing::warn!(status, ?delay, "Повтор запроса LLM");
+            sleep(delay).await;
         }
         self.inner.generate(request).await
     }
@@ -127,7 +147,7 @@ impl RateLimitedProvider {
             Ok(value) => value
                 .parse::<NonZeroU32>()
                 .map_err(|_| LlmError::Config(VARIABLE))?,
-            Err(env::VarError::NotPresent) => NonZeroU32::new(60).unwrap(),
+            Err(env::VarError::NotPresent) => NonZeroU32::new(5).unwrap(),
             Err(env::VarError::NotUnicode(_)) => return Err(LlmError::Config(VARIABLE)),
         };
         Ok(Self::new(inner, rate))
@@ -214,5 +234,93 @@ impl LlmProvider for TracingProvider {
                 model,
             });
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    struct Replies(Mutex<std::vec::IntoIter<Result<LlmResponse>>>);
+
+    #[async_trait]
+    impl LlmProvider for Replies {
+        fn model(&self) -> &str {
+            "test"
+        }
+
+        async fn generate(&self, _: &LlmRequest) -> Result<LlmResponse> {
+            self.0.lock().unwrap().next().expect("unexpected request")
+        }
+    }
+
+    fn reply(json: serde_json::Value) -> LlmResponse {
+        LlmResponse {
+            json,
+            model: "test".into(),
+            usage: Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_responses_never_poison_the_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider = CachedProvider::new(
+            Box::new(Replies(Mutex::new(
+                vec![Ok(reply(json!(null))), Ok(reply(json!(42)))].into_iter(),
+            ))),
+            directory.path(),
+        );
+        let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        let path = provider.entry_path(&request).unwrap();
+        fs::write(
+            &path,
+            serde_json::to_vec(&reply(json!("old invalid response"))).unwrap(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            provider.generate(&request).await,
+            Err(LlmError::SchemaMismatch(_))
+        ));
+        let old: LlmResponse = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(old.json, "old invalid response");
+        assert_eq!(provider.generate(&request).await.unwrap().json, 42);
+        assert_eq!(
+            provider
+                .generate(&request)
+                .await
+                .unwrap()
+                .usage
+                .input_tokens,
+            0
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_retries_respect_server_delay_and_wait_a_minute_without_one() {
+        let limited = |retry_after| {
+            Err(LlmError::Http {
+                status: 429,
+                message: "quota".into(),
+                retry_after,
+            })
+        };
+        let provider = RetryProvider::new(Box::new(Replies(Mutex::new(
+            vec![
+                limited(Some(Duration::from_secs(24))),
+                limited(None),
+                Ok(reply(json!(42))),
+            ]
+            .into_iter(),
+        ))));
+        let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        let start = Instant::now();
+        provider.generate(&request).await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_secs(84));
     }
 }

@@ -32,7 +32,7 @@ pub enum Readiness {
 }
 
 impl Report {
-    pub fn from_run(ctx: RunContext<'_>, passport: RunPassport, checks_complete: bool) -> Self {
+    pub fn from_run(ctx: RunContext<'_>, passport: RunPassport) -> Self {
         let summary = ReportSummary {
             requirement_count: ctx.requirements.len(),
             finding_count: ctx.findings.len(),
@@ -48,13 +48,15 @@ impl Report {
                 .map(|finding| finding.id.clone())
                 .collect(),
         };
-        let readiness = if ctx
-            .findings
-            .iter()
-            .any(|finding| finding.severity == Severity::Critical && finding.verified)
-        {
+        let serious = || {
+            ctx.findings
+                .iter()
+                .filter(|finding| finding.severity >= Severity::High)
+        };
+        let readiness = if serious().any(|finding| finding.verified) {
             Readiness::Blocked
-        } else if !checks_complete || ctx.requirements.is_empty() {
+        } else if !ctx.checks_complete || ctx.requirements.is_empty() || serious().next().is_some()
+        {
             Readiness::ChecksIncomplete
         } else {
             Readiness::Ready
@@ -145,8 +147,8 @@ impl ReportRenderer for MarkdownRenderer {
 
         output.push_str("\n## 6. Итог\n\n");
         output.push_str(match report.readiness {
-            Readiness::Blocked => "Начинать разработку и тестирование рано. В первую очередь исправьте подтверждённые критичные дефекты.\n",
-            Readiness::ChecksIncomplete => "Готовность к разработке и тестированию не оценивалась. Нужно завершить проверки.\n",
+            Readiness::Blocked => "Начинать разработку и тестирование рано. Исправьте подтверждённые дефекты высокой и критической важности.\n",
+            Readiness::ChecksIncomplete => "Готовность к разработке и тестированию не подтверждена. Нужно завершить проверки.\n",
             Readiness::Ready => "По результатам проверки можно начинать разработку и тестирование.\n",
         });
         if passport.model == "mock" {

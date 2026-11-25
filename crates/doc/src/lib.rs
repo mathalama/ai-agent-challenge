@@ -18,6 +18,59 @@ pub struct Document {
     pub blocks: Vec<Block>,
 }
 
+impl Document {
+    pub fn contains_quote(&self, span: SourceSpan, quote: &str) -> bool {
+        let quote = normalize_quote(quote);
+        if span.start_line == 0 || span.start_line > span.end_line || quote.is_empty() {
+            return false;
+        }
+        self.blocks.iter().any(|block| {
+            let location = block.location;
+            if location.page != span.page
+                || span.end_line < location.start_line
+                || span.start_line > location.end_line
+            {
+                return false;
+            }
+            let includes = |line| (span.start_line..=span.end_line).contains(&line);
+            let covers_block = includes(location.start_line) && includes(location.end_line);
+            let matches = |text: &str| normalize_quote(text).contains(&quote);
+            match &block.content {
+                BlockContent::Table { rows, row_lines } => {
+                    rows.iter().enumerate().any(|(index, row)| {
+                        (covers_block || row_lines.get(index).is_some_and(|line| includes(*line)))
+                            && (row.iter().any(|cell| matches(cell)) || matches(&row.join(" ")))
+                    })
+                }
+                BlockContent::Heading { text, .. }
+                | BlockContent::Paragraph { text }
+                | BlockContent::ListItem { text }
+                | BlockContent::Code { text, .. } => {
+                    covers_block && matches(text)
+                        || text.lines().count() == location.end_line - location.start_line + 1
+                            && matches(
+                                &text
+                                    .lines()
+                                    .enumerate()
+                                    .filter(|(index, _)| includes(location.start_line + index))
+                                    .map(|(_, line)| line)
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            )
+                }
+            }
+        })
+    }
+}
+
+fn normalize_quote(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(['«', '»', '“', '”', '„', '‟', '‹', '›'], "\"")
+        .replace(['‘', '’', '‚', '‛'], "'")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct BlockId(pub usize);
@@ -52,6 +105,8 @@ pub enum BlockContent {
     },
     Table {
         rows: Vec<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        row_lines: Vec<usize>,
     },
     Code {
         language: Option<String>,

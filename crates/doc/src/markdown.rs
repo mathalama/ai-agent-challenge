@@ -28,7 +28,10 @@ impl DocumentParser for MarkdownParser {
         let mut completed = Vec::new();
         for (event, range) in Parser::new_ext(source, Options::ENABLE_TABLES).into_offset_iter() {
             match event {
-                Event::Start(tag) => start(tag, range, &mut pending),
+                Event::Start(tag) => {
+                    let line = line_at(range.start);
+                    start(tag, range, line, &mut pending);
+                }
                 Event::End(end) => finish(end, &mut pending, &mut completed),
                 Event::Text(text) | Event::Code(text) => push_text(&mut pending, &text),
                 Event::SoftBreak | Event::HardBreak => push_text(&mut pending, "\n"),
@@ -74,11 +77,14 @@ enum Pending {
         range: Range<usize>,
         content: BlockContent,
     },
-    Row(Vec<String>),
+    Row {
+        line: usize,
+        cells: Vec<String>,
+    },
     Cell(String),
 }
 
-fn start(tag: Tag<'_>, range: Range<usize>, pending: &mut Vec<Pending>) {
+fn start(tag: Tag<'_>, range: Range<usize>, line: usize, pending: &mut Vec<Pending>) {
     let end = tag.to_end();
     let content = match tag {
         Tag::Heading { level, .. } => BlockContent::Heading {
@@ -112,9 +118,15 @@ fn start(tag: Tag<'_>, range: Range<usize>, pending: &mut Vec<Pending>) {
             },
             text: String::new(),
         },
-        Tag::Table(_) => BlockContent::Table { rows: Vec::new() },
+        Tag::Table(_) => BlockContent::Table {
+            rows: Vec::new(),
+            row_lines: Vec::new(),
+        },
         Tag::TableHead | Tag::TableRow => {
-            pending.push(Pending::Row(Vec::new()));
+            pending.push(Pending::Row {
+                line,
+                cells: Vec::new(),
+            });
             return;
         }
         Tag::TableCell => {
@@ -137,7 +149,7 @@ fn finish(
 ) {
     let matches = match pending.last() {
         Some(Pending::Block { end: expected, .. }) => end == *expected,
-        Some(Pending::Row(_)) => matches!(end, TagEnd::TableHead | TagEnd::TableRow),
+        Some(Pending::Row { .. }) => matches!(end, TagEnd::TableHead | TagEnd::TableRow),
         Some(Pending::Cell(_)) => end == TagEnd::TableCell,
         None => false,
     };
@@ -154,18 +166,19 @@ fn finish(
             }
             completed.push((range, content));
         }
-        Pending::Row(row) => {
+        Pending::Row { line, cells } => {
             if let Some(Pending::Block {
-                content: BlockContent::Table { rows },
+                content: BlockContent::Table { rows, row_lines },
                 ..
             }) = pending.last_mut()
             {
-                rows.push(row);
+                rows.push(cells);
+                row_lines.push(line);
             }
         }
         Pending::Cell(cell) => {
-            if let Some(Pending::Row(row)) = pending.last_mut() {
-                row.push(cell);
+            if let Some(Pending::Row { cells, .. }) = pending.last_mut() {
+                cells.push(cell);
             }
         }
     }

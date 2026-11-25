@@ -1,8 +1,30 @@
 use async_trait::async_trait;
-use doc::BlockContent;
 use llm::generate_typed;
+use schemars::JsonSchema;
+use serde::Deserialize;
 
-use crate::{CheckPhase, Requirement, RunContext, Stage, pipeline::Result};
+use crate::{
+    CheckPhase, Criterion, Detector, Evidence, Finding, Question, RelatedId, RunContext, Scope,
+    Severity, Stage, pipeline::Result,
+};
+
+#[derive(Deserialize, JsonSchema)]
+struct FindingDraft {
+    requirement_id: Option<String>,
+    criterion: Criterion,
+    severity: Severity,
+    evidence: Vec<Evidence>,
+    explanation: String,
+    suggestion: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct QuestionDraft {
+    text: String,
+    why: String,
+    priority: Severity,
+    finding_ids: Vec<String>,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScaffoldStage {
@@ -66,12 +88,13 @@ impl Stage for ScaffoldStage {
         let prompt = self.prompt();
         match self {
             Self::Segment => {
-                // TODO(issue): извлечь все требования, их идентификаторы, части и точные цитаты.
-                let candidate = serde_json::to_string(&mock_candidate(ctx))?;
-                ctx.requirements = generate_typed(ctx.provider, name, prompt, candidate).await?;
+                let input = serde_json::to_string(&serde_json::json!({
+                    "title": ctx.document.title,
+                    "blocks": ctx.document.blocks,
+                }))?;
+                ctx.requirements = generate_typed(ctx.provider, name, prompt, input).await?;
             }
             Self::Facts => {
-                // TODO(issue): извлечь сущности, параметры и ограничения из требований.
                 ctx.facts = generate_typed(
                     ctx.provider,
                     name,
@@ -86,91 +109,107 @@ impl Stage for ScaffoldStage {
                 ctx.findings.extend(findings);
             }
             Self::RequirementChecks => {
-                // TODO(issue): реализовать проверки требования по ISO/IEC/IEEE 29148 и IEEE 830.
                 let findings = ctx.checks.run(CheckPhase::Requirement, ctx).await?;
                 ctx.findings.extend(findings);
+                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
+                    .await?;
             }
             Self::SetChecks => {
-                // TODO(issue): реализовать проверки набора по ISO/IEC/IEEE 29148 и IEEE 830.
                 let findings = ctx.checks.run(CheckPhase::Set, ctx).await?;
                 ctx.findings.extend(findings);
+                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
+                    .await?;
             }
             Self::Consistency => {
-                // TODO(issue): сопоставить факты и выявить противоречия между требованиями.
+                let input = serde_json::to_string(&serde_json::json!({
+                    "requirements": ctx.requirements,
+                    "facts": ctx.facts,
+                }))?;
+                self.find_with_model(ctx, input).await?;
             }
             Self::Ambiguity => {
-                // TODO(issue): выявить разные прочтения и размытые формулировки.
+                self.find_with_model(ctx, serde_json::to_string(&ctx.requirements)?)
+                    .await?;
             }
             Self::Verify => {
-                // TODO(issue): протоколировать отклонённые доказательства и поддержать страницы PDF.
-                let mut findings = std::mem::take(&mut ctx.findings);
-                for finding in &mut findings {
+                for finding in &mut ctx.findings {
                     finding.verified = !finding.evidence.is_empty()
                         && finding.evidence.iter().all(|evidence| {
-                            !evidence.quote.trim().is_empty()
-                                && ctx
-                                    .source_at(evidence.location)
-                                    .is_some_and(|source| source.contains(&evidence.quote))
+                            ctx.document
+                                .contains_quote(evidence.location, &evidence.quote)
                         });
                 }
-                ctx.findings = findings;
             }
             Self::Clarify => {
-                // TODO(issue): формировать приоритетные вопросы по подтверждённым замечаниям.
-                ctx.questions = generate_typed(
+                let verified: Vec<_> = ctx
+                    .findings
+                    .iter()
+                    .filter(|finding| finding.verified)
+                    .collect();
+                let questions: Vec<QuestionDraft> = generate_typed(
                     ctx.provider,
                     name,
                     prompt,
-                    serde_json::to_string(&ctx.findings)?,
+                    serde_json::to_string(&verified)?,
                 )
                 .await?;
+                ctx.questions.clear();
+                for question in questions {
+                    let related: Vec<_> = question
+                        .finding_ids
+                        .into_iter()
+                        .filter(|id| verified.iter().any(|finding| finding.id == *id))
+                        .map(RelatedId::Finding)
+                        .collect();
+                    if !related.is_empty() {
+                        ctx.questions.push(Question {
+                            id: format!("Q-{:03}", ctx.questions.len() + 1),
+                            text: question.text,
+                            why: question.why,
+                            priority: question.priority,
+                            related,
+                        });
+                    }
+                }
             }
         }
         Ok(())
     }
 }
 
-fn mock_candidate(ctx: &RunContext<'_>) -> Option<Requirement> {
-    let candidate = ctx
-        .document
-        .blocks
-        .iter()
-        .find_map(|block| {
-            let BlockContent::ListItem { text } = &block.content else {
-                return None;
-            };
-            let (id, body) = text.split_once(". ")?;
-            let (prefix, number) = id.split_once('-')?;
-            if prefix.is_empty()
-                || !prefix.chars().all(char::is_alphabetic)
-                || number.is_empty()
-                || !number.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                return None;
-            }
-            Some((block, Some(id.to_owned()), body))
-        })
-        .or_else(|| {
-            ctx.document
-                .blocks
-                .iter()
-                .find_map(|block| match &block.content {
-                    BlockContent::Paragraph { text } | BlockContent::ListItem { text }
-                        if !text.trim().is_empty() =>
-                    {
-                        Some((block, None, text.as_str()))
-                    }
-                    _ => None,
-                })
-        })?;
-    let (block, source_id, text) = candidate;
-    let quote = ctx.source_at(block.location)?.trim();
-    Some(Requirement {
-        id: "R-001".into(),
-        source_id,
-        text: text.into(),
-        quote: quote.into(),
-        location: block.location,
-        part: None,
-    })
+impl ScaffoldStage {
+    async fn find_with_model(self, ctx: &mut RunContext<'_>, input: String) -> Result<()> {
+        if ctx.requirements.is_empty() {
+            return Ok(());
+        }
+        let prompt = format!(
+            "{} Сохрани координаты и дословные цитаты из входных данных. Для замечания к отдельному требованию скопируй его id в requirement_id, для замечания к набору верни null. При отсутствии замечаний верни пустой массив.",
+            self.prompt()
+        );
+        let findings: Vec<FindingDraft> =
+            generate_typed(ctx.provider, self.name(), &prompt, input).await?;
+        ctx.findings
+            .extend(findings.into_iter().enumerate().map(|(index, draft)| {
+                let scope = draft
+                    .requirement_id
+                    .filter(|id| {
+                        ctx.requirements
+                            .iter()
+                            .any(|requirement| requirement.id == *id)
+                    })
+                    .map_or(Scope::Set, Scope::Requirement);
+                Finding {
+                    id: format!("{}-{:03}", self.name(), index + 1),
+                    scope,
+                    criterion: draft.criterion,
+                    severity: draft.severity,
+                    evidence: draft.evidence,
+                    explanation: draft.explanation,
+                    suggestion: draft.suggestion,
+                    detector: Detector::Llm(ctx.provider.model().into()),
+                    verified: false,
+                }
+            }));
+        Ok(())
+    }
 }

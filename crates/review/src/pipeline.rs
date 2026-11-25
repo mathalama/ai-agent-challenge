@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
-use doc::{Document, SourceSpan};
+use doc::Document;
 use llm::LlmProvider;
 use serde::Serialize;
 use thiserror::Error;
@@ -33,7 +33,6 @@ pub struct StageTrace {
 
 pub struct RunContext<'a> {
     pub document: Document,
-    pub source: &'a str,
     pub provider: &'a dyn LlmProvider,
     pub checks: &'a CheckRegistry,
     pub requirements: Vec<Requirement>,
@@ -41,19 +40,17 @@ pub struct RunContext<'a> {
     pub findings: Vec<Finding>,
     pub questions: Vec<Question>,
     pub trace: Vec<StageTrace>,
-    line_offsets: Vec<usize>,
+    pub(crate) checks_complete: bool,
 }
 
 impl<'a> RunContext<'a> {
     pub fn new(
         document: Document,
-        source: &'a str,
         provider: &'a dyn LlmProvider,
         checks: &'a CheckRegistry,
     ) -> Self {
         Self {
             document,
-            source,
             provider,
             checks,
             requirements: Vec::new(),
@@ -61,24 +58,8 @@ impl<'a> RunContext<'a> {
             findings: Vec::new(),
             questions: Vec::new(),
             trace: Vec::new(),
-            line_offsets: std::iter::once(0)
-                .chain(source.match_indices('\n').map(|(offset, _)| offset + 1))
-                .collect(),
+            checks_complete: false,
         }
-    }
-
-    pub fn source_at(&self, span: SourceSpan) -> Option<&str> {
-        if span.page.is_some() || span.start_line > span.end_line {
-            return None;
-        }
-        let start = *self.line_offsets.get(span.start_line.checked_sub(1)?)?;
-        self.line_offsets.get(span.end_line.checked_sub(1)?)?;
-        let end = self
-            .line_offsets
-            .get(span.end_line)
-            .copied()
-            .unwrap_or(self.source.len());
-        self.source.get(start..end)
     }
 }
 
@@ -90,25 +71,31 @@ pub trait Stage: Send + Sync {
 
 pub struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
+    full_review: bool,
 }
 
 impl Default for Pipeline {
     fn default() -> Self {
-        Self::new(
-            ScaffoldStage::ORDER
+        Self {
+            stages: ScaffoldStage::ORDER
                 .into_iter()
                 .map(|stage| Box::new(stage) as Box<dyn Stage>)
                 .collect(),
-        )
+            full_review: true,
+        }
     }
 }
 
 impl Pipeline {
     pub fn new(stages: Vec<Box<dyn Stage>>) -> Self {
-        Self { stages }
+        Self {
+            stages,
+            full_review: false,
+        }
     }
 
     pub async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
+        ctx.checks_complete = false;
         for stage in &self.stages {
             let started = Instant::now();
             let result = stage.run(ctx).await;
@@ -122,6 +109,12 @@ impl Pipeline {
                 source: Box::new(source),
             })?;
         }
+        ctx.checks_complete = self.full_review
+            && ctx.provider.model() != "mock"
+            && ctx.requirements.iter().all(|requirement| {
+                ctx.document
+                    .contains_quote(requirement.location, &requirement.quote)
+            });
         Ok(())
     }
 }
