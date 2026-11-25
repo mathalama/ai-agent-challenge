@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::{
-    Finding, ProgressEvent, Question, QuestionTopic, RelatedId, RunContext, pipeline::Result,
-    stages::has_cyrillic,
+    Evidence, Finding, ProgressEvent, Question, QuestionTopic, RelatedId, RunContext,
+    pipeline::Result, stages::has_cyrillic,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -22,6 +22,8 @@ struct QuestionDraft {
     topic: QuestionTopic,
     options: Vec<String>,
     finding_ids: Vec<String>,
+    #[serde(default)]
+    evidence: Vec<Evidence>,
 }
 
 pub(crate) async fn ask_questions(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> {
@@ -41,9 +43,7 @@ pub(crate) async fn ask_questions(ctx: &mut RunContext<'_>, prompt: &str) -> Res
         let input = serde_json::to_string(batch)?;
         match generate_typed::<Vec<QuestionDraft>>(ctx.provider, "clarify", prompt, input).await {
             Ok(response) => drafts.extend(response.into_iter().map(|mut draft| {
-                draft
-                    .finding_ids
-                    .retain(|id| batch.iter().any(|finding| finding.id == *id));
+                resolve_links(&mut draft, batch);
                 draft
             })),
             Err(error) if error.is_output_limit() => {
@@ -71,6 +71,44 @@ pub(crate) async fn ask_questions(ctx: &mut RunContext<'_>, prompt: &str) -> Res
     Ok(())
 }
 
+fn resolve_links(draft: &mut QuestionDraft, batch: &[&Finding]) {
+    let declared: BTreeSet<_> = draft
+        .finding_ids
+        .iter()
+        .filter(|id| batch.iter().any(|finding| finding.id == **id))
+        .cloned()
+        .collect();
+    let mentions: BTreeSet<_> = [&draft.text, &draft.why]
+        .into_iter()
+        .flat_map(|text| text.split(|ch: char| !ch.is_alphanumeric() && ch != '-' && ch != '_'))
+        .collect();
+    let cited = std::mem::take(&mut draft.evidence);
+    draft.finding_ids.clear();
+    for finding in batch {
+        let explicit = mentions.contains(finding.id.as_str())
+            || (cited.is_empty() && declared.len() == 1 && declared.contains(&finding.id));
+        let selected: Vec<_> = finding
+            .evidence
+            .iter()
+            .filter(|known| {
+                explicit
+                    || cited.iter().any(|item| {
+                        item.location == known.location
+                            && item
+                                .quote
+                                .split_whitespace()
+                                .eq(known.quote.split_whitespace())
+                    })
+            })
+            .cloned()
+            .collect();
+        if !selected.is_empty() {
+            draft.finding_ids.push(finding.id.clone());
+            draft.evidence.extend(selected);
+        }
+    }
+}
+
 fn build_questions(drafts: Vec<QuestionDraft>, verified: &[&Finding]) -> Result<Vec<Question>> {
     let findings: BTreeMap<_, _> = verified
         .iter()
@@ -94,6 +132,7 @@ fn build_questions(drafts: Vec<QuestionDraft>, verified: &[&Finding]) -> Result<
         if let Some(existing) = unique.get_mut(&key) {
             existing.finding_ids.extend(draft.finding_ids);
             existing.options.extend(draft.options);
+            existing.evidence.extend(draft.evidence);
         } else {
             unique.insert(key, draft);
         }
@@ -115,10 +154,7 @@ fn build_questions(drafts: Vec<QuestionDraft>, verified: &[&Finding]) -> Result<
             .take(3)
             .map(str::to_owned)
             .collect();
-        let mut evidence: Vec<_> = linked
-            .iter()
-            .flat_map(|finding| finding.evidence.iter().cloned())
-            .collect();
+        let mut evidence = draft.evidence;
         evidence.sort_by(|left, right| {
             let key = |span: doc::SourceSpan| (span.page, span.start_line, span.end_line);
             key(left.location)
@@ -132,7 +168,16 @@ fn build_questions(drafts: Vec<QuestionDraft>, verified: &[&Finding]) -> Result<
         let finding_keys: BTreeSet<_> = linked
             .iter()
             .map(|finding| {
-                let quotes: BTreeSet<_> = finding.evidence.iter().map(|item| &item.quote).collect();
+                let quotes: BTreeSet<_> = finding
+                    .evidence
+                    .iter()
+                    .filter(|item| {
+                        evidence.iter().any(|selected| {
+                            selected.location == item.location && selected.quote == item.quote
+                        })
+                    })
+                    .map(|item| &item.quote)
+                    .collect();
                 serde_json::to_string(&(finding.criterion, quotes))
             })
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -170,4 +215,87 @@ fn normalized(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use doc::SourceSpan;
+
+    use super::*;
+    use crate::{Criterion, Detector, Scope, Severity};
+
+    fn evidence(quote: &str, line: usize) -> Evidence {
+        Evidence {
+            quote: quote.into(),
+            location: SourceSpan {
+                start_line: line,
+                end_line: line,
+                page: Some(1),
+            },
+        }
+    }
+
+    fn finding(id: &str, evidence: Vec<Evidence>) -> Finding {
+        Finding {
+            id: id.into(),
+            scope: Scope::Set,
+            criterion: Criterion::Consistent,
+            additional_criteria: Vec::new(),
+            severity: Severity::High,
+            evidence,
+            explanation: "В требованиях указаны разные значения.".into(),
+            suggestion: None,
+            detector: Detector::Llm("set_checks:test".into()),
+            additional_detectors: Vec::new(),
+            merged_ids: Vec::new(),
+            fallback_evidence: false,
+            verified: true,
+        }
+    }
+
+    #[test]
+    fn question_keeps_only_findings_and_quotes_supported_by_its_response() {
+        let fr3 = evidence("FR-3. Код действует 15 минут.", 16);
+        let er2 = evidence("ER-2. Код устаревает через 10 минут.", 30);
+        let conflict = finding(
+            "set_checks-001",
+            vec![
+                fr3.clone(),
+                er2.clone(),
+                evidence("Срок указан в протоколе.", 35),
+            ],
+        );
+        let unrelated = finding(
+            "set_checks-002",
+            vec![evidence(
+                "FR-6. Максимальная сумма составляет 1000 тенге.",
+                18,
+            )],
+        );
+        let same_text_elsewhere = finding("set_checks-003", vec![evidence(&er2.quote, 40)]);
+        let response = serde_json::json!({
+            "text": "Каков срок действия QR-кода: 15 минут или 10 минут?",
+            "why": "От ответа зависит обработка просроченных платежей.",
+            "topic": "other",
+            "options": ["15 минут", "10 минут"],
+            "finding_ids": ["set_checks-001", "set_checks-002", "set_checks-003"],
+            "evidence": [fr3, er2, evidence("Подставная цитата", 18)],
+        });
+        let mut draft = serde_json::from_value(response).unwrap();
+        let batch = [&conflict, &unrelated, &same_text_elsewhere];
+        resolve_links(&mut draft, &batch);
+        let questions = build_questions(vec![draft], &batch).unwrap();
+        assert_eq!(questions.len(), 1);
+        assert!(
+            matches!(questions[0].related.as_slice(), [RelatedId::Finding(id)] if id == "set_checks-001")
+        );
+        assert_eq!(
+            questions[0]
+                .evidence
+                .iter()
+                .map(|item| (&item.quote, item.location))
+                .collect::<Vec<_>>(),
+            [(&fr3.quote, fr3.location), (&er2.quote, er2.location)]
+        );
+    }
 }

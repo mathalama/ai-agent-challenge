@@ -105,6 +105,7 @@ pub(crate) fn questions(input: &str) -> serde_json::Result<Value> {
                 "topic": scenario.topic,
                 "options": scenario.options,
                 "finding_ids": [finding["id"]],
+                "evidence": finding["evidence"],
             }))
         })
         .collect();
