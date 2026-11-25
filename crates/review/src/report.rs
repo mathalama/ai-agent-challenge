@@ -435,6 +435,8 @@ mod tests {
                         page,
                     },
                     part: None,
+                    section: None,
+                    table: None,
                 }
             });
         let mut high_single = finding("high-single", Severity::High, true);
