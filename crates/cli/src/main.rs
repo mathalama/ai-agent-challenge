@@ -25,7 +25,12 @@ use tracing_subscriber::EnvFilter;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Parser)]
-#[command(name = "tz-agent", version = AGENT_VERSION, about = "Локальный агент проверки ТЗ")]
+#[command(
+    name = "rs",
+    bin_name = "rs",
+    version = AGENT_VERSION,
+    about = "Локальный агент проверки требований"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

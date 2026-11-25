@@ -66,5 +66,5 @@ fn main() {
     {
         version.push_str("-dirty");
     }
-    println!("cargo:rustc-env=TZ_AGENT_VERSION={version}");
+    println!("cargo:rustc-env=AGENT_VERSION={version}");
 }

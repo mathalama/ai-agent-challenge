@@ -145,7 +145,7 @@ async fn review_readiness_requires_coverage_and_clear_serious_findings() {
         let document = ParserRegistry::default()
             .parse(
                 Path::new("input.md"),
-                "# ТЗ\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование".as_bytes(),
+                "# Документ требований\n\n* **Ф-1.** Первое требование\n\n* **Ф-2.** Второе требование".as_bytes(),
             )
             .unwrap();
         let provider = ReviewProvider(finding);

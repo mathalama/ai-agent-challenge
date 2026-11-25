@@ -12,4 +12,4 @@ pub use report::{
     JsonRenderer, MarkdownRenderer, Readiness, Report, ReportRenderer, ReportSummary,
 };
 
-pub const AGENT_VERSION: &str = env!("TZ_AGENT_VERSION");
+pub const AGENT_VERSION: &str = env!("AGENT_VERSION");

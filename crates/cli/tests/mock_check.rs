@@ -7,7 +7,7 @@ fn mock_produces_a_report_with_all_sections() {
     let report_path = output_dir.path().join("reports/report.md");
     let trace_path = output_dir.path().join("reports/trace.json");
 
-    let result = Command::new(env!("CARGO_BIN_EXE_tz-agent"))
+    let result = Command::new(env!("CARGO_BIN_EXE_rs"))
         .current_dir(output_dir.path())
         .env("LLM_REQUESTS_PER_MINUTE", "60000")
         .arg("check")
@@ -33,7 +33,7 @@ fn mock_produces_a_report_with_all_sections() {
         "## 4. Проверка набора требований",
         "## 5. Сводка",
         "## 6. Итог",
-        "## 7. Уточняющие вопросы автору ТЗ",
+        "## 7. Уточняющие вопросы автору документа",
     ] {
         remaining = remaining
             .split_once(heading)

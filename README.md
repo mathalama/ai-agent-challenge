@@ -4,21 +4,41 @@ Rust CLI для статической проверки требований к 
 
 ## Запуск
 
-Установите стабильный Rust с поддержкой Edition 2024, настройте Gemini по инструкции ниже и запустите CLI из корня репозитория. [Установка Rust](https://www.rust-lang.org/tools/install)
+Установите стабильный Rust с поддержкой Edition 2024 и настройте Gemini по инструкции ниже. [Установка Rust](https://www.rust-lang.org/tools/install)
 
-```sh
-cargo run -p cli -- check samples/requirements.md -o reports/report.md
-```
-
-Команда отправляет разобранный текст в Gemini и создаёт `reports/report.md`. Для локального демонстрационного прогона без ключа добавьте `--provider mock`. Файл `samples/requirements.md` взят из репозитория задания. [Исходный документ организаторов](https://github.com/BCC-HUB/ai-requirements-validator-task/blob/main/docs/requirements.md)
+Из корня репозитория запустите через Cargo.
 
 ```text
-tz-agent check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|mock] [--no-cache] [--trace <PATH>]
-tz-agent ask <INPUT>
-tz-agent eval [--golden eval/]
+cargo run -p cli -- check <INPUT> -o <OUTPUT>
 ```
 
-По умолчанию CLI использует `gemini` и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команды `ask` и `eval` находятся в разработке.
+Чтобы установить команду `rs`, выполните из корня репозитория.
+
+```sh
+cargo install --path crates/cli
+```
+
+После установки запустите проверку командой.
+
+```text
+rs check <INPUT> -o <OUTPUT>
+```
+
+Подставьте путь к документу требований вместо `<INPUT>` и путь к отчёту вместо `<OUTPUT>`. Для локального демонстрационного прогона без ключа используйте команду.
+
+```sh
+cargo run -p cli -- check samples/requirements.md -o reports/report.md --provider mock
+```
+
+Команда создаёт `reports/report.md`. Файл `samples/requirements.md` взят из репозитория задания. [Исходный документ организаторов](https://github.com/BCC-HUB/ai-requirements-validator-task/blob/main/docs/requirements.md)
+
+```text
+rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|mock] [--no-cache] [--trace <PATH>]
+rs ask <INPUT>
+rs eval [--golden eval/]
+```
+
+По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команды `ask` и `eval` находятся в разработке.
 
 ## Настройка Gemini
 
@@ -39,7 +59,7 @@ segment → facts → rules → requirement_checks → set_checks
 | `doc` | Модель документа, координаты блоков, реестр парсеров |
 | `llm` | Контракт провайдера, mock, HTTP-клиент Gemini, кэш, повторы, лимит и трасса |
 | `review` | Доменные типы, стадии и проверки, сводка и форматы отчёта |
-| `cli` | Конфигурация, команды `tz-agent`, чтение и запись файлов |
+| `cli` | Конфигурация, команды `rs`, чтение и запись файлов |
 
 [Архитектура](docs/architecture.md) · [Решения](docs/decisions.md)
 

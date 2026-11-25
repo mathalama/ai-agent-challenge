@@ -157,7 +157,7 @@ impl ReportRenderer for MarkdownRenderer {
             );
         }
 
-        output.push_str("\n## 7. Уточняющие вопросы автору ТЗ\n\n");
+        output.push_str("\n## 7. Уточняющие вопросы автору документа\n\n");
         if report.questions.is_empty() {
             output.push_str("Вопросы отсутствуют.\n");
         }
