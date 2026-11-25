@@ -58,8 +58,8 @@ fn mock_fixture_matches_current_report() {
         assert!(passport.remove("date").is_some());
         assert!(passport.remove("agent_version").is_some());
     }
-    assert!(
-        actual == fixture,
+    assert_eq!(
+        actual, fixture,
         "Обновите mock-фикстуру командой из docs/api/README.md"
     );
 }
