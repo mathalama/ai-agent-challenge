@@ -44,6 +44,8 @@ fn mock_produces_a_report_with_all_sections() {
     assert!(report.contains("R-001") && report.contains("Ф-1"));
     assert!(report.contains("> Ф-1. Держатель активной карты"));
     assert!(report.contains("Нужно завершить проверки"));
+    assert!(report.contains("Готовность не подтверждена"));
+    assert!(!report.contains("можно начинать"));
     assert!(report.contains("Вопросы отсутствуют."));
 
     let trace: serde_json::Value =

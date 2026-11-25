@@ -131,16 +131,41 @@ impl LlmProvider for ReviewProvider {
 }
 
 #[tokio::test]
-async fn review_readiness_requires_coverage_and_clear_serious_findings() {
-    for (finding, expected) in [
-        (None, "ready"),
-        (Some((Severity::High, "Первое требование")), "blocked"),
-        (Some((Severity::Critical, "Первое требование")), "blocked"),
+async fn review_readiness_requires_the_rules_stage_to_run_registered_checks() {
+    for (rules_phase, finding, expected) in [
+        (None, None, "checks_incomplete"),
+        (Some(CheckPhase::Set), None, "checks_incomplete"),
         (
-            Some((Severity::Critical, "Вымышленная цитата")),
+            None,
+            Some((Severity::High, "Первое требование")),
             "checks_incomplete",
         ),
-        (Some((Severity::Medium, "Первое требование")), "ready"),
+        (Some(CheckPhase::Rules), None, "ready"),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::Low, "Первое требование")),
+            "ready",
+        ),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::High, "Первое требование")),
+            "blocked",
+        ),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::Critical, "Вымышленная цитата")),
+            "ready",
+        ),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::Medium, "Первое требование")),
+            "blocked",
+        ),
+        (
+            Some(CheckPhase::Rules),
+            Some((Severity::Critical, "Первое требование")),
+            "blocked",
+        ),
     ] {
         let document = ParserRegistry::default()
             .parse(
@@ -149,7 +174,10 @@ async fn review_readiness_requires_coverage_and_clear_serious_findings() {
             )
             .unwrap();
         let provider = ReviewProvider(finding);
-        let checks = CheckRegistry::default();
+        let mut checks = CheckRegistry::default();
+        if let Some(phase) = rules_phase {
+            checks.register(EmptyCheck(phase));
+        }
         let mut ctx = RunContext::new(document, &provider, &checks);
         Pipeline::default().run(&mut ctx).await.unwrap();
         let passport = RunPassport {
@@ -160,5 +188,18 @@ async fn review_readiness_requires_coverage_and_clear_serious_findings() {
         };
         let readiness: Readiness = Report::from_run(ctx, passport).readiness;
         assert_eq!(serde_json::to_value(readiness).unwrap(), expected);
+    }
+}
+
+struct EmptyCheck(CheckPhase);
+
+#[async_trait]
+impl Check for EmptyCheck {
+    fn phase(&self) -> CheckPhase {
+        self.0
+    }
+
+    async fn run(&self, _ctx: &RunContext<'_>) -> StageResult<Vec<Finding>> {
+        Ok(Vec::new())
     }
 }

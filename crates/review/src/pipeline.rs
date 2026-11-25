@@ -40,6 +40,7 @@ pub struct RunContext<'a> {
     pub findings: Vec<Finding>,
     pub questions: Vec<Question>,
     pub trace: Vec<StageTrace>,
+    pub(crate) rules_completed: bool,
     pub(crate) checks_complete: bool,
 }
 
@@ -58,6 +59,7 @@ impl<'a> RunContext<'a> {
             findings: Vec::new(),
             questions: Vec::new(),
             trace: Vec::new(),
+            rules_completed: false,
             checks_complete: false,
         }
     }
@@ -95,6 +97,7 @@ impl Pipeline {
     }
 
     pub async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
+        ctx.rules_completed = false;
         ctx.checks_complete = false;
         for stage in &self.stages {
             let started = Instant::now();
@@ -110,6 +113,7 @@ impl Pipeline {
             })?;
         }
         ctx.checks_complete = self.full_review
+            && ctx.rules_completed
             && ctx.provider.model() != "mock"
             && ctx.requirements.iter().all(|requirement| {
                 ctx.document
@@ -140,6 +144,10 @@ pub struct CheckRegistry {
 impl CheckRegistry {
     pub fn register(&mut self, check: impl Check + 'static) {
         self.checks.push(Box::new(check));
+    }
+
+    pub(crate) fn has_checks(&self, phase: CheckPhase) -> bool {
+        self.checks.iter().any(|check| check.phase() == phase)
     }
 
     pub async fn run(&self, phase: CheckPhase, ctx: &RunContext<'_>) -> Result<Vec<Finding>> {
