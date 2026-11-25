@@ -1,0 +1,128 @@
+{
+  "document": "../samples/requirements.md",
+  "title": "Уведомление о расходах по карте",
+  "defects": [
+    {
+      "id": "D-01",
+      "requirement": "Ф-3, Ф-4",
+      "criterion": "consistent",
+      "severity": "critical",
+      "lines": [39, 40],
+      "description": "Противоречие между Ф-3 (максимум один push на карту за календарный месяц) и Ф-4 (после изменения порога следующее достижение вызывает push независимо от истории предыдущей настройки)."
+    },
+    {
+      "id": "D-02",
+      "requirement": "Ф-2, Критерии приемки",
+      "criterion": "consistent",
+      "severity": "critical",
+      "lines": [38, 64],
+      "description": "Противоречие между Ф-2 (месяц определяется по дате совершения покупки) и критерием приёмки (покупка 31 января, проведённая 1 февраля, увеличивает февральский счётчик вместо январского)."
+    },
+    {
+      "id": "D-03",
+      "requirement": "Общие параметры / REST type",
+      "criterion": "correct",
+      "acceptable_criteria": ["conforming"],
+      "severity": "high",
+      "lines": [104, 109],
+      "description": "Для изменяющей операции сохранения порога (/alerts/saveLimit) указан HTTP-метод GET вместо POST/PUT/PATCH."
+    },
+    {
+      "id": "D-04",
+      "requirement": "Ответ, Статусы / 200",
+      "criterion": "consistent",
+      "acceptable_criteria": ["correct"],
+      "severity": "high",
+      "lines": [121, 151, 155, 165, 171],
+      "description": "При ошибке валидации суммы возвращается HTTP 200 (Successful — Created) с телом result=ERROR, что противоречит правилу «200 или 201 — успешный, 400/401 и далее — неуспешный»."
+    },
+    {
+      "id": "D-05",
+      "requirement": "Статусы / 403, 404",
+      "criterion": "consistent",
+      "acceptable_criteria": ["complete"],
+      "severity": "high",
+      "lines": [175, 188, 189, 190],
+      "description": "В перечне статусов объявлен 403 Forbidden, но в его же описании для чужой карты указан возврат 404, который отсутствует в списке статусов."
+    },
+    {
+      "id": "D-06",
+      "requirement": "Требования к данным",
+      "criterion": "consistent",
+      "acceptable_criteria": ["complete", "unambiguous"],
+      "severity": "high",
+      "lines": [49],
+      "description": "Сумма покупки хранится в тиынах, а порог — в тенге; не заданы правила пересчёта и округления при сравнении с порогом."
+    },
+    {
+      "id": "D-07",
+      "requirement": "Query-параметры, Ответ / amount, enabled",
+      "criterion": "consistent",
+      "severity": "high",
+      "lines": [143, 144, 156, 157, 167],
+      "description": "Расхождение типов полей между запросом и ответом: amount и enabled в Query-параметрах имеют тип integer, а в ответе и JSON-примере — string."
+    },
+    {
+      "id": "D-08",
+      "requirement": "Требования к тестированию",
+      "criterion": "set_complete",
+      "severity": "medium",
+      "lines": [54, 56, 57],
+      "description": "Раздел тестирования требований пуст и содержит только заглушку «заполняются тестировщиками»."
+    },
+    {
+      "id": "D-09",
+      "requirement": "Ревью требований, Блок согласующих",
+      "criterion": "conforming",
+      "acceptable_criteria": ["set_complete", "traceable", "modifiable"],
+      "severity": "medium",
+      "lines": [68, 87, 91],
+      "description": "Не заполнены версия и дата документа, чек-лист ревью не отмечен, а блок согласующих содержит пустую строку."
+    },
+    {
+      "id": "D-10",
+      "requirement": "Общие параметры / Request URL, Swagger",
+      "criterion": "complete",
+      "acceptable_criteria": ["set_complete"],
+      "severity": "medium",
+      "lines": [108, 110],
+      "description": "Не указан Prod URL (стоит «—») и отсутствует ссылка на Swagger (стоит «—»)."
+    },
+    {
+      "id": "D-11",
+      "requirement": "Нефункциональные требования",
+      "criterion": "verifiable",
+      "acceptable_criteria": ["unambiguous", "complete"],
+      "severity": "medium",
+      "lines": [46],
+      "description": "Требование «в течение минуты после получения события» не содержит измеримых условий (перцентиль, целевая нагрузка, поведение при недоступности сервиса push)."
+    },
+    {
+      "id": "D-12",
+      "requirement": "Sequence Diagram",
+      "criterion": "set_complete",
+      "acceptable_criteria": ["complete"],
+      "severity": "high",
+      "lines": [43],
+      "description": "Предусмотрена передача последних четырёх цифр карты и суммы в сервис push-уведомлений без требований информационной безопасности (маскирование, защита канала, отображение на экране блокировки)."
+    },
+    {
+      "id": "D-13",
+      "requirement": "Требования к интеграции, Общие параметры / Description",
+      "criterion": "set_complete",
+      "acceptable_criteria": ["consistent", "complete"],
+      "severity": "high",
+      "lines": [52, 103],
+      "description": "В Description смешаны сохранение и чтение порога, а сам метод чтения настроек, упомянутый в требованиях к интеграции, в спецификации REST API не описан."
+    },
+    {
+      "id": "D-14",
+      "requirement": "Request body",
+      "criterion": "consistent",
+      "acceptable_criteria": ["correct"],
+      "severity": "medium",
+      "lines": [147, 148],
+      "description": "Для метода без тела запроса (GET) задан заголовок Content-Type: application/json."
+    }
+  ]
+}
