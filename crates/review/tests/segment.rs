@@ -57,6 +57,12 @@ fn extracts_requirement_source_ids_deterministically() {
         "200. Ответ в случае успешного выполнения метода.",
         "1. Проверить пользовательскую сессию.",
         "Система реализует правило Ф-1 для карт KZT.",
+        "Лимит применяется аналогично Ф-1 — по календарному месяцу.",
+        "Соответствует требованию Ф-1: проверять сумму.",
+        "Как в Ф-2 — считать по Алматы.",
+        "Требования НФ-1 – НФ-5",
+        "НФ-1 – НФ-5. Нефункциональные требования",
+        "Ф-1…Ф-4",
         "См. Ф-1: подробности выше.",
         "Согласно Ф-2, месяц определяется по дате покупки.",
         "Ф-1.a некорректный суффикс",
@@ -188,9 +194,13 @@ fn filters_numbered_metadata_tables_without_dropping_domain_tables() {
     let source = concat!(
         "# Спецификация платежей\n\n",
         "## 1. Общие сведения\n\n",
-        "| Поле | Значение |\n",
+        "| Наименование | Значение |\n",
         "| --- | --- |\n",
         "| Продукт | Мобильный банк |\n\n",
+        "## 1.1. Паспорт документа\n\n",
+        "| Реквизит | Значение |\n",
+        "| --- | --- |\n",
+        "| Версия | 1.0 |\n\n",
         "## 2. Согласование платежа\n\n",
         "| Сумма | Роль | Срок |\n",
         "| --- | --- | --- |\n",
@@ -223,9 +233,9 @@ fn filters_numbered_metadata_tables_without_dropping_domain_tables() {
         requirements[0].section.as_deref(),
         Some("2. Согласование платежа")
     );
-    assert_eq!(requirements[0].table.as_ref().unwrap().index, 2);
+    assert_eq!(requirements[0].table.as_ref().unwrap().index, 3);
     assert_eq!(requirements[1].section.as_deref(), Some("3. Ревью заявки"));
-    assert_eq!(requirements[1].table.as_ref().unwrap().index, 3);
+    assert_eq!(requirements[1].table.as_ref().unwrap().index, 4);
 
     // Заголовок «Часть ответа с ошибками» — раздел, а не часть документа (A/B).
     assert_eq!(requirements[2].part, None);
@@ -233,7 +243,7 @@ fn filters_numbered_metadata_tables_without_dropping_domain_tables() {
         requirements[2].section.as_deref(),
         Some("4. Часть ответа с ошибками")
     );
-    assert_eq!(requirements[2].table.as_ref().unwrap().index, 4);
+    assert_eq!(requirements[2].table.as_ref().unwrap().index, 5);
 }
 
 #[test]
@@ -433,6 +443,11 @@ async fn segment_stage_extracts_id_from_heading_and_mid_sentence() {
                         "text": "Требование Ф-5: сумма не превышает дневной лимит.",
                         "quote": "Требование Ф-5: сумма не превышает дневной лимит.",
                         "location": { "start_line": 7, "end_line": 7, "page": null }
+                    },
+                    {
+                        "text": "Лимит применяется аналогично Ф-1 — по календарному месяцу.",
+                        "quote": "Лимит применяется аналогично Ф-1 — по календарному месяцу.",
+                        "location": { "start_line": 11, "end_line": 11, "page": null }
                     }
                 ])
             } else {
@@ -450,7 +465,9 @@ async fn segment_stage_extracts_id_from_heading_and_mid_sentence() {
         "# Требования\n\n",
         "#### ФТ-1.2 Расчёт лимита\n\n",
         "Система рассчитывает лимит по календарному месяцу.\n\n",
-        "Требование Ф-5: сумма не превышает дневной лимит.\n",
+        "Требование Ф-5: сумма не превышает дневной лимит.\n\n",
+        "#### Требования НФ-1 – НФ-5\n\n",
+        "Лимит применяется аналогично Ф-1 — по календарному месяцу.\n",
     );
     let document = ParserRegistry::default()
         .parse(Path::new("ids.md"), source.as_bytes())
@@ -459,9 +476,10 @@ async fn segment_stage_extracts_id_from_heading_and_mid_sentence() {
     let mut ctx = RunContext::new(document, &HeadingIdProvider, &checks);
     Pipeline::default().run(&mut ctx).await.unwrap();
 
-    assert_eq!(ctx.requirements.len(), 2);
+    assert_eq!(ctx.requirements.len(), 3);
     assert_eq!(ctx.requirements[0].source_id.as_deref(), Some("ФТ-1.2"));
     assert_eq!(ctx.requirements[1].source_id.as_deref(), Some("Ф-5"));
+    assert_eq!(ctx.requirements[2].source_id, None);
 }
 
 #[tokio::test]

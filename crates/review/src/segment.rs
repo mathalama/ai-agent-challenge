@@ -37,7 +37,7 @@ fn extract_source_id_at_start(text: &str) -> Option<String> {
         rest = after_num.trim_start();
     }
 
-    parse_id_at(rest, true)
+    parse_id_at(rest)
 }
 
 fn extract_source_id_mid_sentence(text: &str) -> Option<String> {
@@ -56,16 +56,12 @@ fn extract_source_id_mid_sentence(text: &str) -> Option<String> {
                 .next_back()
                 .is_some_and(|prev| prev.is_whitespace() || matches!(prev, '(' | '[' | '«' | '"'));
 
-        if at_word_start && words_seen > 0 {
-            let is_reference = is_reference_word(&prev_word);
-            if !is_reference {
-                // Проверяем ID после вводного ярлыка в начале фразы (до 3 слов, например «Требование Ф-5: ...»)
-                // либо явно объявленный ID с двоеточием/тире/скобками.
-                let require_explicit_decl = words_seen > 3 || !is_intro_label(&prev_word);
-                if let Some(id) = parse_id_at(slice, !require_explicit_decl) {
-                    return Some(id);
-                }
-            }
+        if at_word_start
+            && (1..=3).contains(&words_seen)
+            && is_intro_label(&prev_word)
+            && let Some(id) = parse_id_at(slice)
+        {
+            return Some(id);
         }
 
         // Пропускаем текущее слово для отслеживания предыдущего слова и позиции.
@@ -82,12 +78,15 @@ fn extract_source_id_mid_sentence(text: &str) -> Option<String> {
             .to_lowercase();
         if !prev_word.is_empty() {
             words_seen += 1;
+            if words_seen > 3 {
+                break;
+            }
         }
     }
     None
 }
 
-fn parse_id_at(input: &str, allow_loose_boundary: bool) -> Option<String> {
+fn parse_id_at(input: &str) -> Option<String> {
     let mut rest = trim_leading_emphasis(input);
     let closing = match rest.chars().next()? {
         '[' => {
@@ -101,6 +100,30 @@ fn parse_id_at(input: &str, allow_loose_boundary: bool) -> Option<String> {
         _ => None,
     };
 
+    let (id, after_id) = scan_id_token(rest)?;
+    if let Some(expected_close) = closing {
+        let trimmed = trim_leading_emphasis(after_id.trim_start());
+        if !trimmed.starts_with(expected_close) {
+            return None;
+        }
+        let after_close = &trimmed[expected_close.len_utf8()..];
+        if after_close
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric)
+            || is_id_range_continuation(after_close)
+        {
+            return None;
+        }
+    } else if is_id_range_continuation(after_id) || !has_valid_id_boundary(after_id) {
+        return None;
+    }
+
+    Some(id)
+}
+
+fn scan_id_token(input: &str) -> Option<(String, &str)> {
+    let mut rest = input;
     let mut prefix_end = 0;
     let mut prefix_chars = 0usize;
     for (index, ch) in rest.char_indices() {
@@ -135,31 +158,25 @@ fn parse_id_at(input: &str, allow_loose_boundary: bool) -> Option<String> {
     let number = &rest[..number_len];
     rest = &rest[number_len..];
 
-    if let Some(expected_close) = closing {
-        let trimmed = trim_leading_emphasis(rest.trim_start());
-        if !trimmed.starts_with(expected_close) {
-            return None;
-        }
-        let after_close = &trimmed[expected_close.len_utf8()..];
-        if after_close
-            .chars()
-            .next()
-            .is_some_and(char::is_alphanumeric)
-        {
-            return None;
-        }
-        if !allow_loose_boundary && !starts_with_declaration_delimiter(after_close) {
-            return None;
-        }
-    } else if allow_loose_boundary {
-        if !has_valid_id_boundary(rest) {
-            return None;
-        }
-    } else if !starts_with_declaration_delimiter(rest) {
-        return None;
-    }
+    Some((format!("{prefix}{normalized_sep}{number}"), rest))
+}
 
-    Some(format!("{prefix}{normalized_sep}{number}"))
+fn is_id_range_continuation(rest: &str) -> bool {
+    let rest = trim_leading_emphasis(rest).trim_start();
+    let after_connector = rest
+        .strip_prefix('–')
+        .or_else(|| rest.strip_prefix('—'))
+        .or_else(|| rest.strip_prefix('-'))
+        .or_else(|| rest.strip_prefix('…'))
+        .or_else(|| rest.strip_prefix("..."))
+        .or_else(|| rest.strip_prefix(".."));
+    let Some(after_connector) = after_connector else {
+        return false;
+    };
+    let next = trim_leading_emphasis(after_connector.trim_start())
+        .trim_start_matches(['[', '('])
+        .trim_start();
+    scan_id_token(next).is_some()
 }
 
 fn strip_list_bullet(text: &str) -> Option<&str> {
@@ -271,27 +288,6 @@ fn has_valid_id_boundary(rest: &str) -> bool {
     }
 }
 
-fn starts_with_declaration_delimiter(rest: &str) -> bool {
-    let rest = trim_leading_emphasis(rest);
-    if let Some(first) = rest.chars().next() {
-        if matches!(first, ':' | '—' | '–') {
-            return true;
-        }
-        if first.is_whitespace() {
-            let after_ws = rest.trim_start();
-            if let Some(after_dash) = after_ws
-                .strip_prefix('-')
-                .or_else(|| after_ws.strip_prefix('—'))
-                .or_else(|| after_ws.strip_prefix('–'))
-                && after_dash.chars().next().is_some_and(char::is_whitespace)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn is_intro_label(word: &str) -> bool {
     matches!(
         word,
@@ -308,34 +304,6 @@ fn is_intro_label(word: &str) -> bool {
             | "rule"
             | "item"
             | "case"
-    )
-}
-
-fn is_reference_word(word: &str) -> bool {
-    matches!(
-        word,
-        "см" | "согласно"
-            | "противоречит"
-            | "против"
-            | "ссылка"
-            | "ссылается"
-            | "к"
-            | "по"
-            | "из"
-            | "на"
-            | "от"
-            | "в"
-            | "во"
-            | "о"
-            | "об"
-            | "для"
-            | "при"
-            | "see"
-            | "per"
-            | "ref"
-            | "from"
-            | "in"
-            | "to"
     )
 }
 
@@ -612,7 +580,8 @@ fn is_non_requirement_table(
         .map(|header| header.trim().to_lowercase())
         .collect();
 
-    // 1. Паспорт / общие сведения документа (включая нумерованные «1. Общие сведения»).
+    // 1. Паспорт / общие сведения документа (включая нумерованные «1. Общие сведения»
+    // и любые варианты колонок вроде «Наименование | Значение» или «Реквизит | Значение»).
     let is_passport_heading = matches!(
         title.as_deref(),
         Some(
@@ -624,7 +593,7 @@ fn is_non_requirement_table(
                 | "общая информация"
         )
     );
-    if is_passport_heading && is_key_value_headers(headers) {
+    if is_passport_heading {
         return true;
     }
 
