@@ -103,4 +103,19 @@ fn quote_verification_uses_table_rows_and_page_coordinates() {
         },
         "Value"
     ));
+
+    let multi = ParserRegistry::default()
+        .parse(
+            Path::new("multi.md"),
+            b"| A | B | C |\n| --- | --- | --- |\n| one | | three |",
+        )
+        .unwrap();
+    let row = SourceSpan {
+        start_line: 3,
+        end_line: 3,
+        page: None,
+    };
+    assert!(multi.contains_quote(row, "one | three"));
+    assert!(multi.contains_quote(row, "one | | three"));
+    assert!(!multi.contains_quote(row, "A | B | C"));
 }

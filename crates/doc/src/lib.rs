@@ -38,8 +38,16 @@ impl Document {
             match &block.content {
                 BlockContent::Table { rows, row_lines } => {
                     rows.iter().enumerate().any(|(index, row)| {
+                        let non_empty: Vec<_> = row
+                            .iter()
+                            .map(|cell| cell.trim())
+                            .filter(|cell| !cell.is_empty())
+                            .collect();
                         (covers_block || row_lines.get(index).is_some_and(|line| includes(*line)))
-                            && (row.iter().any(|cell| matches(cell)) || matches(&row.join(" ")))
+                            && (row.iter().any(|cell| matches(cell))
+                                || matches(&row.join(" "))
+                                || matches(&row.join(" | "))
+                                || matches(&non_empty.join(" | ")))
                     })
                 }
                 BlockContent::Heading { text, .. }
