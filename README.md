@@ -34,11 +34,13 @@ cargo run -p cli -- check samples/requirements.md -o reports/report.md --provide
 
 ```text
 rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|mock] [--no-cache] [--trace <PATH>]
-rs ask <INPUT>
+rs ask <INPUT> [-o <PATH>] [--provider gemini|mock] [--no-cache]
 rs eval [--golden eval/]
 ```
 
-По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команды `ask` и `eval` находятся в разработке.
+По умолчанию CLI отправляет разобранный текст документа в Gemini и записывает отчёт в `reports/report.md` или `reports/report.json` в зависимости от формата. `--trace <PATH>` пишет JSON с порядком и длительностью выполнения стадий, а также расходом токенов по вызовам LLM. `--no-cache` отключает чтение и запись кэша `.cache/llm/`. Команда `eval` находится в разработке.
+
+`rs ask` показывает открытые вопросы по одному. Можно ввести номер варианта, написать свой ответ или нажать Enter для пропуска. Ответы сразу сохраняются по ID вопроса в `reports/report.answers.json`. Для собственного пути отчёта передайте одинаковый `-o` в обе команды. Например, для `reports/review.md` файл ответов — `reports/review.answers.json`. Повторный `rs check` скрывает отвеченные вопросы и отмечает находку закрытой, когда отвечены все связанные с ней вопросы.
 
 ## Настройка Gemini
 
