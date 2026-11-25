@@ -214,7 +214,12 @@ fn should_join_hyphenated(line: &str, next: &str, left: char, right: char) -> bo
         "сколько",
     ];
     let has_particle = suffix == "то" && pronouns_and_adverbs.contains(&prefix.as_str());
-    !(fixed_prefix || fixed_pair || has_particle)
+    let is_po_adverb = prefix == "по"
+        && !matches!(suffix, "тому" | "этому" | "чему" | "сему")
+        && ["ому", "ему", "ски", "цки", "ьи"]
+            .iter()
+            .any(|ending| suffix.ends_with(ending));
+    !(fixed_prefix || fixed_pair || has_particle || is_po_adverb)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -91,7 +91,7 @@ fn should_merge(left: &Finding, right: &Finding, requirements: &[Requirement]) -
         spans_overlap(a, b)
             && if mixed_verification {
                 numeric_values(&a.quote).eq(numeric_values(&b.quote))
-                    && (similar_sentences(&a.quote, &b.quote)
+                    && (same_sentence(&a.quote, &b.quote)
                         || (paired_conflict && texts_overlap(&a.quote, &b.quote)))
             } else if left.scope != right.scope {
                 normalize_text(&a.quote) == normalize_text(&b.quote)
@@ -163,7 +163,7 @@ fn can_absorb_unverified(left: &Finding, right: &Finding, paired_conflict: bool)
     pending.severity <= verified.severity
         && (paired_conflict
             || (shares_criterion(left, right)
-                && similar_sentences(&verified.explanation, &pending.explanation)))
+                && same_sentence(&verified.explanation, &pending.explanation)))
 }
 
 fn shares_criterion(left: &Finding, right: &Finding) -> bool {
@@ -228,13 +228,17 @@ fn spans_overlap(left: &Evidence, right: &Evidence) -> bool {
 }
 
 pub(crate) fn normalize_text(text: &str) -> String {
+    normalize_spacing_and_quotes(text)
+        .to_lowercase()
+        .replace('ё', "е")
+}
+
+fn normalize_spacing_and_quotes(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .replace(['«', '»', '“', '”', '„', '‟', '‹', '›'], "\"")
         .replace(['‘', '’', '‚', '‛'], "'")
-        .to_lowercase()
-        .replace('ё', "е")
 }
 
 fn texts_overlap(left: &str, right: &str) -> bool {
@@ -331,7 +335,7 @@ fn merge_into(target: &mut Finding, other: Finding) {
 
 fn append_distinct_sentences(target: &mut String, addition: &str) {
     for sentence in sentences(addition) {
-        if sentences(target).any(|existing| similar_sentences(existing, sentence)) {
+        if sentences(target).any(|existing| same_sentence(existing, sentence)) {
             continue;
         }
         if !target.trim().is_empty() {
@@ -401,44 +405,17 @@ fn introduces_example_or_address(word: &str) -> bool {
     matches!(word, "г" | "ул" | "напр")
 }
 
-fn abbreviation_values(text: &str) -> impl Iterator<Item = &str> {
-    let words = text.split_whitespace();
-    words
-        .clone()
-        .zip(words.skip(1))
-        .filter_map(|(marker, value)| {
-            marker
-                .strip_suffix('.')
-                .filter(|word| introduces_example_or_address(word))
-                .map(|_| value.trim_matches(|ch: char| !ch.is_alphanumeric()))
-        })
-}
-
 fn numeric_values(text: &str) -> impl Iterator<Item = &str> {
     text.split(|ch: char| !ch.is_numeric())
         .filter(|value| !value.is_empty())
 }
 
-fn similar_sentences(left: &str, right: &str) -> bool {
-    let left = normalize_text(left);
-    let right = normalize_text(right);
-    if left.trim_end_matches(['.', '!', '?']) == right.trim_end_matches(['.', '!', '?']) {
-        return true;
-    }
-    let negated = |text: &str| {
-        text.split(|ch: char| !ch.is_alphanumeric())
-            .any(|word| matches!(word, "не" | "без" | "нельзя" | "запрещено"))
-    };
-    if negated(&left) != negated(&right)
-        || numeric_values(&left).ne(numeric_values(&right))
-        || abbreviation_values(&left).ne(abbreviation_values(&right))
-    {
-        return false;
-    }
-    let left: HashSet<_> = content_words(&left).into_iter().collect();
-    let right: HashSet<_> = content_words(&right).into_iter().collect();
-    let shared = left.intersection(&right).count();
-    shared >= 3 && shared * 4 >= left.len().max(right.len()) * 3
+fn same_sentence(left: &str, right: &str) -> bool {
+    let left = normalize_spacing_and_quotes(left);
+    let right = normalize_spacing_and_quotes(right);
+    let left = left.trim_end_matches(['.', '!', '?']);
+    let right = right.trim_end_matches(['.', '!', '?']);
+    !left.is_empty() && left == right
 }
 
 fn merge_evidence(target: &mut Vec<Evidence>, incoming: Vec<Evidence>) {
@@ -539,10 +516,19 @@ mod tests {
     }
 
     #[test]
+    fn keeps_sentences_that_differ_by_a_method_name() {
+        let payment = "Указать формат ответа для метода payment.";
+        let refund = "Указать формат ответа для метода refund.";
+        let mut suggestion = payment.to_owned();
+        append_distinct_sentences(&mut suggestion, refund);
+        assert_eq!(suggestion, format!("{payment} {refund}"));
+    }
+
+    #[test]
     fn preserves_conflicting_numeric_values() {
         let left = "Динамический код оплаты действует в течение 15 минут после создания.";
         let right = "Динамический код оплаты действует в течение 10 минут после создания.";
-        assert!(!similar_sentences(left, right));
+        assert!(!same_sentence(left, right));
     }
 
     #[test]
@@ -617,8 +603,9 @@ mod tests {
         let mut duplicate = first.clone();
         duplicate.id = "ambiguity-001".into();
         duplicate.detector = Detector::Llm("ambiguity:test".into());
-        duplicate.explanation = "Срок действия динамического QR-кода различается в разделах документации. В тестах нужен сценарий просрочки.".into();
-        duplicate.suggestion = Some("Привести значение срока действия динамического QR-кода к единому значению (например, 15 минут) во всех разделах документации. Добавить приёмочный тест.".into());
+        duplicate.explanation =
+            format!("{}  В тестах нужен сценарий просрочки.", first.explanation);
+        duplicate.suggestion = Some(format!("{suggestion} Добавить приёмочный тест."));
 
         let merged = merge_findings(vec![first, duplicate]);
         assert_eq!(
@@ -784,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn merges_verified_finding_with_unverified_paraphrase_in_either_order() {
+    fn merges_verified_finding_with_unverified_punctuation_in_either_order() {
         let mut verified_rule = make_finding(
             "vague-term-001",
             Scope::Requirement("R-003".into()),
@@ -801,7 +788,7 @@ mod tests {
             Scope::Requirement("R-003".into()),
             Criterion::Unambiguous,
             Severity::Medium,
-            "Сервис отвечает быстро на запросы клиентов",
+            "Сервис отвечает быстро на запросы пользователя...",
             18,
             Detector::Llm("ambiguity:test".into()),
         );
