@@ -65,6 +65,10 @@ Gemini и кэшированные ответы передают его посл
 docker compose up --build
 ```
 
+По умолчанию в паспорт отчёта записывается версия пакета. Чтобы указать ревизию Git,
+соберите образ командой `docker compose build --build-arg AGENT_VERSION="$(git rev-parse --short HEAD)"`
+и запустите его через `docker compose up`. В PowerShell используйте тот же синтаксис подстановки.
+
 Веб-чат откроется на [localhost:3333](http://127.0.0.1:3333) с провайдером `mock`. Для настоящей модели
 заполните `.env` по образцу `.env.example` и укажите провайдер: `PROVIDER=gemini docker compose up`
 или строку `PROVIDER=openai` в `.env`. Порт открыт только для localhost, другой порт задаётся

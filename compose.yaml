@@ -1,6 +1,9 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        AGENT_VERSION: ${AGENT_VERSION:-}
     image: requirements-review
     # Внутри контейнера сервер слушает все адреса, наружу порт открыт только для localhost.
     ports:

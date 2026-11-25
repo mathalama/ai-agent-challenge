@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command};
+use std::{env, path::Path, process::Command};
 
 fn git(workspace: &Path, args: &[&str]) -> Option<String> {
     let result = Command::new("git")
@@ -18,6 +18,17 @@ fn main() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest.join("../..");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=AGENT_VERSION");
+    if let Ok(version) = env::var("AGENT_VERSION") {
+        let version = version.trim();
+        let version = if version.is_empty() {
+            env!("CARGO_PKG_VERSION")
+        } else {
+            version
+        };
+        println!("cargo:rustc-env=AGENT_VERSION={version}");
+        return;
+    }
     for file in ["HEAD", "index", "packed-refs", "refs/tags"] {
         if let Some(path) = git(&workspace, &["rev-parse", "--git-path", file]) {
             let path = workspace.join(path);
