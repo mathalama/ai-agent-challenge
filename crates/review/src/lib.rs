@@ -5,6 +5,7 @@ mod domain;
 pub mod eval;
 mod facts;
 mod pipeline;
+mod progress;
 mod report;
 mod rules;
 pub mod segment;
@@ -22,6 +23,7 @@ pub use pipeline::Result as StageResult;
 pub use pipeline::{
     Check, CheckPhase, CheckRegistry, Pipeline, RunContext, Stage, StageError, StageTrace,
 };
+pub use progress::{ProgressEvent, ProgressSink};
 pub use report::{
     JsonRenderer, MarkdownRenderer, Readiness, Report, ReportRenderer, ReportSchemaVersion,
     ReportSummary,

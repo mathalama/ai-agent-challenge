@@ -191,7 +191,8 @@ impl RetryProvider {
             let Some(delay) = delay.filter(|delay| *delay <= Duration::from_secs(120)) else {
                 return Err(error);
             };
-            tracing::warn!(reason, ?status, ?delay, "Повтор запроса LLM");
+            tracing::info!(reason, ?status, ?delay, "Повтор запроса LLM");
+            self.trace.retry(request, reason, status, delay);
             sleep(delay).await;
         }
     }
@@ -264,13 +265,72 @@ pub struct TraceEntry {
     cached: bool,
 }
 
+/// Повтор запроса к LLM: причина и пауза перед следующей попыткой.
+#[derive(Debug, Clone, Serialize)]
+pub struct RetryNotice {
+    pub stage: String,
+    pub reason: &'static str,
+    pub status: Option<u16>,
+    pub delay_ms: u64,
+}
+
+type RetryListener = Arc<dyn Fn(&RetryNotice) + Send + Sync>;
+
 #[derive(Clone, Default)]
-pub struct TraceLog(Arc<Mutex<Vec<TraceEntry>>>);
+pub struct TraceLog {
+    entries: Arc<Mutex<Vec<TraceEntry>>>,
+    on_retry: Option<RetryListener>,
+}
 
 impl TraceLog {
-    pub fn entries(&self) -> Vec<TraceEntry> {
-        self.0.lock().expect("блокировка трассы").clone()
+    /// Вызывает `listener` перед каждой паузой повтора, чтобы показать её пользователю.
+    pub fn on_retry(mut self, listener: impl Fn(&RetryNotice) + Send + Sync + 'static) -> Self {
+        self.on_retry = Some(Arc::new(listener));
+        self
     }
+
+    pub fn entries(&self) -> Vec<TraceEntry> {
+        self.entries.lock().expect("блокировка трассы").clone()
+    }
+
+    /// Число записанных попыток; используется как отметка начала стадии.
+    pub fn entry_count(&self) -> usize {
+        self.entries.lock().expect("блокировка трассы").len()
+    }
+
+    /// Суммарный расход токенов, число попыток и попаданий в кэш после отметки `start`.
+    pub fn usage_since(&self, start: usize) -> (Usage, usize, usize) {
+        let entries = self.entries.lock().expect("блокировка трассы");
+        let recent = entries.get(start..).unwrap_or_default();
+        let usage =
+            recent
+                .iter()
+                .filter_map(|entry| entry.usage)
+                .fold(Usage::default(), |total, usage| Usage {
+                    input_tokens: total.input_tokens.saturating_add(usage.input_tokens),
+                    output_tokens: total.output_tokens.saturating_add(usage.output_tokens),
+                });
+        let cached = recent.iter().filter(|entry| entry.cached).count();
+        (usage, recent.len(), cached)
+    }
+
+    fn retry(
+        &self,
+        request: &LlmRequest,
+        reason: &'static str,
+        status: Option<u16>,
+        delay: Duration,
+    ) {
+        if let Some(listener) = &self.on_retry {
+            listener(&RetryNotice {
+                stage: request.stage.clone(),
+                reason,
+                status,
+                delay_ms: delay.as_millis().try_into().unwrap_or(u64::MAX),
+            });
+        }
+    }
+
     fn record(
         &self,
         request: &LlmRequest,
@@ -282,14 +342,17 @@ impl TraceLog {
     ) {
         let duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
         tracing::debug!(stage = %request.stage, duration_ms, ?usage, %model, succeeded, cached, "Запрос LLM");
-        self.0.lock().expect("блокировка трассы").push(TraceEntry {
-            stage: request.stage.clone(),
-            duration_ms,
-            usage,
-            model: model.into(),
-            succeeded,
-            cached,
-        });
+        self.entries
+            .lock()
+            .expect("блокировка трассы")
+            .push(TraceEntry {
+                stage: request.stage.clone(),
+                duration_ms,
+                usage,
+                model: model.into(),
+                succeeded,
+                cached,
+            });
     }
 }
 
@@ -505,5 +568,42 @@ mod tests {
             exhausted.generate(&request).await,
             Err(LlmError::Http { status: 503, .. })
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retries_are_reported_and_usage_is_summed_per_stage() {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let seen = notices.clone();
+        let trace = TraceLog::default().on_retry(move |notice| {
+            seen.lock().unwrap().push(notice.clone());
+        });
+        let provider = RetryProvider::new(Box::new(Replies(Mutex::new(
+            vec![
+                Err(LlmError::Http {
+                    status: 503,
+                    message: "busy".into(),
+                    retry_after: None,
+                }),
+                Ok(reply(json!(42))),
+            ]
+            .into_iter(),
+        ))))
+        .with_trace(trace.clone());
+        let request = LlmRequest::typed::<u32>("segment", "", String::new()).unwrap();
+        provider.generate(&request).await.unwrap();
+
+        let notices = notices.lock().unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            (
+                notices[0].stage.as_str(),
+                notices[0].reason,
+                notices[0].status
+            ),
+            ("segment", "http", Some(503))
+        );
+        let (usage, calls, cached) = trace.usage_since(0);
+        assert_eq!((usage.input_tokens, calls, cached), (1, 2, 0));
+        assert_eq!(trace.usage_since(trace.entry_count()).1, 0);
     }
 }

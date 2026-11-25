@@ -51,6 +51,24 @@ CLI записывает стадии в `stages` отдельной трасс�
 `rs check --trace <путь>`. Запись содержит `stage`, `duration_ms` и
 `succeeded`. При ошибке конвейер останавливается на текущей стадии.
 
+## События прогресса
+
+`rs check --events <путь>` пишет события в JSON Lines: одна строка — один объект, файл дописывается и сбрасывается после каждого события, поэтому его можно читать во время прогона. Тип события лежит в поле `event`. Эти же объекты планируется отдавать через SSE в `GET /api/runs/{id}/events`.
+
+| `event` | Поля | Когда |
+| --- | --- | --- |
+| `run_started` | `document`, `model`, `stages` (идентификаторы по порядку) | Перед первой стадией |
+| `stage_started` | `stage`, `index` (с единицы), `total` | Перед стадией |
+| `stage_finished` | `stage`, `index`, `total`, `duration_ms`, `succeeded`, `llm_calls`, `cached_calls`, `input_tokens`, `output_tokens`, `requirements`, `findings`, `questions` | После стадии, в том числе при ошибке |
+| `llm_retry` | `stage`, `reason` (`http`, `transport`, `invalid_response`), `status` (HTTP-код или `null`), `delay_ms` | Перед паузой повтора запроса к LLM |
+| `run_finished` | `duration_ms`, `succeeded` | В конце прогона или после стадии с ошибкой |
+
+`llm_calls` считает все попытки стадии, включая повторы и попадания в кэш. `requirements`, `findings` и `questions` — состояние прогона после стадии, а не прирост.
+
+```json
+{"event":"stage_finished","stage":"requirement_checks","index":4,"total":9,"duration_ms":38150,"succeeded":true,"llm_calls":1,"cached_calls":0,"input_tokens":7100,"output_tokens":1600,"requirements":20,"findings":12,"questions":0}
+```
+
 ## Совместимость
 
 Поле `schema_version` обязательно. Старые отчёты без этого поля не проходят
