@@ -709,7 +709,8 @@ fn scan_document_version_date(ctx: &RunContext<'_>) -> (bool, bool, Option<Evide
                         if version_key {
                             if !is_placeholder(value) && contains_version_number(value) {
                                 has_version = true;
-                            } else if explicit_missing_evidence.is_none()
+                            } else if is_exact_doc_version_key(key)
+                                && explicit_missing_evidence.is_none()
                                 && !row_quote(row).is_empty()
                             {
                                 explicit_missing_evidence = Some(Evidence {
@@ -721,7 +722,8 @@ fn scan_document_version_date(ctx: &RunContext<'_>) -> (bool, bool, Option<Evide
                         if date_key {
                             if !is_placeholder(value) && contains_date_value(value) {
                                 has_date = true;
-                            } else if explicit_missing_evidence.is_none()
+                            } else if is_exact_doc_date_key(key)
+                                && explicit_missing_evidence.is_none()
                                 && !row_quote(row).is_empty()
                             {
                                 explicit_missing_evidence = Some(Evidence {
@@ -2035,11 +2037,14 @@ mod tests {
             "# Регламент переводов\n\n",
             "## Описание\n\n",
             "Переводы выполняются в тенге согласно Приказу № 5 от 01.02.2024.\n\n",
+            "| Поле | Значение |\n| --- | --- |\n| Версия API | — |\n| Дата вступления в силу | — |\n\n",
             "| Дата операции | Сумма |\n| --- | --- |\n| 2026-01-01 | 5000 |\n"
         );
         let findings = run_single_rule(missing_both, DocumentVersionDate).await;
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].id, "document-version-date-missing");
+        assert!(findings[0].fallback_evidence);
+        assert_eq!(findings[0].evidence[0].quote, "Регламент переводов");
 
         let missing_date =
             "# Регламент переводов\n\n| Поле | Значение |\n| --- | --- |\n| Версия | 1.2 |\n";
