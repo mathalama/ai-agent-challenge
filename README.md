@@ -60,8 +60,9 @@ rs eval [--golden eval/] [--provider gemini|openai|mock] [--no-cache]
 | `OPENAI_BASE_URL` | Адрес API без `/chat/completions`, по умолчанию `https://api.openai.com/v1` |
 | `OPENAI_RESPONSE_FORMAT` | `json_schema` (по умолчанию) или `json_object` для сервисов без строгой схемы, например DeepSeek |
 | `OPENAI_REASONING_EFFORT` | Необязательно: `reasoning_effort` для рассуждающих моделей, например `low` или `none` |
+| `OPENAI_TIMEOUT_SECS` | Таймаут одного запроса в секундах, по умолчанию 180; для локальных моделей увеличьте до 600–900 |
 
-Локальная модель через [Ollama](https://ollama.com/): `OPENAI_BASE_URL=http://localhost:11434/v1`, любой непустой `OPENAI_API_KEY`, модель с контекстом не меньше 16K токенов, для qwen3 — `OPENAI_REASONING_EFFORT=none`, иначе модель долго рассуждает и тратит токены.
+Локальная модель через [Ollama](https://ollama.com/): `OPENAI_BASE_URL=http://localhost:11434/v1`, любой непустой `OPENAI_API_KEY`, модель с контекстом не меньше 12K токенов, `OPENAI_TIMEOUT_SECS=900`, для qwen3 — `OPENAI_REASONING_EFFORT=none`, иначе модель долго рассуждает и тратит токены.
 
 Адреса API: OpenRouter — `https://openrouter.ai/api/v1`, Groq — `https://api.groq.com/openai/v1`, DeepSeek — `https://api.deepseek.com`. Лимит `LLM_REQUESTS_PER_MINUTE`, повторы и кэш работают так же, как для Gemini. Название модели попадает в паспорт прогона.
 

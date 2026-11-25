@@ -44,6 +44,7 @@ impl OpenAiProvider {
         const BASE_URL: &str = "OPENAI_BASE_URL";
         const FORMAT: &str = "OPENAI_RESPONSE_FORMAT";
         const REASONING: &str = "OPENAI_REASONING_EFFORT";
+        const TIMEOUT: &str = "OPENAI_TIMEOUT_SECS";
 
         let key = env::var(KEY).map_err(|_| LlmError::Config(KEY))?;
         let mut api_key: HeaderValue = format!("Bearer {}", key.trim())
@@ -81,6 +82,16 @@ impl OpenAiProvider {
             return Err(LlmError::Config(REASONING));
         }
 
+        // Локальным моделям на слабой видеокарте трёх минут на большой запрос не хватает.
+        let timeout = match optional_var(TIMEOUT)?.as_deref().map(str::trim) {
+            None | Some("") => 180,
+            Some(value) => value
+                .parse::<u64>()
+                .ok()
+                .filter(|seconds| (1..=3600).contains(seconds))
+                .ok_or(LlmError::Config(TIMEOUT))?,
+        };
+
         Ok(Self {
             api_key,
             model: model.into(),
@@ -89,7 +100,7 @@ impl OpenAiProvider {
             reasoning_effort,
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(180))
+                .timeout(Duration::from_secs(timeout))
                 .build()?,
         })
     }
