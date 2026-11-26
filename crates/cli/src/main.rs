@@ -14,7 +14,7 @@ use std::{
 
 use agent::{Answers, ProviderFactory, Result, progress_trace, read_answers};
 use clap::{
-    Parser, Subcommand, ValueEnum,
+    Args, Parser, Subcommand, ValueEnum,
     error::{ContextKind, ErrorKind},
 };
 use doc::ParserRegistry;
@@ -31,11 +31,38 @@ use tracing_subscriber::EnvFilter;
     name = "rs",
     bin_name = "rs",
     version = AGENT_VERSION,
-    about = "Локальный агент проверки требований"
+    about = "Локальный агент проверки требований",
+    args_conflicts_with_subcommands = true,
+    after_help = "Короткая форма: rs <ДОКУМЕНТ> <ОТЧЁТ> то же, что rs check <ДОКУМЕНТ> -o <ОТЧЁТ>.\nОтчёт с расширением .json пишется в JSON, остальные расширения дают Markdown.\nЕсли путь совпадает с именем подкоманды, выполняется подкоманда."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// Документ для проверки (короткая форма: rs <ДОКУМЕНТ> <ОТЧЁТ>).
+    #[arg(value_name = "INPUT")]
+    input: Option<PathBuf>,
+    /// Путь к отчёту; формат выбирается по расширению: .json — JSON, иначе Markdown.
+    #[arg(value_name = "REPORT")]
+    report: Option<PathBuf>,
+    #[command(flatten)]
+    run: RunFlags,
+}
+
+/// Общие флаги запуска проверки: одни и те же у `rs check` и у короткой формы.
+#[derive(Args, Default)]
+struct RunFlags {
+    #[arg(long, value_enum)]
+    provider: Option<Provider>,
+    #[arg(long)]
+    no_cache: bool,
+    #[arg(long)]
+    trace: Option<PathBuf>,
+    /// Сохранять рассуждения LLM в кэше и трассе.
+    #[arg(long)]
+    reasoning: bool,
+    /// Писать события прогресса в JSON Lines по мере выполнения.
+    #[arg(long)]
+    events: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -66,18 +93,8 @@ enum Command {
         output: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "md")]
         format: Format,
-        #[arg(long, value_enum)]
-        provider: Option<Provider>,
-        #[arg(long)]
-        no_cache: bool,
-        #[arg(long)]
-        trace: Option<PathBuf>,
-        /// Сохранять рассуждения LLM в кэше и трассе.
-        #[arg(long)]
-        reasoning: bool,
-        /// Писать события прогресса в JSON Lines по мере выполнения.
-        #[arg(long)]
-        events: Option<PathBuf>,
+        #[command(flatten)]
+        run: RunFlags,
     },
     /// Задать уточняющие вопросы автору документа.
     Ask {
@@ -173,7 +190,24 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if cli.command.is_none() && !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+    if cli.input.is_some() && cli.report.is_none() {
+        eprintln!(
+            "Ошибка: укажите путь к отчёту. Пример: rs <ДОКУМЕНТ> <ОТЧЁТ>. Для справки используйте --help."
+        );
+        return ExitCode::from(2);
+    }
+    if cli.input.is_none()
+        && (cli.run.trace.is_some() || cli.run.events.is_some() || cli.run.reasoning)
+    {
+        eprintln!(
+            "Ошибка: --trace, --events и --reasoning работают при проверке документа. Для справки используйте --help."
+        );
+        return ExitCode::from(2);
+    }
+    if cli.command.is_none()
+        && cli.input.is_none()
+        && !(io::stdin().is_terminal() && io::stdout().is_terminal())
+    {
         eprintln!(
             "Укажите команду. Для чата используйте rs chat. Справка доступна через rs --help."
         );
@@ -204,11 +238,22 @@ async fn run(cli: Cli) -> Result<()> {
     let factory = |provider: Option<Provider>, no_cache| -> Result<ProviderFactory> {
         build_factory(path.as_deref(), provider, no_cache)
     };
-    match cli.command.unwrap_or(Command::Chat {
-        input: None,
-        provider: None,
-        no_cache: false,
-    }) {
+    let command = match (cli.command, cli.input) {
+        (Some(command), _) => command,
+        // Короткая форма `rs <INPUT> <REPORT>`: наличие отчёта проверено в main.
+        (None, Some(input)) => Command::Check {
+            format: cli.report.as_deref().map_or(Format::Md, format_from_path),
+            output: cli.report,
+            input,
+            run: cli.run,
+        },
+        (None, None) => Command::Chat {
+            input: None,
+            provider: cli.run.provider,
+            no_cache: cli.run.no_cache,
+        },
+    };
+    match command {
         Command::Chat {
             input,
             provider,
@@ -224,22 +269,18 @@ async fn run(cli: Cli) -> Result<()> {
             input,
             output,
             format,
-            provider,
-            no_cache,
-            trace,
-            reasoning,
-            events,
+            run,
         } => {
             let options = RunOptions {
-                trace: trace.as_deref(),
-                reasoning,
-                events: events.as_deref(),
+                trace: run.trace.as_deref(),
+                reasoning: run.reasoning,
+                events: run.events.as_deref(),
             };
             check(
                 &input,
                 output,
                 format,
-                &factory(provider, no_cache)?,
+                &factory(run.provider, run.no_cache)?,
                 options,
             )
             .await
@@ -272,6 +313,14 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// Формат отчёта по расширению пути: `.json` (любой регистр) — JSON, иначе Markdown.
+fn format_from_path(path: &Path) -> Format {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("json") => Format::Json,
+        _ => Format::Md,
     }
 }
 
