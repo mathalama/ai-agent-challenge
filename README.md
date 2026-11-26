@@ -166,6 +166,12 @@ segment → facts → rules → requirement_checks → set_checks
 
 [Архитектура](docs/architecture.md) · [Решения](docs/decisions.md)
 
+## Демо и защита
+
+Материалы для показа лежат в [docs/demo/](docs/demo/): [сценарий на 4–5 минут](docs/demo/scenario.md) с вариантами на реальной модели и на `--provider mock`, [слайды](docs/demo/slides.pdf) (исходник [slides.md](docs/demo/slides.md)) и [ответы на вопросы жюри](docs/demo/qa.md).
+
+Запасная запись демо: _ссылка на видео — добавить после записи_. Видео в репозиторий не добавляется.
+
 ## Проверки
 
 ```sh
