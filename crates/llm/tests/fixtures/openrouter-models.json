@@ -1,0 +1,84 @@
+{
+  "data": [
+    {
+      "id": "example/plain:free",
+      "context_length": 8000,
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "supported_parameters": [],
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "id": "example/image:free",
+      "context_length": 1000000,
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "supported_parameters": [
+        "structured_outputs"
+      ],
+      "architecture": {
+        "output_modalities": [
+          "image"
+        ]
+      }
+    },
+    {
+      "id": "example/paid",
+      "context_length": 300000,
+      "pricing": {
+        "prompt": "0",
+        "completion": "0.000003"
+      },
+      "supported_parameters": [
+        "structured_outputs"
+      ],
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "id": "example/object",
+      "context_length": 32000,
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "supported_parameters": [
+        "response_format"
+      ],
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "id": "example/schema:free",
+      "context_length": 96000,
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0"
+      },
+      "supported_parameters": [
+        "response_format",
+        "structured_outputs"
+      ],
+      "architecture": {
+        "output_modalities": [
+          "image",
+          "text"
+        ]
+      }
+    }
+  ]
+}

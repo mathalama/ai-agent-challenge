@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": 429,
+    "message": "Rate limit exceeded: free-models-per-minute.",
+    "metadata": {
+      "limit_source": "openrouter_free_tier_per_minute"
+    }
+  }
+}

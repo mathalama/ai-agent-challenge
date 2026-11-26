@@ -87,9 +87,9 @@ function Content({ report }: { report: Report }) {
           </thead>
           <tbody className="divide-y divide-line">
             {sorted.map((r) => (
-              <tr key={r.id} onClick={() => navigate(`/findings?requirement=${encodeURIComponent(r.id)}`)} className="cursor-pointer transition-colors duration-100 hover:bg-accent-soft/60">
+              <tr key={r.id} onClick={() => navigate(`/?tab=findings&requirement=${encodeURIComponent(r.id)}`)} className="cursor-pointer transition-colors duration-100 hover:bg-accent-soft/60">
                 <td className="px-4 py-3 font-mono text-[13px] whitespace-nowrap">
-                  <Link to={`/findings?requirement=${encodeURIComponent(r.id)}`} onClick={(e) => e.stopPropagation()} className="font-medium text-accent-ink hover:underline">{r.id}</Link>
+                  <Link to={`/?tab=findings&requirement=${encodeURIComponent(r.id)}`} onClick={(e) => e.stopPropagation()} className="font-medium text-accent-ink hover:underline">{r.id}</Link>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap text-ink-2">{r.source || '—'}</td>
                 <td className="max-w-[30rem] px-4 py-3"><p className="line-clamp-2">{r.text}</p></td>

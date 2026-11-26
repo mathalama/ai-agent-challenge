@@ -12,7 +12,7 @@ import {
   findingStage,
   isStageId,
 } from '../lib/labels';
-import { applyFilters, useReportStore, type Filters, type ScopeFilter } from '../lib/report-store';
+import { applyFilters, type Filters, type ScopeFilter } from '../lib/report-store';
 import { findingsForRequirement } from '../lib/selectors';
 import type { Criterion, Report, Severity } from '../lib/types';
 
@@ -22,15 +22,12 @@ const SCOPES: { value: ScopeFilter; label: string }[] = [
   { value: 'set', label: 'Весь набор' },
 ];
 
-const FILTER_KEYS = ['severity', 'criterion', 'stage', 'scope', 'requirement', 'finding'];
-
 const csv = (p: string | null) => (p ? p.split(',').filter(Boolean) : []);
 
-/** Адрес → стор. Выполняется один раз при открытии экрана, если в адресе есть параметры. */
 function readParams(p: URLSearchParams) {
   const filters: Filters = {
-    severities: csv(p.get('severity')).filter((v): v is Severity => v in SEVERITY),
-    criteria: csv(p.get('criterion')).filter((v): v is Criterion => v in CRITERIA),
+    severities: csv(p.get('severity')).filter((v): v is Severity => Object.hasOwn(SEVERITY, v)),
+    criteria: csv(p.get('criterion')).filter((v): v is Criterion => Object.hasOwn(CRITERIA, v)),
     stages: csv(p.get('stage')).filter(isStageId),
     scope: SCOPES.some((s) => s.value === p.get('scope')) ? (p.get('scope') as ScopeFilter) : 'all',
   };
@@ -73,33 +70,21 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 }
 
 function FindingsView({ report }: { report: Report }) {
-  const { filters, selectedRequirementId, selectedFindingId } = useReportStore();
-  const { toggleFilter, setFilters, resetFilters, selectRequirement, selectFinding } = useReportStore.getState();
   const [params, setParams] = useSearchParams();
-  const ready = useRef(false);
+  const { filters, requirement: selectedRequirementId, finding: selectedFindingId } = useMemo(() => readParams(params), [params]);
   const scrolled = useRef<string | null>(null);
 
-  // Адрес ↔ стор. При входе адрес главнее, если в нём есть параметры; затем адрес следует за стором.
-  useEffect(() => {
-    if (!ready.current) {
-      ready.current = true;
-      if (FILTER_KEYS.some((k) => params.has(k))) {
-        const { filters: f, requirement, finding } = readParams(params);
-        setFilters(f);
-        selectRequirement(requirement && report.requirements.some((r) => r.id === requirement) ? requirement : null);
-        selectFinding(finding && report.findings.some((x) => x.id === finding) ? finding : null);
-        return;
-      }
-    }
-    const next = new URLSearchParams();
-    if (filters.severities.length) next.set('severity', filters.severities.join(','));
-    if (filters.criteria.length) next.set('criterion', filters.criteria.join(','));
-    if (filters.stages.length) next.set('stage', filters.stages.join(','));
-    if (filters.scope !== 'all') next.set('scope', filters.scope);
-    if (selectedRequirementId) next.set('requirement', selectedRequirementId);
-    if (selectedFindingId) next.set('finding', selectedFindingId);
-    if (next.toString() !== params.toString()) setParams(next, { replace: true });
-  }, [filters, selectedRequirementId, selectedFindingId, params, report, setParams, setFilters, selectRequirement, selectFinding]);
+  function updateParam(key: string, value: string | null) {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setParams(next, { replace: true });
+  }
+
+  function toggleFilter(key: string, values: string[], value: string) {
+    const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+    updateParam(key, next.join(','));
+  }
 
   const requirement = report.requirements.find((r) => r.id === selectedRequirementId) ?? null;
 
@@ -120,6 +105,7 @@ function FindingsView({ report }: { report: Report }) {
     base.filter((f) => pick(f) === value).length;
 
   useEffect(() => {
+    if (!selectedFindingId) scrolled.current = null;
     if (selectedFindingId && scrolled.current !== selectedFindingId) {
       const el = document.getElementById(`finding-${selectedFindingId}`);
       if (el) {
@@ -148,7 +134,7 @@ function FindingsView({ report }: { report: Report }) {
             </span>
             <button
               type="button"
-              onClick={() => selectRequirement(null)}
+              onClick={() => updateParam('requirement', null)}
               className="cursor-pointer font-semibold text-accent-ink hover:underline"
             >
               Показать все
@@ -160,7 +146,7 @@ function FindingsView({ report }: { report: Report }) {
             <Chip
               key={s}
               active={filters.severities.includes(s)}
-              onClick={() => toggleFilter('severities', s)}
+              onClick={() => toggleFilter('severity', filters.severities, s)}
               count={count((f) => f.severity, s)}
             >
               {SEVERITY[s].label}
@@ -169,7 +155,7 @@ function FindingsView({ report }: { report: Report }) {
         </Group>
         <Group title="Область">
           {SCOPES.map((s) => (
-            <Chip key={s.value} active={filters.scope === s.value} onClick={() => setFilters({ scope: s.value })}>
+            <Chip key={s.value} active={filters.scope === s.value} onClick={() => updateParam('scope', s.value === 'all' ? null : s.value)}>
               {s.label}
             </Chip>
           ))}
@@ -179,7 +165,7 @@ function FindingsView({ report }: { report: Report }) {
             <Chip
               key={s.id}
               active={filters.stages.includes(s.id)}
-              onClick={() => toggleFilter('stages', s.id)}
+              onClick={() => toggleFilter('stage', filters.stages, s.id)}
               count={count(findingStage, s.id)}
             >
               {s.label}
@@ -191,7 +177,7 @@ function FindingsView({ report }: { report: Report }) {
             <Chip
               key={k}
               active={filters.criteria.includes(k)}
-              onClick={() => toggleFilter('criteria', k)}
+              onClick={() => toggleFilter('criterion', filters.criteria, k)}
               count={count((f) => f.criterion, k)}
             >
               {CRITERIA[k].label}
@@ -206,10 +192,7 @@ function FindingsView({ report }: { report: Report }) {
             variant="secondary"
             className="!px-3 !py-1.5"
             disabled={!anyFilter}
-            onClick={() => {
-              resetFilters();
-              selectRequirement(null);
-            }}
+            onClick={() => setParams({ tab: 'findings' }, { replace: true })}
           >
             Сбросить фильтры
           </Button>
@@ -225,13 +208,13 @@ function FindingsView({ report }: { report: Report }) {
         <ul className="space-y-4">
           {visible.map((f) => (
             <li key={f.id}>
-              <FindingCard finding={f} docLink selected={f.id === selectedFindingId} onSelect={() => selectFinding(f.id)} />
+              <FindingCard finding={f} docLink selected={f.id === selectedFindingId} onSelect={() => updateParam('finding', f.id)} />
             </li>
           ))}
         </ul>
       )}
       <p className="text-xs text-muted">
-        Откройте <Link className="text-accent-ink hover:underline" to="/document">документ с подсветкой</Link>, чтобы увидеть находки в тексте.
+        Откройте <Link className="text-accent-ink hover:underline" to="/?tab=document">документ с подсветкой</Link>, чтобы увидеть находки в тексте.
       </p>
     </div>
   );

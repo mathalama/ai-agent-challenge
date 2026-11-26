@@ -12,27 +12,20 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     LlmError, LlmProvider, LlmRequest, LlmResponse, ReasoningCallback, Result, Usage,
+    openrouter::{daily_limit, is_openrouter},
     providers::retry_after_header,
+    settings::{Provider, ResolvedSettings, ResponseFormat, Settings},
 };
 
 const MAX_TOKENS_VAR: &str = "OPENAI_MAX_TOKENS";
-const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// Ключ, под которым лежит ответ модели в обёртке схемы.
 const RESULT_FIELD: &str = "result";
-
-/// Как просить у сервиса JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResponseFormat {
-    /// Строгая схема в `response_format` (OpenAI, GitHub Models, Groq, OpenRouter).
-    JsonSchema,
-    /// Только `json_object`, схема передаётся в промпте (например, DeepSeek).
-    JsonObject,
-}
 
 pub struct OpenAiProvider {
     api_key: HeaderValue,
     model: String,
     endpoint: String,
+    openrouter: bool,
     format: ResponseFormat,
     /// `reasoning_effort` для рассуждающих моделей; `none` отключает рассуждения у Ollama.
     reasoning_effort: Option<String>,
@@ -42,39 +35,21 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn from_env() -> Result<Self> {
+        Self::from_settings(&Settings::default().resolve(Some(Provider::Openai))?)
+    }
+
+    pub fn from_settings(config: &ResolvedSettings) -> Result<Self> {
         const KEY: &str = "OPENAI_API_KEY";
-        const MODEL: &str = "OPENAI_MODEL";
-        const BASE_URL: &str = "OPENAI_BASE_URL";
-        const FORMAT: &str = "OPENAI_RESPONSE_FORMAT";
         const REASONING: &str = "OPENAI_REASONING_EFFORT";
         const TIMEOUT: &str = "OPENAI_TIMEOUT_SECS";
 
-        let key = env::var(KEY).map_err(|_| LlmError::Config(KEY))?;
-        let mut api_key: HeaderValue = format!("Bearer {}", key.trim())
+        config.validate()?;
+        let key = config.api_key.as_deref().ok_or(LlmError::Config(KEY))?;
+        let mut api_key: HeaderValue = format!("Bearer {key}")
             .parse()
             .map_err(|_| LlmError::Config(KEY))?;
-        if key.trim().is_empty() {
-            return Err(LlmError::Config(KEY));
-        }
         api_key.set_sensitive(true);
-
-        let model = env::var(MODEL).map_err(|_| LlmError::Config(MODEL))?;
-        let model = model.trim();
-        if model.is_empty() || model.chars().any(char::is_whitespace) {
-            return Err(LlmError::Config(MODEL));
-        }
-
-        let base_url = optional_var(BASE_URL)?.unwrap_or_else(|| DEFAULT_BASE_URL.into());
-        let base_url = base_url.trim().trim_end_matches('/');
-        if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
-            return Err(LlmError::Config(BASE_URL));
-        }
-
-        let format = match optional_var(FORMAT)?.as_deref().map(str::trim) {
-            None | Some("" | "json_schema") => ResponseFormat::JsonSchema,
-            Some("json_object") => ResponseFormat::JsonObject,
-            Some(_) => return Err(LlmError::Config(FORMAT)),
-        };
+        let base_url = config.base_url.trim_end_matches('/');
         let reasoning_effort = optional_var(REASONING)?
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
@@ -97,9 +72,10 @@ impl OpenAiProvider {
 
         Ok(Self {
             api_key,
-            model: model.into(),
+            model: config.model.clone(),
             endpoint: format!("{base_url}/chat/completions"),
-            format,
+            openrouter: is_openrouter(base_url),
+            format: config.response_format,
             reasoning_effort,
             max_tokens: parse_max_tokens(optional_var(MAX_TOKENS_VAR)?.as_deref())?,
             client: Client::builder()
@@ -119,7 +95,7 @@ impl OpenAiProvider {
                     "json_schema": {"name": "response", "schema": schema, "strict": false}
                 }),
             ),
-            ResponseFormat::JsonObject => (
+            ResponseFormat::JsonObject | ResponseFormat::None => (
                 format!(
                     "{}\n\nВерни только JSON-объект, который соответствует JSON Schema:\n{schema}",
                     request.system_prompt
@@ -133,8 +109,10 @@ impl OpenAiProvider {
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": request.user_text},
             ],
-            "response_format": response_format,
         });
+        if self.format != ResponseFormat::None {
+            body["response_format"] = response_format;
+        }
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
         }
@@ -168,6 +146,9 @@ impl OpenAiProvider {
                 .get(RETRY_AFTER)
                 .and_then(retry_after_header);
             let body = response.json::<Value>().await.unwrap_or_default();
+            if self.openrouter && status.as_u16() == 429 && daily_limit(&body) {
+                return Err(LlmError::OpenRouterDailyLimit);
+            }
             let message = body["error"]["message"]
                 .as_str()
                 .or_else(|| body["message"].as_str())
@@ -486,6 +467,49 @@ mod tests {
         assert_eq!(response.usage.output_tokens, 9);
     }
 
+    #[tokio::test]
+    async fn openrouter_daily_limit_never_consumes_a_retry() {
+        use std::{
+            io::{BufRead, BufReader, Read, Write},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut provider = provider(ResponseFormat::None);
+        provider.endpoint = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+        provider.openrouter = true;
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&socket);
+            let mut size = 0;
+            for line in reader.by_ref().lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    size = value.trim().parse().unwrap();
+                }
+            }
+            let mut bytes = vec![0; size];
+            reader.read_exact(&mut bytes).unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(body.get("response_format").is_none());
+            let response = include_str!("../tests/fixtures/openrouter-daily-limit.json");
+            write!(socket, "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 60\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+        });
+        let retry = crate::RetryProvider::new(Box::new(provider));
+        let request = LlmRequest::typed::<u32>("test", "", String::new()).unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), retry.generate(&request))
+            .await
+            .unwrap();
+        assert!(matches!(response, Err(LlmError::OpenRouterDailyLimit)));
+        peer.join().unwrap();
+    }
+
     #[test]
     fn chat_decodes_optional_reasoning_fields() {
         for (fields, expected) in [
@@ -517,7 +541,8 @@ mod tests {
         OpenAiProvider {
             api_key: HeaderValue::from_static("Bearer test"),
             model: "test-model".into(),
-            endpoint: format!("{DEFAULT_BASE_URL}/chat/completions"),
+            endpoint: format!("{}/chat/completions", crate::settings::OPENAI_URL),
+            openrouter: false,
             format,
             reasoning_effort: None,
             max_tokens: None,

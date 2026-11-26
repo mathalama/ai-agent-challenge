@@ -93,7 +93,7 @@ export const FindingCard = forwardRef<HTMLElement, Props>(function FindingCard(
         <span>
           {finding.scope.kind === 'requirement' ? (
             <Link
-              to={`/findings?requirement=${encodeURIComponent(finding.scope.id)}`}
+              to={`/?tab=findings&requirement=${encodeURIComponent(finding.scope.id)}`}
               onClick={(e) => e.stopPropagation()}
               className="text-accent-ink hover:underline"
             >
@@ -106,7 +106,7 @@ export const FindingCard = forwardRef<HTMLElement, Props>(function FindingCard(
         <span className="tabular">{finding.id}</span>
         {docLink && (
           <Link
-            to={`/document?finding=${encodeURIComponent(finding.id)}`}
+            to={`/?tab=document&finding=${encodeURIComponent(finding.id)}`}
             onClick={(e) => e.stopPropagation()}
             className="ml-auto font-semibold text-accent-ink hover:underline"
           >

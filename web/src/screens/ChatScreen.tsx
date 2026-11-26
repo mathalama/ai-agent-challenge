@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { ThinkingOrb } from 'thinking-orbs';
 import { Button } from '../components/Button';
 import { formatLocation } from '../components/FindingCard';
 import { ChatApiError, connectChat, sendChatInput, type ChatEvent, type Progress, type SessionState } from '../lib/chat-api';
 import { download } from '../lib/export';
-import { READINESS, STAGE_BY_ID, isStageId, type StageId } from '../lib/labels';
+import { STAGE_BY_ID, isStageId, type StageId } from '../lib/labels';
 import { useReportStore, type StageRecord } from '../lib/report-store';
-import type { Evidence, Question, Readiness, ReportSummary } from '../lib/types';
-import { StageList } from './ProgressScreen';
+import type { Evidence, Question } from '../lib/types';
+import { ReportMessage } from '../components/ReportMessage';
+import { DemoProgressScreen, StageList } from './ProgressScreen';
 import { StartScreen } from './StartScreen';
 
 interface Reason {
@@ -30,7 +31,6 @@ type Run = {
 type Item =
   | { kind: 'message'; text: string; user?: boolean; error?: boolean; citations?: Evidence[] }
   | { kind: 'question'; question: Question }
-  | { kind: 'report'; summary: ReportSummary; readiness: Readiness }
   | { kind: 'reasoning'; value: Reason }
   | Run;
 
@@ -80,9 +80,13 @@ function progress(items: Item[], event: Progress): Item[] {
   }
 }
 
-export function ChatScreen() {
-  const { pathname, search } = useLocation();
+export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRestart: () => void }) {
+  const { search } = useLocation();
   const mode = useReportStore((s) => s.mode);
+  const runId = useReportStore((s) => s.runId);
+  const report = useReportStore((s) => s.report);
+  const reportStatus = useReportStore((s) => s.status);
+  const reportError = useReportStore((s) => s.error);
   const sessionId = useReportStore((s) => s.sessionId);
   const [items, setItems] = useState<Item[]>([]);
   const [state, setState] = useState<SessionState>('empty');
@@ -148,7 +152,6 @@ export function ChatScreen() {
           });
           break;
         case 'report_ready':
-          setItems((list) => [...list, { kind: 'report', summary: event.summary, readiness: event.readiness }]);
           reportDirty = true;
           break;
         case 'answers_updated':
@@ -169,13 +172,13 @@ export function ChatScreen() {
       void useReportStore.getState().load();
     }
 
-    void connectChat().then((connection) => {
+    void connectChat(sessionKey).then((connection) => {
       if (!current) return;
       if (!connection) {
         useReportStore.setState({ mode: 'demo' });
         return;
       }
-      useReportStore.setState({ mode: 'live', sessionId: connection.id });
+      useReportStore.setState({ mode: 'live', sessionId: connection.id, provider: connection.provider ?? null });
       receive(connection.greeting);
       const stream = new EventSource(`/api/sessions/${connection.id}/events`);
       eventSource.current = stream;
@@ -208,20 +211,20 @@ export function ChatScreen() {
       eventSource.current?.close();
       eventSource.current = null;
     };
-  }, []);
+  }, [sessionKey]);
 
   useEffect(() => {
-    if (pathname === '/') lastLine.current?.scrollIntoView({ block: 'nearest' });
+    lastLine.current?.scrollIntoView({ block: 'nearest' });
     // During streaming the last item can grow without changing the number of items.
-  }, [items, pathname]);
+  }, [items, report]);
 
   useEffect(() => {
     const id = new URLSearchParams(search).get('answer');
-    if (pathname === '/' && id) {
+    if (id) {
       setText(`/answer ${id} `);
       messageInput.current?.focus();
     }
-  }, [pathname, search]);
+  }, [search]);
 
   async function send(value: string | File) {
     if (!sessionId || !connected || pending.current) return;
@@ -256,52 +259,74 @@ export function ChatScreen() {
     if (file) void send(file);
   }
 
-  if (mode === 'demo') return <StartScreen />;
+  if (mode === 'demo') return runId ? <DemoProgressScreen /> : <StartScreen />;
   if (mode === 'connecting') {
     return connectionError
-      ? <p role="alert" className="text-sev-critical-ink">{connectionError}</p>
-      : <p role="status" className="text-muted">Подключаемся к чату…</p>;
+      ? <div className="chat-inner space-y-3"><p role="alert" className="text-sev-critical-ink">{connectionError}</p><Button onClick={onRestart}>Повторить</Button></div>
+      : <p role="status" className="chat-inner text-muted">Подключаемся к чату…</p>;
   }
 
   const disabled = busy || !connected;
   return (
-    <section className="mx-auto flex max-w-3xl flex-col gap-5" onDragOver={(event) => {
+    <section className="live-chat" onDragOver={(event) => {
       event.preventDefault();
       if (!disabled) setDragging(true);
     }} onDrop={drop} onDragLeave={(event) => {
       if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false);
     }}>
-      <header>
-        <h1 className="text-3xl font-semibold tracking-[-0.025em]">Чат проверки требований</h1>
-        {sessionEnded ? (
-          <div className="mt-2 flex items-center gap-3">
-            <p role="alert" className="text-sm text-muted">Сессия завершилась.</p>
-            <Button variant="secondary" onClick={() => window.location.reload()}>Начать новую сессию</Button>
-          </div>
-        ) : !connected && <p role="status" className="mt-2 text-sm text-muted">Восстанавливаем подключение…</p>}
-      </header>
-
-      <div role="log" aria-label="Сообщения" className="max-h-[58dvh] min-h-52 space-y-4 overflow-y-auto rounded-3xl border border-line bg-surface p-4 sm:p-6">
-        {items.map((item, index) => <ChatEntry key={index} item={item} onSend={send} disabled={disabled} />)}
-        {busy && <div className="flex items-center gap-2 text-sm text-muted" role="status"><ThinkingOrb size={32} state="working" theme="light" aria-hidden /> Агент работает…</div>}
-        <div ref={lastLine} />
+      <div className="chat-thread">
+        <div role="log" aria-label="Сообщения" className="chat-inner space-y-4">
+          {sessionEnded ? (
+            <div className="mt-2 flex items-center gap-3">
+              <p role="alert" className="text-sm text-muted">Сессия завершилась.</p>
+              <Button variant="secondary" onClick={onRestart}>Начать новую сессию</Button>
+            </div>
+          ) : !connected && <p role="status" className="mt-2 text-sm text-muted">Восстанавливаем подключение…</p>}
+          {state === 'empty' && items.length <= 1 && <div className="chat-welcome">
+            <div className="space-y-3">
+              <span className="welcome-mark" aria-hidden><span className="file-symbol" /></span>
+              <h1 className="welcome-title">Проверьте требования</h1>
+              <p className="max-w-[48ch] text-ink-2">Загрузите документ, чтобы найти дефекты, получить уточняющие вопросы и оценить готовность к разработке.</p>
+            </div>
+            <button type="button" disabled={disabled} className="upload-action upload-card" onClick={() => uploadInput.current?.click()}>
+              <span className="welcome-mark" aria-hidden>↑</span>
+              <span><strong>Выберите или перетащите файл</strong><small>PDF, Markdown, DOCX или текст</small></span>
+            </button>
+          </div>}
+          {items[0]?.kind === 'message' && <details className="run-details">
+            <summary>Команды чата</summary>
+            <p className="mt-2 whitespace-pre-wrap">{items[0].text}</p>
+          </details>}
+          {items.slice(1).map((item, index) => (
+            <ChatEntry key={index} item={item} onSend={send} disabled={disabled} />
+          ))}
+          {report && <ReportMessage report={report} />}
+          {reportStatus === 'error' && <div role="alert" className="space-y-2">
+            <p className="text-sev-critical-ink">{reportError}</p>
+            <Button variant="secondary" onClick={() => void useReportStore.getState().load()}>Загрузить отчёт снова</Button>
+          </div>}
+          {busy && <div className="flex items-center gap-2 text-sm text-muted" role="status"><ThinkingOrb size={32} state="working" theme="light" aria-hidden /> Агент работает…</div>}
+          <div ref={lastLine} />
+        </div>
       </div>
 
-      <form onSubmit={submit} className={`space-y-3 rounded-2xl border p-3 ${dragging ? 'border-accent bg-accent-soft' : 'border-line bg-surface'}`}>
-        <input ref={messageInput} aria-label="Сообщение" placeholder={state === 'empty' ? 'Начните с загрузки документа' : 'Напишите сообщение или команду'} value={text} onChange={(event) => setText(event.target.value)} maxLength={4096}
-          className="w-full rounded-lg px-3 py-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
-        <div className="flex flex-wrap items-center gap-2">
-          <input ref={uploadInput} type="file" accept=".pdf,.md,.markdown,.docx,.txt,.text" aria-label="Выбрать файл" className="hidden" onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void send(file);
-            event.target.value = '';
-          }} />
-          <Button disabled={disabled} variant="secondary" onClick={() => uploadInput.current?.click()}>Прикрепить файл</Button>
-          {state === 'loaded' && <Button disabled={disabled} variant="secondary" onClick={() => void send('/check')}>Проверить</Button>}
-          {state === 'reviewed' && <Button disabled={disabled} variant="secondary" onClick={() => void send('/questions')}>Уточняющие вопросы</Button>}
-          <Button type="submit" disabled={disabled || !text.trim()} className="ml-auto">Отправить</Button>
-        </div>
-      </form>
+      <div className="chat-composer">
+        <form onSubmit={submit} className={`space-y-3 rounded-2xl border p-3 ${dragging ? 'border-accent bg-accent-soft' : 'border-line bg-surface'}`}>
+          <input ref={messageInput} aria-label="Сообщение" placeholder={state === 'empty' ? 'Начните с загрузки документа' : 'Напишите сообщение или команду'} value={text} onChange={(event) => setText(event.target.value)} maxLength={4096}
+            className="w-full rounded-lg px-3 py-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+          <div className="flex flex-wrap items-center gap-2">
+            <input ref={uploadInput} type="file" accept=".pdf,.md,.markdown,.docx,.txt,.text" aria-label="Выбрать файл" className="hidden" onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void send(file);
+              event.target.value = '';
+            }} />
+            <Button disabled={disabled} variant="secondary" onClick={() => uploadInput.current?.click()}>Прикрепить файл</Button>
+            {state === 'loaded' && <Button disabled={disabled} variant="secondary" onClick={() => void send('/check')}>Проверить</Button>}
+            {state === 'reviewed' && <Button disabled={disabled} variant="secondary" onClick={() => void send('/questions')}>Уточняющие вопросы</Button>}
+            <Button type="submit" disabled={disabled || !text.trim()} className="ml-auto">Отправить</Button>
+          </div>
+        </form>
+      </div>
     </section>
   );
 }
@@ -337,26 +362,13 @@ function ChatEntry({ item, onSend, disabled }: { item: Item; onSend: (value: str
           </div>
         </article>
       );
-    case 'report':
-      return (
-        <article className="space-y-3 rounded-2xl border border-line p-4">
-          <p className={`font-semibold ${READINESS[item.readiness].text}`}>{READINESS[item.readiness].label}</p>
-          <p className="text-sm text-ink-2">Требований — {item.summary.requirement_count}, находок — {item.summary.finding_count}.</p>
-          <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm text-accent-ink">
-            <Link className="hover:underline" to="/summary">Сводка</Link>
-            <Link className="hover:underline" to="/findings">Находки</Link>
-            <Link className="hover:underline" to="/questions">Вопросы</Link>
-            <Link className="hover:underline" to="/export">Экспорт</Link>
-          </div>
-        </article>
-      );
     case 'run':
       return (
-        <article className="space-y-2">
-          <p className="font-semibold">{item.result === undefined ? 'Проверяем' : item.result ? 'Проверен документ' : 'Проверка прервана'} · {item.title}</p>
+        <details open={item.result === undefined} className="run-details">
+          <summary className="font-semibold">{item.result === undefined ? 'Проверяем' : item.result ? 'Проверен документ' : 'Проверка прервана'} · {item.title}</summary>
           <StageList stages={item.stages} current={item.current} completed={item.completed} />
           {item.reasoning.map((reason, index) => <Reasoning key={index} item={reason} />)}
-        </article>
+        </details>
       );
     case 'reasoning':
       return <Reasoning item={item.value} />;

@@ -52,7 +52,7 @@ function Row({ finding, struck = false }: { finding: Finding; struck?: boolean }
       <span className="tabular text-xs text-muted">{finding.id}</span>
       <p className="basis-full text-sm text-ink-2">{finding.explanation}</p>
       {!struck && (
-        <Link className="text-sm text-accent-ink hover:underline" to={`/document?finding=${encodeURIComponent(finding.id)}`}>
+        <Link className="text-sm text-accent-ink hover:underline" to={`/?tab=document&finding=${encodeURIComponent(finding.id)}`}>
           Показать в документе
         </Link>
       )}

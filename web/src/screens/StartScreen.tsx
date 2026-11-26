@@ -1,12 +1,10 @@
 import { useRef, useState, type DragEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { useReportStore } from '../lib/report-store';
 
 const ACCEPT = '.pdf,.md,.docx';
 
 export function StartScreen() {
-  const navigate = useNavigate();
   const startRun = useReportStore((s) => s.startRun);
   const input = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -14,7 +12,6 @@ export function StartScreen() {
   // На моке файл не разбирается: любой файл запускает демо-прогон.
   const run = (name: string | null) => {
     startRun(name);
-    navigate('/progress');
   };
 
   const onDrop = (e: DragEvent) => {
@@ -25,10 +22,11 @@ export function StartScreen() {
   };
 
   return (
-    <div className="max-w-3xl space-y-8 pt-4 lg:pt-10">
+    <div className="chat-inner chat-welcome rise">
       <div className="space-y-3">
-        <h1 className="text-4xl leading-[1.05] font-semibold tracking-[-0.03em] sm:text-5xl">Проверка требований</h1>
-        <p className="max-w-[52ch] text-lg text-ink-2">
+        <span className="welcome-mark" aria-hidden><span className="file-symbol" /></span>
+        <h1 className="welcome-title">Проверьте требования</h1>
+        <p className="max-w-[52ch] text-base text-ink-2">
           Загрузите документ. Агент найдёт дефекты по ISO/IEC/IEEE 29148 и IEEE 830, задаст уточняющие вопросы и скажет,
           можно ли передавать требования в разработку.
         </p>
@@ -41,13 +39,13 @@ export function StartScreen() {
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
-        className={`flex flex-col items-start gap-5 rounded-3xl border-2 border-dashed p-8 transition-[background-color,border-color,transform] duration-200 ease-out sm:p-10 ${
+        className={`upload-card transition-colors ${
           dragging ? 'scale-[1.01] border-accent bg-accent-soft' : 'border-line-strong bg-surface'
         }`}
       >
         <div>
-          <p className="text-xl font-semibold tracking-[-0.01em]">Перетащите файл сюда</p>
-          <p className="mt-1 text-ink-2">PDF, Markdown или DOCX</p>
+          <p className="text-base font-semibold">Перетащите файл сюда</p>
+          <p className="mt-1 text-sm text-muted">PDF, Markdown или DOCX</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <input
@@ -70,8 +68,7 @@ export function StartScreen() {
       </div>
 
       <p className="max-w-[60ch] text-sm text-muted">
-        Это демонстрация на готовых данных: файл не отправляется на сервер и не разбирается, результат всегда один и тот
-        же, по документу «Уведомление о расходах по карте».
+        В деморежиме используется готовый отчёт по документу «Уведомление о расходах по карте».
       </p>
     </div>
   );

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { ThinkingOrb, type OrbState } from 'thinking-orbs';
-import { Button, ButtonLink } from '../components/Button';
+import { ReportMessage } from '../components/ReportMessage';
+import { Button } from '../components/Button';
 import { demoDelay, DEMO_FINISH_PAUSE_MS, formatInt, formatSeconds, stageMsFromUrl } from '../lib/demo';
 import { STAGE_BY_ID, type StageId } from '../lib/labels';
 import { useReportStore, type StageRecord } from '../lib/report-store';
@@ -71,24 +72,9 @@ export function StageList({ stages, current, completed, elapsed }: {
   );
 }
 
-export function ProgressScreen() {
-  const { mode, stageTrace } = useReportStore();
-  if (mode !== 'demo') {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-2xl font-semibold">Ход проверки</h1>
-        {stageTrace.length > 0 && <StageList stages={stageTrace.map((stage) => stage.stage)} current={null} completed={stageTrace} />}
-        <ButtonLink to="/">Открыть чат</ButtonLink>
-      </div>
-    );
-  }
-  return <DemoProgressScreen />;
-}
-
-function DemoProgressScreen() {
-  const navigate = useNavigate();
+export function DemoProgressScreen() {
   const { search } = useLocation();
-  const { status, stageTrace, sourceName, demoPlayed, load, markDemoPlayed } = useReportStore();
+  const { status, report, stageTrace, sourceName, demoPlayed, load, markDemoPlayed } = useReportStore();
   const stageMs = stageMsFromUrl(search);
 
   // Повторный заход после завершённого прогона показывает итог без повторного проигрывания.
@@ -123,14 +109,13 @@ function DemoProgressScreen() {
     if (!finished || alreadyPlayed.current) return;
     const go = setTimeout(() => {
       markDemoPlayed();
-      navigate('/summary');
     }, DEMO_FINISH_PAUSE_MS);
     return () => clearTimeout(go);
-  }, [finished, markDemoPlayed, navigate]);
+  }, [finished, markDemoPlayed]);
 
   if (status === 'error') {
     return (
-      <div role="alert" className="max-w-md space-y-3">
+      <div role="alert" className="chat-inner space-y-3">
         <h1 className="text-2xl font-semibold">Не удалось начать проверку</h1>
         <p className="text-ink-2">Данные демо не загрузились.</p>
         <Button onClick={() => void load()}>Повторить</Button>
@@ -145,7 +130,7 @@ function DemoProgressScreen() {
   const totalOut = stageTrace.reduce((s, x) => s + x.tokens_out, 0);
 
   return (
-    <div className="max-w-3xl space-y-8">
+    <div className="chat-inner space-y-5 rise">
       <div className="flex items-center gap-5 rounded-3xl bg-surface p-6 shadow-[0_1px_2px_rgb(23_24_28/0.06),0_8px_24px_-12px_rgb(23_24_28/0.12)] sm:p-7">
         <div className="grid size-16 shrink-0 place-items-center">
           {current ? (
@@ -167,15 +152,14 @@ function DemoProgressScreen() {
         </div>
       </div>
 
-      {ready && <StageList stages={stageTrace.map((stage) => stage.stage)} current={current?.stage ?? null} completed={stageTrace.slice(0, position)} elapsed={elapsed} />}
-
-      <div className="flex gap-3">
-        {finished ? (
-          <ButtonLink to="/summary" variant="primary">Открыть сводку</ButtonLink>
-        ) : (
-          ready && <Button variant="secondary" onClick={() => setActive(total)}>Пропустить</Button>
-        )}
-      </div>
+      {demoPlayed && report && <ReportMessage report={report} />}
+      {ready && (finished ? (
+        <details className="run-details">
+          <summary>Стадии проверки</summary>
+          <StageList stages={stageTrace.map((stage) => stage.stage)} current={null} completed={stageTrace} />
+        </details>
+      ) : <StageList stages={stageTrace.map((stage) => stage.stage)} current={current?.stage ?? null} completed={stageTrace.slice(0, position)} elapsed={elapsed} />)}
+      {ready && !finished && <Button variant="secondary" onClick={() => setActive(total)}>Пропустить анимацию</Button>}
     </div>
   );
 }

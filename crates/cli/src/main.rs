@@ -1,5 +1,6 @@
 mod ask;
 mod chat;
+mod config;
 mod progress;
 
 use std::{
@@ -11,12 +12,13 @@ use std::{
     sync::Arc,
 };
 
-use agent::{Answers, Result, build_provider, progress_trace, read_answers};
+use agent::{Answers, ProviderFactory, Result, progress_trace, read_answers};
 use clap::{
     Parser, Subcommand, ValueEnum,
     error::{ContextKind, ErrorKind},
 };
 use doc::ParserRegistry;
+use llm::settings::{Settings, config_path};
 use review::{
     AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, ProgressSink, Report,
     ReportRenderer, RunContext, discover_golden_files, evaluate_document, format_eval_report,
@@ -41,15 +43,15 @@ enum Command {
     /// Открыть интерактивную чат-сессию.
     Chat {
         input: Option<PathBuf>,
-        #[arg(long, value_enum, default_value = "gemini")]
-        provider: Provider,
+        #[arg(long, value_enum)]
+        provider: Option<Provider>,
         #[arg(long)]
         no_cache: bool,
     },
     /// Запустить локальный веб-сервер.
     Serve {
-        #[arg(long, value_enum, default_value = "gemini")]
-        provider: Provider,
+        #[arg(long, value_enum)]
+        provider: Option<Provider>,
         #[arg(long)]
         no_cache: bool,
         #[arg(long, default_value = "127.0.0.1:3333")]
@@ -64,8 +66,8 @@ enum Command {
         output: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "md")]
         format: Format,
-        #[arg(long, value_enum, default_value = "gemini")]
-        provider: Provider,
+        #[arg(long, value_enum)]
+        provider: Option<Provider>,
         #[arg(long)]
         no_cache: bool,
         #[arg(long)]
@@ -83,8 +85,8 @@ enum Command {
         /// Путь к отчёту, рядом с которым сохраняются ответы.
         #[arg(short, long, default_value = "reports/report.md")]
         output: PathBuf,
-        #[arg(long, value_enum, default_value = "gemini")]
-        provider: Provider,
+        #[arg(long, value_enum)]
+        provider: Option<Provider>,
         #[arg(long)]
         no_cache: bool,
     },
@@ -92,10 +94,15 @@ enum Command {
     Eval {
         #[arg(long, default_value = "eval/")]
         golden: PathBuf,
-        #[arg(long, value_enum, default_value = "gemini")]
-        provider: Provider,
+        #[arg(long, value_enum)]
+        provider: Option<Provider>,
         #[arg(long)]
         no_cache: bool,
+    },
+    /// Настроить провайдера, модель и ключ.
+    Config {
+        #[command(subcommand)]
+        action: Option<config::Action>,
     },
     /// Вывести JSON Schema отчёта.
     Schema {
@@ -193,22 +200,36 @@ async fn run(cli: Cli) -> Result<()> {
         .with_writer(io::stderr)
         .init();
 
+    let path = config_path();
+    let settings = || {
+        path.as_deref()
+            .map(Settings::load)
+            .transpose()
+            .map(|value| value.unwrap_or_default())
+    };
+    let factory = |provider: Option<Provider>, no_cache| -> Result<ProviderFactory> {
+        Ok(ProviderFactory::with_settings(
+            provider.map(Into::into),
+            no_cache,
+            settings()?,
+        ))
+    };
     match cli.command.unwrap_or(Command::Chat {
         input: None,
-        provider: Provider::Gemini,
+        provider: None,
         no_cache: false,
     }) {
         Command::Chat {
             input,
             provider,
             no_cache,
-        } => chat::run(input, provider.into(), no_cache).await,
+        } => chat::run(input, factory(provider, no_cache)?, path).await,
         Command::Serve {
             provider,
             no_cache,
             listen,
             web_dir,
-        } => server::serve(listen, provider.into(), no_cache, web_dir).await,
+        } => server::serve(listen, factory(provider, no_cache)?, path, web_dir).await,
         Command::Check {
             input,
             output,
@@ -224,19 +245,34 @@ async fn run(cli: Cli) -> Result<()> {
                 reasoning,
                 events: events.as_deref(),
             };
-            check(&input, output, format, provider, no_cache, options).await
+            check(
+                &input,
+                output,
+                format,
+                &factory(provider, no_cache)?,
+                options,
+            )
+            .await
         }
         Command::Ask {
             input,
             output,
             provider,
             no_cache,
-        } => ask::run(&input, &output, provider, no_cache).await,
+        } => ask::run(&input, &output, &factory(provider, no_cache)?).await,
         Command::Eval {
             golden,
             provider,
             no_cache,
-        } => eval_golden(&golden, provider, no_cache).await,
+        } => eval_golden(&golden, &factory(provider, no_cache)?).await,
+        Command::Config { action } => {
+            config::run(
+                path.as_deref()
+                    .ok_or("Не удалось определить каталог профиля")?,
+                action,
+            )
+            .await
+        }
         Command::Schema { output } => {
             let schema = serde_json::to_string_pretty(&Report::json_schema())? + "\n";
             if let Some(path) = output {
@@ -253,8 +289,7 @@ async fn check(
     input: &Path,
     output: Option<PathBuf>,
     format: Format,
-    provider: Provider,
-    no_cache: bool,
+    factory: &ProviderFactory,
     options: RunOptions<'_>,
 ) -> Result<()> {
     let output = output.unwrap_or_else(|| {
@@ -283,7 +318,7 @@ async fn check(
     }
 
     let answers = read_answers(&answers_path)?;
-    let report = review(input, provider, no_cache, options, &answers).await?;
+    let report = review(input, factory, options, &answers).await?;
     let rendered = match format {
         Format::Md => MarkdownRenderer.render(&report)?,
         Format::Json => JsonRenderer.render(&report)?,
@@ -314,8 +349,7 @@ fn answers_path(input: &Path, output: &Path) -> Result<PathBuf> {
 
 async fn review(
     input: &Path,
-    provider: Provider,
-    no_cache: bool,
+    factory: &ProviderFactory,
     options: RunOptions<'_>,
     answers: &Answers,
 ) -> Result<Report> {
@@ -324,12 +358,7 @@ async fn review(
     let document = ParserRegistry::default().parse(input, &bytes)?;
     let sink = progress_sink(options.events)?;
     let trace_log = progress_trace(Arc::clone(&sink));
-    let provider = build_provider(
-        provider.into(),
-        no_cache,
-        trace_log.clone(),
-        options.reasoning,
-    )?;
+    let provider = factory.build(trace_log.clone(), options.reasoning)?;
     let run = agent::review(
         document,
         provider.as_ref(),
@@ -355,7 +384,7 @@ async fn review(
     Ok(report)
 }
 
-async fn eval_golden(golden: &Path, provider_kind: Provider, no_cache: bool) -> Result<()> {
+async fn eval_golden(golden: &Path, factory: &ProviderFactory) -> Result<()> {
     let golden_files = discover_golden_files(golden)?;
     let mut loaded = Vec::with_capacity(golden_files.len());
     for file in golden_files {
@@ -364,7 +393,7 @@ async fn eval_golden(golden: &Path, provider_kind: Provider, no_cache: bool) -> 
 
     let sink = progress_sink(None)?;
     let trace_log = progress_trace(Arc::clone(&sink));
-    let provider = build_provider(provider_kind.into(), no_cache, trace_log.clone(), false)?;
+    let provider = factory.build(trace_log.clone(), false)?;
     let registry = ParserRegistry::default();
     let checks = CheckRegistry::with_builtin_rules();
     let pipeline = Pipeline::default();

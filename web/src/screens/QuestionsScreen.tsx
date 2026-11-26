@@ -13,7 +13,7 @@ import type { Question, Report } from '../lib/types';
 const RECHECK_MS = 2600;
 
 function QuestionCard({ q, report }: { q: Question; report: Report }) {
-  const live = useReportStore((s) => s.mode === 'live');
+  const mode = useReportStore((s) => s.mode);
   const answer = useReportStore((s) => s.answers[q.id] ?? '');
   const setAnswer = useReportStore((s) => s.setAnswer);
   const clearAnswer = useReportStore((s) => s.clearAnswer);
@@ -48,20 +48,20 @@ function QuestionCard({ q, report }: { q: Question; report: Report }) {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         {q.related.map((r) =>
           r.kind === 'finding' ? (
-            <Link key={`f${r.id}`} className="text-accent-ink hover:underline" to={`/document?finding=${encodeURIComponent(r.id)}`}>
+            <Link key={`f${r.id}`} className="text-accent-ink hover:underline" to={`/?tab=document&finding=${encodeURIComponent(r.id)}`}>
               Находка: {findings.get(r.id) ? CRITERIA[findings.get(r.id)!.criterion].label : r.id}
             </Link>
           ) : (
-            <Link key={`r${r.id}`} className="text-accent-ink hover:underline" to={`/findings?requirement=${encodeURIComponent(r.id)}`}>
+            <Link key={`r${r.id}`} className="text-accent-ink hover:underline" to={`/?tab=findings&requirement=${encodeURIComponent(r.id)}`}>
               Требование {r.id}
             </Link>
           ),
         )}
       </div>
 
-      {live ? (
+      {mode === 'live' ? (
         <ButtonLink to={`/?answer=${encodeURIComponent(q.id)}`}>Ответить в чате</ButtonLink>
-      ) : <fieldset className="space-y-2">
+      ) : mode === 'demo' ? <fieldset className="space-y-2">
         <legend className="sr-only">Ответ на вопрос {q.id}</legend>
         {q.options.map((o) => (
           <label
@@ -93,7 +93,7 @@ function QuestionCard({ q, report }: { q: Question; report: Report }) {
             Очистить ответ
           </button>
         )}
-      </fieldset>}
+      </fieldset> : null}
     </article>
   );
 }
@@ -105,7 +105,7 @@ type Phase =
   | { name: 'done'; after: Report };
 
 function QuestionsView({ report }: { report: Report }) {
-  const live = useReportStore((s) => s.mode === 'live');
+  const mode = useReportStore((s) => s.mode);
   const answers = useReportStore((s) => s.answers);
   const [phase, setPhase] = useState<Phase>({ name: 'idle' });
   const result = useRef<HTMLDivElement>(null);
@@ -131,7 +131,8 @@ function QuestionsView({ report }: { report: Report }) {
       <header className="space-y-1">
         <h1 className="text-3xl font-semibold tracking-[-0.02em]">Вопросы к автору</h1>
         <p className="text-ink-2">
-          {live ? 'Ответьте на уточняющие вопросы в чате.' : 'Спорные места, которые агент не может решить по тексту. Ответьте и перепроверьте документ.'}
+          {mode === 'live' && 'Ответьте на уточняющие вопросы в чате.'}
+          {mode === 'demo' && 'Ответьте на вопросы и перепроверьте документ.'}
         </p>
       </header>
 
@@ -147,7 +148,7 @@ function QuestionsView({ report }: { report: Report }) {
         </ul>
       )}
 
-      {!live && <div className="sticky bottom-4 flex flex-wrap items-center gap-3 rounded-2xl bg-surface/95 p-4 ring-1 ring-line-strong backdrop-blur">
+      {mode === 'demo' && <div className="sticky bottom-4 flex flex-wrap items-center gap-3 rounded-2xl bg-surface/95 p-4 ring-1 ring-line-strong backdrop-blur">
         <p className="tabular flex-1 text-sm text-ink-2">
           Отвечено {answered} из {report.questions.length}
         </p>

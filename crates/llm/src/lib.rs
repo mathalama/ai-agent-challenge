@@ -1,7 +1,9 @@
 mod decorators;
 mod mock_review;
 mod openai;
+pub mod openrouter;
 mod providers;
+pub mod settings;
 
 pub use decorators::{
     CachedProvider, RateLimitedProvider, RetryNotice, RetryProvider, TraceEntry, TraceLog,
@@ -72,6 +74,10 @@ pub enum LlmError {
         message: String,
         retry_after: Option<std::time::Duration>,
     },
+    #[error("{0}")]
+    Settings(&'static str),
+    #[error("Исчерпан дневной лимит бесплатных моделей OpenRouter, сброс в 00:00 UTC")]
+    OpenRouterDailyLimit,
     #[error("Ошибка запроса к LLM: {0}")]
     Transport(#[from] reqwest::Error),
     #[error("Поток ответа LLM прервался до результата")]
@@ -152,4 +158,43 @@ pub async fn generate_typed<T: JsonSchema + DeserializeOwned>(
     let request = LlmRequest::typed::<T>(stage, system_prompt, user_text)?;
     let response = provider.generate(&request).await?;
     Ok(serde_json::from_value(response.json)?)
+}
+
+/// Проверяет OpenRouter по статусу ключа; у остальных провайдеров запрашивает короткий ответ.
+pub async fn test_settings(config: &settings::ResolvedSettings) -> Result<String> {
+    use settings::Provider;
+    if config.provider == Provider::Openai && openrouter::is_openrouter(&config.base_url) {
+        let key = config
+            .api_key
+            .as_deref()
+            .ok_or(LlmError::Settings("Укажите ключ OpenRouter"))?;
+        return Ok(openrouter::key_status(key).await?.summary());
+    }
+    let provider: Box<dyn LlmProvider> = match config.provider {
+        Provider::Mock => return Ok("Mock готов к работе".into()),
+        Provider::Gemini => Box::new(GeminiProvider::from_settings(config)?),
+        Provider::Openai => Box::new(OpenAiProvider::from_settings(config)?),
+    };
+    #[derive(Deserialize, JsonSchema)]
+    struct Connection {
+        ok: bool,
+    }
+    let request = LlmRequest::typed::<Connection>(
+        "settings_test",
+        "Верни объект JSON с полем ok = true.",
+        "Проверка соединения.".into(),
+    )?;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        provider.generate(&request),
+    )
+    .await
+    .map_err(|_| LlmError::Settings("Провайдер не ответил за 20 секунд"))?
+    .map_err(|_| {
+        LlmError::Settings("Не удалось проверить провайдер. Проверьте адрес, модель и ключ")
+    })?;
+    if !serde_json::from_value::<Connection>(result.json)?.ok {
+        return Err(LlmError::Settings("Провайдер вернул неожиданный ответ"));
+    }
+    Ok("Соединение установлено".into())
 }

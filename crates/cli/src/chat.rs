@@ -1,6 +1,8 @@
+mod terminal;
+
 use std::{
     fs,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -8,16 +10,23 @@ use std::{
     },
 };
 
-use agent::{
-    AgentEvent, ExportFormat, Input, Provider, ProviderFactory, Result, Session, read_answers,
-};
+use agent::{AgentEvent, ExportFormat, Input, ProviderFactory, Result, Session, read_answers};
 use review::ProgressSink;
 
 use crate::{progress::ConsoleProgress, same_path, write_output};
 
-pub async fn run(input: Option<PathBuf>, provider: Provider, no_cache: bool) -> Result<()> {
-    let factory = ProviderFactory::new(provider, no_cache);
-    let mut session = Session::new(move |trace, reasoning| factory.build(trace, reasoning));
+pub async fn run(
+    input: Option<PathBuf>,
+    factory: ProviderFactory,
+    config: Option<PathBuf>,
+) -> Result<()> {
+    let factory = Arc::new(factory);
+    let shared = Arc::clone(&factory);
+    let mut session = Session::new(move |trace, reasoning| shared.build(trace, reasoning));
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        let progress = Arc::new(ConsoleProgress::interactive());
+        return terminal::run(&mut session, input, &factory, config.as_deref(), &progress).await;
+    }
     let mut path = None;
     let progress = Arc::new(ConsoleProgress::default());
     print_event(Session::greeting(), None, &progress)?;
@@ -37,17 +46,20 @@ pub async fn run(input: Option<PathBuf>, provider: Provider, no_cache: bool) -> 
         }
         let text = line.trim();
         if let Some(("/load", name)) = text.split_once(char::is_whitespace) {
-            let name = name.trim();
-            let name = name
-                .strip_prefix('"')
-                .and_then(|name| name.strip_suffix('"'))
-                .unwrap_or(name);
-            load(&mut session, name.into(), &mut path, &progress).await;
+            load(&mut session, load_path(name), &mut path, &progress).await;
         } else if !text.is_empty() {
             handle(&mut session, Input::Text(text), path.as_deref(), &progress).await;
         }
     }
     Ok(())
+}
+
+fn load_path(name: &str) -> PathBuf {
+    let name = name.trim();
+    name.strip_prefix('"')
+        .and_then(|name| name.strip_suffix('"'))
+        .unwrap_or(name)
+        .into()
 }
 
 async fn load(

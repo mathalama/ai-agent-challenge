@@ -11,7 +11,19 @@ use review::{ProgressEvent, ProgressSink};
 
 /// Печатает ход прогона в stderr, чтобы stdout оставался для результатов.
 #[derive(Default)]
-pub struct ConsoleProgress(Mutex<ReasoningOutput>);
+pub struct ConsoleProgress {
+    reasoning: Mutex<ReasoningOutput>,
+    activity: Mutex<Activity>,
+    interactive: bool,
+}
+
+#[derive(Default)]
+struct Activity {
+    stage: String,
+    frame: usize,
+    visible: bool,
+    tokens: u64,
+}
 
 #[derive(Default)]
 struct ReasoningOutput {
@@ -21,8 +33,57 @@ struct ReasoningOutput {
 }
 
 impl ConsoleProgress {
+    pub fn interactive() -> Self {
+        Self {
+            interactive: io::stderr().is_terminal(),
+            ..Self::default()
+        }
+    }
+
+    pub fn tokens(&self) -> u64 {
+        self.activity.lock().expect("блокировка прогресса").tokens
+    }
+
+    pub fn tick(&self) {
+        if !self.interactive {
+            return;
+        }
+        let mut state = self.activity.lock().expect("блокировка прогресса");
+        if state.stage.is_empty() {
+            return;
+        }
+        let reasoning = self
+            .reasoning
+            .lock()
+            .expect("блокировка вывода рассуждений");
+        if reasoning.count != 0 {
+            return;
+        }
+        const FRAMES: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+        let mut stderr = io::stderr().lock();
+        let _ = write!(
+            stderr,
+            "\r{} {}\x1b[K",
+            FRAMES[state.frame % FRAMES.len()],
+            state.stage
+        );
+        let _ = stderr.flush();
+        state.visible = true;
+        state.frame = state.frame.wrapping_add(1);
+    }
+
+    pub fn finish_activity(&self) {
+        let mut state = self.activity.lock().expect("блокировка прогресса");
+        state.clear();
+        state.stage.clear();
+    }
+
     pub fn reasoning(&self, stage: &str, delta: &str, complete: bool) {
-        let mut state = self.0.lock().expect("блокировка вывода рассуждений");
+        self.activity.lock().expect("блокировка прогресса").clear();
+        let mut state = self
+            .reasoning
+            .lock()
+            .expect("блокировка вывода рассуждений");
         if complete || state.stage != stage {
             state.finish();
         }
@@ -59,10 +120,21 @@ impl ConsoleProgress {
     }
 
     pub fn flush_reasoning(&self) {
-        self.0
+        self.reasoning
             .lock()
             .expect("блокировка вывода рассуждений")
             .finish();
+    }
+}
+
+impl Activity {
+    fn clear(&mut self) {
+        if self.visible {
+            let mut stderr = io::stderr().lock();
+            let _ = write!(stderr, "\r\x1b[K");
+            let _ = stderr.flush();
+            self.visible = false;
+        }
     }
 }
 
@@ -88,6 +160,26 @@ impl ProgressSink for ConsoleProgress {
                 return self.reasoning(stage, delta, false);
             }
             _ => self.flush_reasoning(),
+        }
+        if self.interactive {
+            let mut state = self.activity.lock().expect("блокировка прогресса");
+            state.clear();
+            match event {
+                ProgressEvent::RunStarted { .. } => state.tokens = 0,
+                ProgressEvent::StageStarted { stage, .. } => state.stage = (*stage).into(),
+                ProgressEvent::StageFinished {
+                    input_tokens,
+                    output_tokens,
+                    ..
+                } => {
+                    state.tokens = state
+                        .tokens
+                        .saturating_add(input_tokens.saturating_add(*output_tokens));
+                    state.stage.clear();
+                }
+                ProgressEvent::RunFinished { .. } => state.stage.clear(),
+                _ => {}
+            }
         }
         if let Some(line) = console_line(event) {
             eprintln!("{line}");

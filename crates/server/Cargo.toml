@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 agent.workspace = true
 axum.workspace = true
+llm.workspace = true
 futures-util.workspace = true
 review.workspace = true
 serde.workspace = true
@@ -15,4 +16,5 @@ tower-http.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 reqwest.workspace = true

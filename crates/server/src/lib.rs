@@ -6,15 +6,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent::{Input, Provider, ProviderFactory, Session};
+use agent::{Input, ProviderFactory, Session};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, Path as RoutePath, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path as RoutePath, Query, Request, State},
     http::{HeaderMap, StatusCode, header, uri::Authority},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use llm::settings::{SettingsPatch, SettingsView};
 use review::{JsonRenderer, MarkdownRenderer, Report, ReportRenderer};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -35,6 +36,7 @@ const SESSION_IDLE: Duration = Duration::from_secs(3600);
 struct App {
     sessions: Arc<Mutex<HashMap<Uuid, SessionEntry>>>,
     provider: Arc<ProviderFactory>,
+    config_path: Option<PathBuf>,
 }
 
 struct SessionEntry {
@@ -66,23 +68,40 @@ impl IntoResponse for ApiError {
 
 pub async fn serve(
     address: SocketAddr,
-    provider: Provider,
-    no_cache: bool,
+    provider: ProviderFactory,
+    config_path: Option<PathBuf>,
     web_dir: PathBuf,
 ) -> agent::Result<()> {
     let listener = tokio::net::TcpListener::bind(address).await?;
-    let router = router(provider, no_cache, &web_dir, address.ip().is_loopback());
+    let router = router(provider, config_path, &web_dir, address.ip().is_loopback());
     println!("Сервер доступен на http://{}", listener.local_addr()?);
-    axum::serve(listener, router).await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
-fn router(provider: Provider, no_cache: bool, web_dir: &Path, loopback: bool) -> Router {
+fn router(
+    provider: ProviderFactory,
+    config_path: Option<PathBuf>,
+    web_dir: &Path,
+    loopback: bool,
+) -> Router {
     let app = App {
         sessions: Arc::default(),
-        provider: Arc::new(ProviderFactory::new(provider, no_cache)),
+        provider: Arc::new(provider),
+        config_path,
     };
+    let settings = Router::new()
+        .route("/settings", get(get_settings).put(put_settings))
+        .route("/settings/test", post(test_settings))
+        .route("/settings/openrouter/models", get(openrouter_models))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .route_layer(middleware::from_fn(local_settings));
     let api = Router::new()
+        .merge(settings)
         .route("/schema", get(|| async { Json(Report::json_schema()) }))
         .route("/sessions", post(create_session))
         .route(
@@ -103,6 +122,99 @@ fn router(provider: Provider, no_cache: bool, web_dir: &Path, loopback: bool) ->
     Router::new().nest("/api", api).fallback_service(
         ServeDir::new(web_dir).fallback(ServeFile::new(web_dir.join("index.html"))),
     )
+}
+
+async fn local_settings(request: Request, next: Next) -> Response {
+    let headers = request.headers();
+    let loopback = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|ConnectInfo(peer)| peer.ip().to_canonical().is_loopback());
+    let matching_origin = headers.get(header::ORIGIN).is_none_or(|origin| {
+        origin
+            .to_str()
+            .ok()
+            .and_then(|origin| origin.parse::<axum::http::Uri>().ok())
+            .filter(|uri| matches!(uri.scheme_str(), Some("http" | "https")))
+            .and_then(|uri| uri.authority().cloned())
+            .is_some_and(|origin| {
+                headers.get(header::HOST).is_some_and(|host| {
+                    host.to_str()
+                        .is_ok_and(|value| value.eq_ignore_ascii_case(origin.as_str()))
+                })
+            })
+    });
+    if !(loopback && local_host(headers) && matching_origin) {
+        return ApiError(
+            StatusCode::FORBIDDEN,
+            "Настройки доступны только с localhost",
+        )
+        .into_response();
+    }
+    next.run(request).await
+}
+
+async fn get_settings(State(app): State<App>) -> ApiResult<Json<SettingsView>> {
+    app.provider.view().map(Json).map_err(settings_error)
+}
+
+async fn put_settings(
+    State(app): State<App>,
+    Json(patch): Json<SettingsPatch>,
+) -> ApiResult<Json<SettingsView>> {
+    let path = app.config_path.as_deref().ok_or(ApiError(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Каталог профиля недоступен",
+    ))?;
+    app.provider
+        .update(path, patch)
+        .map(Json)
+        .map_err(settings_error)
+}
+
+async fn test_settings(
+    State(app): State<App>,
+    Json(patch): Json<SettingsPatch>,
+) -> ApiResult<Json<Value>> {
+    let config = app.provider.preview(patch).map_err(settings_error)?;
+    match llm::test_settings(&config).await {
+        Ok(message) => Ok(Json(json!({"message": message}))),
+        Err(llm::LlmError::Settings(message)) => Err(ApiError(StatusCode::BAD_REQUEST, message)),
+        Err(_) => Err(ApiError(
+            StatusCode::BAD_GATEWAY,
+            "Не удалось проверить соединение. Проверьте ключ, модель и адрес.",
+        )),
+    }
+}
+
+fn settings_error(error: Box<dyn std::error::Error + Send + Sync>) -> ApiError {
+    if let Some(llm::LlmError::Settings(message)) = error.downcast_ref() {
+        ApiError(StatusCode::BAD_REQUEST, message)
+    } else {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Не удалось обработать настройки",
+        )
+    }
+}
+
+#[derive(Deserialize)]
+struct CatalogQuery {
+    #[serde(default = "free_models_default")]
+    free_only: bool,
+}
+
+fn free_models_default() -> bool {
+    true
+}
+
+async fn openrouter_models(
+    Query(query): Query<CatalogQuery>,
+) -> ApiResult<Json<Vec<llm::openrouter::RouterModel>>> {
+    llm::openrouter::models(query.free_only)
+        .await
+        .map(Json)
+        .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "Каталог OpenRouter недоступен"))
 }
 
 async fn same_origin(State(loopback): State<bool>, request: Request, next: Next) -> Response {
@@ -165,7 +277,11 @@ async fn create_session(State(app): State<App>) -> ApiResult<(StatusCode, Json<V
     );
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "id": id.to_string(), "greeting": Session::greeting() })),
+        Json(json!({
+            "id": id.to_string(),
+            "greeting": Session::greeting(),
+            "provider": app.provider.resolved().ok().map(|config| config.name()),
+        })),
     ))
 }
 

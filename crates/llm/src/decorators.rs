@@ -24,6 +24,7 @@ use crate::{LlmError, LlmProvider, LlmRequest, LlmResponse, ReasoningCallback, R
 pub struct CachedProvider {
     inner: RetryProvider,
     directory: PathBuf,
+    scope: Option<String>,
 }
 
 impl CachedProvider {
@@ -31,11 +32,20 @@ impl CachedProvider {
         Self {
             inner,
             directory: directory.into(),
+            scope: None,
         }
     }
 
+    pub fn with_scope(mut self, scope: String) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
     fn entry_path(&self, request: &LlmRequest) -> Result<PathBuf> {
-        let serialized = serde_json::to_vec(&(self.model(), request))?;
+        let serialized = match &self.scope {
+            Some(scope) => serde_json::to_vec(&(scope, self.model(), request))?,
+            None => serde_json::to_vec(&(self.model(), request))?,
+        };
         let digest = Sha256::digest(serialized);
         let mut key = String::with_capacity(64);
         for byte in digest {

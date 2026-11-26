@@ -143,3 +143,19 @@ cargo run -p cli -- check samples/requirements.md --provider mock --format json 
 ```sh
 cargo run -p cli -- check samples/requirements.md --provider gemini --format json --no-cache -o reports/report.gemini.json
 ```
+
+## Настройки провайдера
+
+Эти запросы доступны с localhost.
+
+| Запрос | Результат |
+| --- | --- |
+| `GET /api/settings` | Сохранённый и активный провайдеры, настройки профилей Gemini и OpenAI. Ключ представлен полем `api_key_mask`. |
+| `PUT /api/settings` | Обновляет указанные поля провайдера и возвращает настройки. |
+| `POST /api/settings/test` | Проверяет введённые или активные параметры. Возвращает объект с полем `message`. |
+| `GET /api/settings/openrouter/models?free_only=true` | Каталог текстовых моделей. Для каждой модели указаны `id`, `context_length` и `response_format`. |
+
+PUT и POST принимают JSON с необязательными полями `provider`, `model`, `base_url`, `api_key`,
+`response_format` и `free_only`. Для смены ключа передайте `api_key`. Пустая строка очищает
+сохранённый ключ. Ошибки настроек возвращаются с полем `error`. Провайдер может быть
+`mock`, `gemini` или `openai`. Допустимые форматы ответа OpenAI — `json_schema`, `json_object` и `none`.
