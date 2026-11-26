@@ -500,6 +500,8 @@ mod tests {
 
     use super::*;
 
+    /// Тест опирается на окружение без экспортированных `OPENAI_API_KEY`, `OPENAI_MODEL` и
+    /// `OPENAI_BASE_URL`, так как `ProviderFactory` читает реальные переменные окружения.
     #[test]
     fn mock_flag_keeps_saved_profiles_and_falls_back_only_on_corrupt_config() {
         let dir = tempfile::tempdir().unwrap();
