@@ -40,7 +40,7 @@ async fn pipeline_reports_every_stage_with_llm_usage() {
         panic!("первым должно идти run_started: {:?}", events[0]);
     };
     assert_eq!(model, "mock");
-    assert_eq!(stages.first(), Some(&"segment"));
+    assert_eq!(stages.first(), Some(&"triage"));
     assert_eq!(stages.last(), Some(&"clarify"));
     assert!(matches!(
         events.last(),
@@ -82,7 +82,7 @@ async fn pipeline_reports_every_stage_with_llm_usage() {
         );
         assert!(succeeded);
     }
-    let segment = finished[0];
+    let segment = finished[1];
     assert!(
         segment.4 >= 1 && segment.5 > 0,
         "segment без вызова LLM: {segment:?}"
@@ -91,7 +91,7 @@ async fn pipeline_reports_every_stage_with_llm_usage() {
 
     let json = serde_json::to_value(&events[1]).unwrap();
     assert_eq!(json["event"], "stage_started");
-    assert_eq!(json["stage"], "segment");
+    assert_eq!(json["stage"], "triage");
 }
 
 struct LimitedFacts {

@@ -84,6 +84,9 @@ impl LlmProvider for ReviewProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == "triage" {
+            return MockProvider.generate(request).await;
+        }
         if request.stage == "segment" {
             let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
             assert_eq!(input["blocks"].as_array().unwrap().len(), self.1);
@@ -329,6 +332,7 @@ impl LlmProvider for LanguageAndPromptProvider {
             .unwrap()
             .push((request.stage.clone(), request.system_prompt.clone()));
         let json = match request.stage.as_str() {
+            "triage" => return MockProvider.generate(request).await,
             "segment" => {
                 let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
                 serde_json::json!(input["blocks"].as_array().unwrap().iter()
@@ -501,6 +505,7 @@ async fn validates_finding_and_question_languages_and_attaches_domain_context() 
     assert_eq!(
         stages,
         [
+            "triage",
             "segment",
             "facts",
             "requirement_checks",
@@ -570,10 +575,14 @@ impl LlmProvider for DuplicateStagesProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == "triage" {
+            return MockProvider.generate(request).await;
+        }
         if request.stage == "segment" {
             return MockProvider.generate(request).await;
         }
         let json = match request.stage.as_str() {
+            "triage" => return MockProvider.generate(request).await,
             "requirement_checks" => serde_json::json!([
                 {
                     "requirement_id": "R-001",
@@ -665,6 +674,9 @@ impl LlmProvider for UnverifiedParaphraseProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == "triage" {
+            return MockProvider.generate(request).await;
+        }
         if request.stage == "segment" {
             return MockProvider.generate(request).await;
         }
@@ -773,6 +785,7 @@ impl LlmProvider for DuplicateProvider {
             })
         };
         let json = match request.stage.as_str() {
+            "triage" => return MockProvider.generate(request).await,
             "requirement_checks" => serde_json::json!([
                 draft(
                     Some("R-001"),

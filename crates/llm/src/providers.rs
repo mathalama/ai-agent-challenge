@@ -192,6 +192,7 @@ impl LlmProvider for MockProvider {
 
     async fn generate(&self, request: &LlmRequest) -> Result<LlmResponse> {
         let json = match request.stage.as_str() {
+            "triage" => crate::mock_review::triage(&request.user_text)?,
             "segment" => {
                 #[derive(Deserialize)]
                 struct SegmentInput {

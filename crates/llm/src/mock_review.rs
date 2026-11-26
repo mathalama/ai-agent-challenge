@@ -1,3 +1,5 @@
+use doc::{Block, BlockContent, SourceSpan};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub(crate) const DOCUMENT_TITLE: &str = "Уведомление о расходах по карте";
@@ -110,4 +112,230 @@ pub(crate) fn questions(input: &str) -> serde_json::Result<Value> {
         })
         .collect();
     Ok(json!(questions))
+}
+
+pub(crate) fn triage(input: &str) -> serde_json::Result<Value> {
+    #[derive(Deserialize)]
+    struct TriageInput {
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        headings: Vec<Block>,
+        #[serde(default)]
+        preview_blocks: Vec<Block>,
+        #[serde(default)]
+        total_blocks: usize,
+    }
+
+    let input: TriageInput = serde_json::from_str(input)?;
+    let (quote, location) = input
+        .preview_blocks
+        .iter()
+        .chain(&input.headings)
+        .find_map(block_quote)
+        .unwrap_or_else(|| {
+            (
+                input.title.clone(),
+                SourceSpan {
+                    start_line: 1,
+                    end_line: 1,
+                    page: None,
+                },
+            )
+        });
+
+    let non_heading_blocks: Vec<_> = input
+        .preview_blocks
+        .iter()
+        .filter(|block| !matches!(block.content, BlockContent::Heading { .. }))
+        .collect();
+
+    let is_headings_only = non_heading_blocks.is_empty()
+        && !input.headings.is_empty()
+        && input.total_blocks <= input.headings.len();
+    let is_placeholder_only = !non_heading_blocks.is_empty()
+        && input.total_blocks <= input.preview_blocks.len()
+        && non_heading_blocks.iter().all(|block| is_stub_block(block));
+
+    let (kind, reason) = if is_headings_only {
+        (
+            "stub",
+            "Документ содержит только заголовки разделов без описания требований.",
+        )
+    } else if is_placeholder_only {
+        (
+            "stub",
+            "Документ похож на шаблон или заглушку без содержательных требований.",
+        )
+    } else if looks_like_requirements(&input.title, &input.headings, &input.preview_blocks) {
+        (
+            "requirements",
+            "Документ содержит формулировки требований или описание поведения системы.",
+        )
+    } else {
+        (
+            "not_requirements",
+            "Текст не содержит признаков спецификации требований к системе или продукту.",
+        )
+    };
+
+    Ok(json!({
+        "kind": kind,
+        "reason": reason,
+        "evidence": {
+            "quote": quote,
+            "location": location,
+        },
+    }))
+}
+
+fn block_quote(block: &Block) -> Option<(String, SourceSpan)> {
+    let text = match &block.content {
+        BlockContent::Heading { text, .. }
+        | BlockContent::Paragraph { text }
+        | BlockContent::ListItem { text }
+        | BlockContent::Code { text, .. } => text.lines().find(|line| !line.trim().is_empty())?,
+        BlockContent::Table { rows, .. } => rows
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .find(|cell| !cell.trim().is_empty())?,
+    };
+    Some((text.trim().to_owned(), block.location))
+}
+
+fn is_stub_block(block: &Block) -> bool {
+    let text = match &block.content {
+        BlockContent::Paragraph { text }
+        | BlockContent::ListItem { text }
+        | BlockContent::Code { text, .. } => text.trim().to_lowercase(),
+        BlockContent::Heading { .. } => return true,
+        BlockContent::Table { rows, .. } => rows
+            .iter()
+            .flatten()
+            .map(|cell| cell.trim().to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    if text.is_empty() {
+        return true;
+    }
+    const MARKERS: &[&str] = &[
+        "todo",
+        "tbd",
+        "wip",
+        "placeholder",
+        "заполнить",
+        "добавить позже",
+        "в разработке",
+        "черновик",
+        "шаблон",
+        "нет данных",
+        "уточнить",
+    ];
+    let stripped = text.trim_matches(|ch: char| {
+        ch.is_whitespace() || matches!(ch, '[' | ']' | '<' | '>' | '.' | '-' | '—' | ':' | '…')
+    });
+    stripped.is_empty()
+        || (stripped.chars().count() <= 40
+            && MARKERS.iter().any(|marker| stripped.contains(marker)))
+}
+
+fn looks_like_requirements(title: &str, headings: &[Block], preview: &[Block]) -> bool {
+    let mut combined = String::from(title);
+    for block in headings.iter().chain(preview) {
+        combined.push('\n');
+        match &block.content {
+            BlockContent::Heading { text, .. }
+            | BlockContent::Paragraph { text }
+            | BlockContent::ListItem { text }
+            | BlockContent::Code { text, .. } => combined.push_str(text),
+            BlockContent::Table { rows, .. } => {
+                for cell in rows.iter().flatten() {
+                    combined.push(' ');
+                    combined.push_str(cell);
+                }
+            }
+        }
+    }
+    if has_requirement_id(&combined) {
+        return true;
+    }
+    let lower = combined.to_lowercase();
+    const KEYWORDS: &[&str] = &[
+        "требован",
+        "спецификац",
+        "техническое задание",
+        "функциональн",
+        "нефункциональн",
+        "система",
+        "сервис",
+        "приложен",
+        "пользователь",
+        "критерии приёмки",
+        "критерии приемки",
+        "сценарий",
+        "модуль",
+        "интерфейс",
+        "должен",
+        "должна",
+        "должно",
+        "должны",
+        "обязан",
+        "уведомлен",
+        "авторизац",
+        "платёж",
+        "платеж",
+        "перевод",
+        "карта",
+        "счёт",
+        "счет",
+        "заказ",
+        "клиент",
+        "тестирован",
+        "параметр",
+        "статус",
+        "ошибк",
+        "запрос",
+        "ответ",
+        "метод",
+        "лимит",
+        "порог",
+        "кредит",
+        "заявк",
+        "endpoint",
+        "requirement",
+        "specification",
+        "http",
+        "json",
+        "api",
+        "must",
+        "shall",
+        "should",
+    ];
+    if KEYWORDS.iter().any(|keyword| lower.contains(keyword)) {
+        return true;
+    }
+    lower.split(|ch: char| !ch.is_alphanumeric()).any(|word| {
+        matches!(
+            word,
+            "тз" | "фт" | "нфт" | "srs" | "prd" | "br" | "fr" | "nfr"
+        )
+    })
+}
+
+fn has_requirement_id(text: &str) -> bool {
+    text.split(|ch: char| {
+        ch.is_whitespace() || matches!(ch, '.' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '|')
+    })
+    .any(|token| {
+        let Some((prefix, number)) = token.split_once('-') else {
+            return false;
+        };
+        !prefix.is_empty()
+            && prefix.chars().count() <= 4
+            && prefix.chars().all(char::is_alphabetic)
+            && !number.is_empty()
+            && number.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }

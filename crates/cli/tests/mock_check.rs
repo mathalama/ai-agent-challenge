@@ -70,6 +70,7 @@ fn mock_produces_a_report_with_all_sections() {
     assert_eq!(
         stages,
         [
+            "triage",
             "segment",
             "facts",
             "rules",
@@ -81,7 +82,7 @@ fn mock_produces_a_report_with_all_sections() {
             "clarify"
         ]
     );
-    assert_eq!(trace["llm_calls"][0]["stage"], "segment");
+    assert_eq!(trace["llm_calls"][0]["stage"], "triage");
     assert!(trace["llm_calls"][0]["duration_ms"].is_number());
     assert!(trace["llm_calls"][0]["usage"]["input_tokens"].is_number());
     assert!(trace["llm_calls"][0].get("reasoning").is_none());

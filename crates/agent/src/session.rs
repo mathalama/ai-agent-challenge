@@ -249,9 +249,16 @@ impl Session {
                 }
             }
             "/verdict" => emit(message(match report.readiness {
-                Readiness::Blocked => "Не готово.",
-                Readiness::ChecksIncomplete => "Проверка завершена не полностью.",
-                Readiness::Ready => "Готово.",
+                Readiness::Blocked => "Не готово.".into(),
+                Readiness::ChecksIncomplete => "Проверка завершена не полностью.".into(),
+                Readiness::Ready => "Готово.".into(),
+                Readiness::NotRequirements => match &report.triage {
+                    Some(triage) => format!(
+                        "Документ не является спецификацией требований. {}",
+                        triage.reason
+                    ),
+                    None => "Документ не является спецификацией требований.".into(),
+                },
             })),
             "/export" => {
                 let (format, content) = match arguments {
@@ -279,14 +286,32 @@ impl Session {
         let result = self.run_check(Arc::clone(&emit)).await.map(|report| {
             let summary = report.summary.clone();
             let readiness = report.readiness;
+            let triage = report.triage.clone();
             self.report = Some(report);
-            (summary, readiness)
+            (summary, readiness, triage)
         });
         emit(AgentEvent::StateChanged {
             state: self.state(),
         });
-        let (summary, readiness) = result?;
+        let (summary, readiness, triage) = result?;
         emit(AgentEvent::ReportReady { summary, readiness });
+        if readiness == Readiness::NotRequirements {
+            let text = match &triage {
+                Some(decision) => format!(
+                    "Документ не является спецификацией требований. {}",
+                    decision.reason
+                ),
+                None => "Документ не является спецификацией требований.".into(),
+            };
+            emit(AgentEvent::Message {
+                role: Role::Assistant,
+                text,
+                citations: triage
+                    .into_iter()
+                    .map(|decision| decision.evidence)
+                    .collect(),
+            });
+        }
         Ok(())
     }
 

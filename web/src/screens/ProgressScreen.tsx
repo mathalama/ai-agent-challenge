@@ -8,6 +8,7 @@ import { STAGE_BY_ID, type StageId } from '../lib/labels';
 import { useReportStore, type StageRecord } from '../lib/report-store';
 
 const ORB_STATE: Record<StageId, OrbState> = {
+  triage: 'searching',
   segment: 'working',
   facts: 'searching',
   rules: 'working',

@@ -248,6 +248,9 @@ impl LlmProvider for StubSegmentProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+        if request.stage == "triage" {
+            return llm::MockProvider.generate(request).await;
+        }
         let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
         let json = match request.stage.as_str() {
             "segment" => {
@@ -388,6 +391,9 @@ async fn segment_stage_extracts_id_from_heading_and_mid_sentence() {
         }
 
         async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+            if request.stage == "triage" {
+                return llm::MockProvider.generate(request).await;
+            }
             let json = if request.stage == "segment" {
                 let input: serde_json::Value = serde_json::from_str(&request.user_text).unwrap();
                 json!(input["blocks"].as_array().unwrap().iter().filter_map(|block| {
@@ -440,6 +446,9 @@ async fn segment_stage_handles_table_only_document_without_llm_call() {
         }
 
         async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+            if request.stage == "triage" {
+                return llm::MockProvider.generate(request).await;
+            }
             if request.stage == "segment" {
                 panic!("LLM не должен вызываться для документа только из таблиц");
             }

@@ -69,6 +69,16 @@
     "summary": {
       "$ref": "#/$defs/ReportSummary"
     },
+    "triage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TriageDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "unmatched_answers": {
       "type": "object",
       "additionalProperties": {
@@ -299,6 +309,14 @@
         }
       ]
     },
+    "DocumentKind": {
+      "type": "string",
+      "enum": [
+        "requirements",
+        "not_requirements",
+        "stub"
+      ]
+    },
     "Evidence": {
       "type": "object",
       "properties": {
@@ -450,7 +468,8 @@
       "enum": [
         "blocked",
         "checks_incomplete",
-        "ready"
+        "ready",
+        "not_requirements"
       ]
     },
     "RelatedId": {
@@ -702,6 +721,25 @@
         "block_id",
         "index",
         "row"
+      ]
+    },
+    "TriageDecision": {
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "kind": {
+          "$ref": "#/$defs/DocumentKind"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reason",
+        "evidence"
       ]
     }
   }
