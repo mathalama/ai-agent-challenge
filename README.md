@@ -6,11 +6,13 @@ Rust CLI для статической проверки требований к 
 
 Установите стабильный Rust с поддержкой Edition 2024 и настройте Gemini по инструкции ниже. [Установка Rust](https://www.rust-lang.org/tools/install)
 
-Из корня репозитория запустите через Cargo.
+Из корня репозитория запустите через Cargo. Короткая форма из задания: документ и путь к отчёту.
 
 ```text
-cargo run -p cli -- check <INPUT> -o <OUTPUT>
+cargo run -p cli -- <INPUT> <REPORT>
 ```
+
+Она равна `cargo run -p cli -- check <INPUT> -o <REPORT>`. Отчёт с расширением `.json` пишется в JSON, остальные расширения дают Markdown. Если путь совпадает с именем подкоманды (`check`, `chat` и так далее), выполняется подкоманда.
 
 Чтобы установить команду `rs`, выполните из корня репозитория.
 
@@ -21,13 +23,19 @@ cargo install --path crates/cli
 После установки запустите проверку командой.
 
 ```text
-rs check <INPUT> -o <OUTPUT>
+rs <INPUT> <REPORT>
 ```
 
-Подставьте путь к документу требований вместо `<INPUT>` и путь к отчёту вместо `<OUTPUT>`. Для локального демонстрационного прогона без ключа используйте команду.
+Подставьте путь к документу требований вместо `<INPUT>` и путь к отчёту вместо `<REPORT>`. Длинная форма с явными флагами делает то же самое.
+
+```text
+rs check <INPUT> -o <REPORT>
+```
+
+Для локального демонстрационного прогона без ключа используйте команду.
 
 ```sh
-cargo run -p cli -- check samples/requirements.md -o reports/report.md --provider mock
+cargo run -p cli -- samples/requirements.md reports/report.md --provider mock
 ```
 
 Команда создаёт `reports/report.md`. Файл `samples/requirements.md` взят из репозитория задания. [Исходный документ организаторов](https://github.com/BCC-HUB/ai-requirements-validator-task/blob/main/docs/requirements.md)
@@ -110,6 +118,7 @@ docker compose run --rm app check samples/requirements.md -o reports/report.md -
 ### Команды для скриптов
 
 ```text
+rs <INPUT> <REPORT> [--provider gemini|openai|mock] [--no-cache] [--trace <PATH>] [--reasoning] [--events <PATH>]
 rs check <INPUT> [-o <OUTPUT>] [--format md|json] [--provider gemini|openai|mock] [--no-cache] [--trace <PATH>] [--reasoning] [--events <PATH>]
 rs ask <INPUT> [-o <PATH>] [--provider gemini|openai|mock] [--no-cache]
 rs eval [--golden eval/] [--provider gemini|openai|mock] [--no-cache]
