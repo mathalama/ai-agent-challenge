@@ -136,6 +136,63 @@ async fn consistency_batches_shared_entities_for_thirty_requirements() {
     assert_eq!(ctx.findings[0].evidence.len(), 2);
 }
 
+#[tokio::test]
+async fn declared_api_field_types_are_compared_without_model_facts() {
+    let document = ParserRegistry::default()
+        .parse(
+            Path::new("credit_application.md"),
+            include_bytes!("../../../eval/credit_application.md"),
+        )
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &MockProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    let spans = ctx.findings.iter().filter_map(|finding| {
+        if finding.detector != Detector::Rule("field_type_mismatch".into()) {
+            return None;
+        }
+        assert!(finding.verified);
+        Some(
+            finding
+                .evidence
+                .iter()
+                .map(|entry| entry.location.start_line)
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(spans.collect::<Vec<_>>(), [vec![87, 101], vec![88, 102]]);
+}
+
+#[tokio::test]
+async fn api_field_types_are_scoped_to_the_operation() {
+    let source = concat!(
+        "# API\n\n",
+        "## First operation\n\n",
+        "### Request parameters\n\n",
+        "| Field | Type |\n| --- | --- |\n| count | integer |\n\n",
+        "### Response parameters\n\n",
+        "| Type | Field |\n| --- | --- |\n| integer | count |\n\n",
+        "## Second operation\n\n",
+        "### Request parameters\n\n",
+        "| Field | Type |\n| --- | --- |\n| count | string |\n\n",
+        "### Response parameters\n\n",
+        "| Field | Type |\n| --- | --- |\n| count | string |\n"
+    );
+    let document = ParserRegistry::default()
+        .parse(Path::new("input.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &MockProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert!(
+        ctx.findings
+            .iter()
+            .all(|finding| finding.detector != Detector::Rule("field_type_mismatch".into()))
+    );
+}
+
 struct SampleMock;
 
 #[async_trait]
@@ -318,6 +375,9 @@ async fn sample_conflicts_have_verified_quotes_on_both_sides() {
         match &finding.detector {
             Detector::Rule(rule) => {
                 rules.push(rule.as_str());
+                if rule == "http_method_mismatch" {
+                    assert!(finding.all_criteria().contains(&review::Criterion::Correct));
+                }
                 if rule == "acceptance_period_mismatch" {
                     assert_eq!(finding.scope, review::Scope::Set);
                     assert_eq!(finding.criterion, review::Criterion::Consistent);

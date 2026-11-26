@@ -97,7 +97,11 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                         id: format!("consistency-rule-{:03}", findings.len() + 1),
                         scope: Scope::Set,
                         criterion: Criterion::Consistent,
-                        additional_criteria: Vec::new(),
+                        additional_criteria: if rule == "http_method_mismatch" {
+                            vec![Criterion::Correct]
+                        } else {
+                            Vec::new()
+                        },
                         severity,
                         evidence: vec![left.evidence.clone(), right.evidence.clone()],
                         explanation,
