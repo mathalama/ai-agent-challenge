@@ -91,8 +91,9 @@ enum Command {
         input: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(long, value_enum, default_value = "md")]
-        format: Format,
+        /// Формат отчёта. По умолчанию определяется по расширению `--output`: `.json` — JSON, иначе Markdown.
+        #[arg(long, value_enum)]
+        format: Option<Format>,
         #[command(flatten)]
         run: RunFlags,
     },
@@ -250,7 +251,7 @@ async fn run(cli: Cli) -> Result<()> {
         (Some(command), _) => command,
         // Короткая форма `rs <INPUT> <REPORT>`: наличие отчёта проверено в main.
         (None, Some(input)) => Command::Check {
-            format: cli.report.as_deref().map_or(Format::Md, format_from_path),
+            format: None,
             output: cli.report,
             input,
             run: cli.run,
@@ -284,6 +285,8 @@ async fn run(cli: Cli) -> Result<()> {
                 reasoning: run.reasoning,
                 events: run.events.as_deref(),
             };
+            let format =
+                format.unwrap_or_else(|| output.as_deref().map_or(Format::Md, format_from_path));
             check(
                 &input,
                 output,

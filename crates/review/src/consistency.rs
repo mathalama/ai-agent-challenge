@@ -105,7 +105,7 @@ pub(crate) async fn check(ctx: &mut RunContext<'_>, prompt: &str) -> Result<()> 
                         severity,
                         evidence: vec![left.evidence.clone(), right.evidence.clone()],
                         explanation,
-                        suggestion: None,
+                        suggestion: rule_suggestion(rule).map(str::to_owned),
                         detector: Detector::Rule(rule.into()),
                         additional_detectors: Vec::new(),
                         merged_ids: Vec::new(),
@@ -341,6 +341,27 @@ impl Group<'_> {
             _ => None,
         }
     }
+}
+
+/// Что исправить для находки детерминированного правила: у правила нет ответа модели с предложением.
+fn rule_suggestion(rule: &str) -> Option<&'static str> {
+    Some(match rule {
+        "unit_mismatch" => {
+            "Привести величины к одной единице или описать правило пересчёта и округления."
+        }
+        "field_type_mismatch" => "Указать для поля один тип во всех таблицах и примерах.",
+        "http_method_mismatch" => {
+            "Заменить метод на POST, PUT или PATCH и привести к нему пример запроса и описание метода."
+        }
+        "status_code_mismatch" => "Согласовать перечень кодов ответа с их описанием и примерами.",
+        "status_outcome_mismatch" => {
+            "Возвращать ошибку с кодом 4xx или 5xx либо явно описать, когда успешный код сопровождает результат с ошибкой."
+        }
+        "acceptance_period_mismatch" => {
+            "Согласовать период в критерии приёмки с правилом в требовании."
+        }
+        _ => return None,
+    })
 }
 
 fn evidence_key(evidence: &Evidence) -> (Option<usize>, usize, usize, &str) {

@@ -912,7 +912,10 @@ async fn merges_single_requirement_duplicates_and_counts_critical_findings_once(
     );
     let markdown = MarkdownRenderer.render(&report).unwrap();
     assert!(markdown.contains("Критичные дефекты (критическая важность; высокая — непроверяемые, противоречивые, неполные) — 3:"));
-    assert!(markdown.contains("Подтверждённых критичных дефектов — 1"));
+    assert!(
+        markdown
+            .contains("Подтверждённых критичных дефектов — 3, из них критической важности — 1:")
+    );
 }
 
 #[tokio::test]
