@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { ThinkingOrb } from 'thinking-orbs';
 import { Button } from '../components/Button';
 import { formatLocation } from '../components/FindingCard';
-import { ChatApiError, connectChat, sendChatInput, type ChatEvent, type Progress, type SessionState } from '../lib/chat-api';
+import { ChatApiError, connectChat, saveSession, sendChatInput, type ChatEvent, type Progress, type SessionState } from '../lib/chat-api';
 import { download } from '../lib/export';
 import { READINESS, STAGE_BY_ID, isStageId, type StageId } from '../lib/labels';
 import { useReportStore, type StageRecord } from '../lib/report-store';
@@ -89,6 +89,7 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
   const reportStatus = useReportStore((s) => s.status);
   const reportError = useReportStore((s) => s.error);
   const sessionId = useReportStore((s) => s.sessionId);
+  const sourceName = useReportStore((s) => s.sourceName);
   const [items, setItems] = useState<Item[]>([]);
   const [state, setState] = useState<SessionState>('empty');
   const [connected, setConnected] = useState(false);
@@ -115,7 +116,7 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
     let current = true;
     let reportDirty = false;
 
-    function receive(event: ChatEvent) {
+    function receive(event: ChatEvent, replay = false) {
       switch (event.event) {
         case 'message':
           setItems((list) => [...list, { kind: 'message', text: event.text, citations: event.citations }]);
@@ -163,7 +164,8 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
           reportDirty = true;
           break;
         case 'export':
-          download(`report.${event.format}`, event.content, event.format === 'md' ? 'text/markdown' : 'application/json');
+          // После перезагрузки журнал проигрывается заново, файл уже скачан раньше.
+          if (!replay) download(`report.${event.format}`, event.content, event.format === 'md' ? 'text/markdown' : 'application/json');
           setItems((list) => [...list, { kind: 'message', text: `Отчёт report.${event.format} скачан.` }]);
           break;
         case 'error':
@@ -183,7 +185,11 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
         useReportStore.setState({ mode: 'demo' });
         return;
       }
-      useReportStore.setState({ mode: 'live', sessionId: connection.id, provider: connection.provider ?? null });
+      const replayed = connection.last_event_id ?? 0;
+      useReportStore.setState({
+        mode: 'live', sessionId: connection.id, provider: connection.provider ?? null,
+        ...(connection.resumed && { runId: connection.resumed.runId, sourceName: connection.resumed.sourceName }),
+      });
       receive(connection.greeting);
       const stream = new EventSource(`/api/sessions/${connection.id}/events`);
       eventSource.current = stream;
@@ -196,7 +202,12 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
       stream.addEventListener('history_gap', () => {
         setItems((list) => [...list, { kind: 'message', text: 'Часть истории недоступна. Ниже показаны оставшиеся события.' }]);
       });
-      stream.onmessage = (message: MessageEvent<string>) => receive(JSON.parse(message.data) as ChatEvent);
+      stream.onmessage = (message: MessageEvent<string>) => {
+        // Каждая команда заканчивается событием done. До него сессия занята,
+        // в том числе когда страница вернулась к проверке, которая ещё идёт.
+        if (!useReportStore.getState().sessionBusy) useReportStore.setState({ sessionBusy: true });
+        receive(JSON.parse(message.data) as ChatEvent, Number(message.lastEventId) <= replayed);
+      };
       stream.addEventListener('done', () => {
         if (reportDirty) {
           reportDirty = false;
@@ -217,6 +228,10 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
       eventSource.current = null;
     };
   }, [sessionKey]);
+
+  useEffect(() => {
+    if (mode === 'live' && sessionId) saveSession({ sessionId, runId, sourceName });
+  }, [mode, sessionId, runId, sourceName]);
 
   useEffect(() => {
     lastLine.current?.scrollIntoView({ block: 'nearest' });

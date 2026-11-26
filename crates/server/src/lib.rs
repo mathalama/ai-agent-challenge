@@ -104,6 +104,7 @@ fn router(
         .merge(settings)
         .route("/schema", get(|| async { Json(Report::json_schema()) }))
         .route("/sessions", post(create_session))
+        .route("/sessions/{id}", get(session_info))
         .route(
             "/sessions/{id}/messages",
             post(message).layer(DefaultBodyLimit::max(128 * 1024)),
@@ -119,9 +120,32 @@ fn router(
         })
         .layer(middleware::from_fn_with_state(loopback, same_origin))
         .with_state(app);
-    Router::new().nest("/api", api).fallback_service(
-        ServeDir::new(web_dir).fallback(ServeFile::new(web_dir.join("index.html"))),
-    )
+    Router::new()
+        .nest("/api", api)
+        .fallback_service(
+            ServeDir::new(web_dir).fallback(ServeFile::new(web_dir.join("index.html"))),
+        )
+        .layer(middleware::from_fn(static_cache))
+}
+
+/// Сборка кладёт в `assets/` файлы с хешем в имени, их можно кэшировать навсегда.
+/// Остальные файлы, включая `index.html`, браузер сверяет с сервером при каждой загрузке,
+/// иначе после пересборки он подгружает старый бандл.
+async fn static_cache(request: Request, next: Next) -> Response {
+    let immutable = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    if !response.headers().contains_key(header::CACHE_CONTROL) {
+        let value = if immutable {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        };
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static(value),
+        );
+    }
+    response
 }
 
 async fn local_settings(request: Request, next: Next) -> Response {
@@ -283,6 +307,21 @@ async fn create_session(State(app): State<App>) -> ApiResult<(StatusCode, Json<V
             "provider": app.provider.resolved().ok().map(|config| config.name()),
         })),
     ))
+}
+
+/// Данные для повторного подключения к сессии после перезагрузки страницы.
+/// `last_event_id` отделяет уже прошедшие события журнала от новых.
+async fn session_info(
+    State(app): State<App>,
+    RoutePath(id): RoutePath<String>,
+) -> ApiResult<Json<Value>> {
+    let chat = app.chat(&id)?;
+    Ok(Json(json!({
+        "id": id,
+        "greeting": Session::greeting(),
+        "provider": app.provider.resolved().ok().map(|config| config.name()),
+        "last_event_id": chat.events.last_id(),
+    })))
 }
 
 impl App {

@@ -123,6 +123,26 @@ async fn http_session_replays_events_and_serves_the_mock_report() {
     assert!(check_events.contains("\"event\":\"report_ready\""));
     assert!(!check_events.contains("\"state\":\"loaded\""));
 
+    let info: Value = client
+        .get(&session)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info["last_event_id"].to_string(), cursor);
+    assert_eq!(info["greeting"]["event"], "message");
+    assert_eq!(info["provider"], "Mock");
+    let missing = client
+        .get(format!("{base}/sessions/{}", Uuid::new_v4()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
     let report = client
         .get(format!("{session}/report"))
         .send()
@@ -145,6 +165,42 @@ async fn http_session_replays_events_and_serves_the_mock_report() {
     send_message(&client, &session, "Что найдено?").await;
     let (chat_events, _) = read_operation(&client, &session, &cursor).await;
     assert!(chat_events.contains("\"citations\":[{"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn index_is_revalidated_while_hashed_assets_are_cached() {
+    let web = tempfile::tempdir().unwrap();
+    std::fs::write(web.path().join("index.html"), "<!doctype html>").unwrap();
+    std::fs::create_dir(web.path().join("assets")).unwrap();
+    std::fs::write(web.path().join("assets/index-abc.js"), "").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let app = router(
+        ProviderFactory::new(Provider::Mock, true),
+        None,
+        web.path(),
+        true,
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::new();
+    let cache = |path: &'static str| {
+        let request = client.get(format!("{base}{path}"));
+        async move {
+            let response = request.send().await.unwrap();
+            response.headers()[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    assert_eq!(cache("/").await, "no-cache");
+    assert_eq!(cache("/?tab=summary").await, "no-cache");
+    assert_eq!(
+        cache("/assets/index-abc.js").await,
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(cache("/api/schema").await, "no-store");
     server.abort();
 }
 

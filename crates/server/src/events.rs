@@ -53,6 +53,10 @@ impl Events {
         self.append("done", "{}".into());
     }
 
+    pub(super) fn last_id(&self) -> u64 {
+        self.journal.lock().expect("блокировка событий").next_id
+    }
+
     pub(super) fn expire(&self) {
         let mut journal = self.journal.lock().expect("блокировка событий");
         journal.expired = true;
