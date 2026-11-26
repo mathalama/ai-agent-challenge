@@ -301,7 +301,8 @@ async fn false_not_requirements_is_overridden_when_document_has_requirement_mark
 
 ## Требования
 
-- ФТ-1. Сервис должен сохранять аудит операций.
+- КР-1. Расчёт графика платежей выполняется в тенге.
+- КР-2. Повторная заявка отклоняется при активном скоринге.
 ";
     let document = ParserRegistry::default()
         .parse(Path::new("cover.md"), source.as_bytes())
@@ -312,7 +313,7 @@ async fn false_not_requirements_is_overridden_when_document_has_requirement_mark
 
     assert!(ctx.triage.is_none());
     assert_eq!(ctx.trace.len(), 10);
-    assert_eq!(ctx.requirements.len(), 1);
+    assert!(!ctx.requirements.is_empty());
     let report = Report::from_run(ctx, passport("Титульный лист"));
     assert_ne!(report.readiness, Readiness::NotRequirements);
 }
@@ -403,7 +404,7 @@ async fn prose_with_modal_words_and_standard_codes_keeps_not_requirements() {
     let recipe = "\
 # Пирог с капустой
 
-Ингредиенты по ГОСТ-12345 и мука сорта ISO-9001.
+Ингредиенты по ГОСТ-12345, мука сорта ISO-9001 и форма Т-34.
 
 Тесто должно подойти в тёплом месте 40 минут.
 

@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use doc::{Block, BlockContent, Document};
 use llm::generate_typed;
 use schemars::JsonSchema;
@@ -144,58 +146,93 @@ fn verify_decision(document: &Document, decision: &TriageDecision) -> bool {
 }
 
 fn has_requirement_markers(document: &Document) -> bool {
+    const MIN_ID_SERIES: usize = 2;
     const MIN_MODAL_SUBJECT_BLOCKS: usize = 2;
 
+    let mut id_series: HashMap<String, HashSet<String>> = HashMap::new();
     let mut modal_subject_blocks = 0usize;
     for block in &document.blocks {
-        let has_id = match &block.content {
+        match &block.content {
             BlockContent::Heading { text, .. }
             | BlockContent::Paragraph { text }
             | BlockContent::ListItem { text }
-            | BlockContent::Code { text, .. } => text_has_requirement_id(text),
-            BlockContent::Table { rows, .. } => rows
-                .iter()
-                .flatten()
-                .any(|cell| text_has_requirement_id(cell)),
-        };
-        if has_id {
-            return true;
-        }
-        let has_modal_subject = match &block.content {
-            BlockContent::Heading { text, .. }
-            | BlockContent::Paragraph { text }
-            | BlockContent::ListItem { text }
-            | BlockContent::Code { text, .. } => text_has_modal_with_subject(text),
-            BlockContent::Table { rows, .. } => rows
-                .iter()
-                .flatten()
-                .any(|cell| text_has_modal_with_subject(cell)),
-        };
-        if has_modal_subject {
-            modal_subject_blocks += 1;
-            if modal_subject_blocks >= MIN_MODAL_SUBJECT_BLOCKS {
-                return true;
+            | BlockContent::Code { text, .. } => {
+                if collect_requirement_ids(text, &mut id_series, MIN_ID_SERIES) {
+                    return true;
+                }
+                if text_has_modal_with_subject(text) {
+                    modal_subject_blocks += 1;
+                }
             }
+            BlockContent::Table { rows, .. } => {
+                let mut table_has_modal_subject = false;
+                for row in rows {
+                    let row_text = row.join(" ");
+                    if collect_requirement_ids(&row_text, &mut id_series, MIN_ID_SERIES) {
+                        return true;
+                    }
+                    if text_has_modal_with_subject(&row_text) {
+                        table_has_modal_subject = true;
+                    }
+                }
+                if table_has_modal_subject {
+                    modal_subject_blocks += 1;
+                }
+            }
+        }
+        if modal_subject_blocks >= MIN_MODAL_SUBJECT_BLOCKS {
+            return true;
         }
     }
     false
 }
 
-fn text_has_requirement_id(text: &str) -> bool {
-    const PREFIXES: &[&str] = &[
-        "Ф", "ФТ", "НФ", "НФТ", "БТ", "Т", "R", "REQ", "FR", "NFR", "US", "UC", "BR", "SR", "AC",
-    ];
-    text.split(|ch: char| {
-        ch.is_whitespace() || matches!(ch, '.' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '|')
-    })
-    .any(|token| {
-        let Some((prefix, number)) = token.split_once('-') else {
-            return false;
+fn collect_requirement_ids(
+    text: &str,
+    series: &mut HashMap<String, HashSet<String>>,
+    threshold: usize,
+) -> bool {
+    for raw in text.split_whitespace() {
+        let token = raw.trim_matches(|ch: char| !ch.is_alphanumeric());
+        let Some((prefix, number)) = parse_requirement_id(token) else {
+            continue;
         };
-        PREFIXES.contains(&prefix)
-            && !number.is_empty()
-            && number.bytes().all(|byte| byte.is_ascii_digit())
-    })
+        let numbers = series.entry(prefix.to_owned()).or_default();
+        numbers.insert(number.to_owned());
+        if numbers.len() >= threshold {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_requirement_id(token: &str) -> Option<(&str, &str)> {
+    let (prefix, number) = token.rsplit_once('-')?;
+    if number.is_empty()
+        || !number
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        || !number.bytes().any(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut parts = prefix.split('-');
+    let first = parts.next()?;
+    let second = parts.next();
+    if parts.next().is_some() {
+        return None;
+    }
+    let is_upper_segment = |segment: &str| {
+        let len = segment.chars().count();
+        (1..=6).contains(&len)
+            && segment
+                .chars()
+                .all(|ch| ch.is_alphabetic() && ch.is_uppercase())
+    };
+    if !is_upper_segment(first) || second.is_some_and(|segment| !is_upper_segment(segment)) {
+        return None;
+    }
+    Some((prefix, number))
 }
 
 fn text_has_modal_with_subject(text: &str) -> bool {
