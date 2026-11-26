@@ -1,0 +1,221 @@
+{
+  "llm_calls": [
+    {
+      "cached": false,
+      "duration_ms": 3187,
+      "model": "deepseek-flash",
+      "stage": "triage",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 3929,
+        "output_tokens": 318
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 30128,
+      "model": "deepseek-flash",
+      "stage": "segment",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 4276,
+        "output_tokens": 5726
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 30120,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 5456,
+        "output_tokens": 6594
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 120396,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 4726,
+        "output_tokens": 25940
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 6205,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 3807,
+        "output_tokens": 1171
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 19211,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 4784,
+        "output_tokens": 3463
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 36224,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 4811,
+        "output_tokens": 7274
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 67805,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 4603,
+        "output_tokens": 13747
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 66083,
+      "model": "deepseek-flash",
+      "stage": "requirement_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 5874,
+        "output_tokens": 13249
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 50638,
+      "model": "deepseek-flash",
+      "stage": "requirement_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 5057,
+        "output_tokens": 9636
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 20126,
+      "model": "deepseek-flash",
+      "stage": "requirement_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 4125,
+        "output_tokens": 3349
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 71001,
+      "model": "deepseek-flash",
+      "stage": "set_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 9717,
+        "output_tokens": 14924
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 42632,
+      "model": "deepseek-flash",
+      "stage": "consistency",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 12165,
+        "output_tokens": 8375
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 113764,
+      "model": "deepseek-flash",
+      "stage": "ambiguity",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 8792,
+        "output_tokens": 24153
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 117298,
+      "model": "deepseek-flash",
+      "stage": "clarify",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 16964,
+        "output_tokens": 26854
+      }
+    }
+  ],
+  "stages": [
+    {
+      "duration_ms": 3195,
+      "stage": "triage",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 30132,
+      "stage": "segment",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 279986,
+      "stage": "facts",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 2,
+      "stage": "rules",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 136856,
+      "stage": "requirement_checks",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 71005,
+      "stage": "set_checks",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 42638,
+      "stage": "consistency",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 113768,
+      "stage": "ambiguity",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 3,
+      "stage": "verify",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 117305,
+      "stage": "clarify",
+      "succeeded": true
+    }
+  ]
+}

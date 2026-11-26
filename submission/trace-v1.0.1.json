@@ -1,0 +1,221 @@
+{
+  "llm_calls": [
+    {
+      "cached": true,
+      "duration_ms": 4,
+      "model": "deepseek-flash",
+      "stage": "triage",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "segment",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "facts",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "requirement_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "requirement_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "requirement_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "set_checks",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "consistency",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": true,
+      "duration_ms": 0,
+      "model": "deepseek-flash",
+      "stage": "ambiguity",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "cached": false,
+      "duration_ms": 119210,
+      "model": "deepseek-flash",
+      "stage": "clarify",
+      "succeeded": true,
+      "usage": {
+        "input_tokens": 17170,
+        "output_tokens": 29149
+      }
+    }
+  ],
+  "stages": [
+    {
+      "duration_ms": 4,
+      "stage": "triage",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 1,
+      "stage": "segment",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 7,
+      "stage": "facts",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 2,
+      "stage": "rules",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 1,
+      "stage": "requirement_checks",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 1,
+      "stage": "set_checks",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 2,
+      "stage": "consistency",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 0,
+      "stage": "ambiguity",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 4,
+      "stage": "verify",
+      "succeeded": true
+    },
+    {
+      "duration_ms": 119221,
+      "stage": "clarify",
+      "succeeded": true
+    }
+  ]
+}
