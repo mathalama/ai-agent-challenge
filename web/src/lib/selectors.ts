@@ -32,9 +32,13 @@ export function countBySeverity(findings: Finding[]): Record<Severity, number> {
 /** Главные причины вердикта: критические находки из summary, затем самые важные из остальных. */
 export function topReasons(report: Report, limit = 3): Finding[] {
   const byId = new Map(report.findings.map((f) => [f.id, f]));
-  const critical = report.summary.critical_findings.flatMap((id) => byId.get(id) ?? []);
+  const byPriority = (a: Finding, b: Finding) =>
+    SEVERITY[b.severity].rank - SEVERITY[a.severity].rank || Number(b.verified) - Number(a.verified);
+  const critical = report.summary.critical_findings
+    .flatMap((id) => byId.get(id) ?? [])
+    .sort(byPriority);
   const rest = report.findings
     .filter((f) => !report.summary.critical_findings.includes(f.id) && SEVERITY[f.severity].rank >= SEVERITY.high.rank)
-    .sort((a, b) => SEVERITY[b.severity].rank - SEVERITY[a.severity].rank || Number(b.verified) - Number(a.verified));
+    .sort(byPriority);
   return [...critical, ...rest].slice(0, limit);
 }
