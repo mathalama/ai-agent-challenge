@@ -264,7 +264,18 @@ async fn run(cli: Cli) -> Result<()> {
             no_cache,
             listen,
             web_dir,
-        } => server::serve(listen, factory(provider, no_cache)?, path, web_dir).await,
+        } => {
+            let trust_local_host =
+                std::env::var("RS_TRUST_LOCAL_HOST").is_ok_and(|value| value.trim() == "1");
+            server::serve(
+                listen,
+                factory(provider, no_cache)?,
+                path,
+                web_dir,
+                trust_local_host,
+            )
+            .await
+        }
         Command::Check {
             input,
             output,

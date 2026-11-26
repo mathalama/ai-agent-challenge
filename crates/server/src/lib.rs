@@ -71,9 +71,16 @@ pub async fn serve(
     provider: ProviderFactory,
     config_path: Option<PathBuf>,
     web_dir: PathBuf,
+    trust_local_host: bool,
 ) -> agent::Result<()> {
     let listener = tokio::net::TcpListener::bind(address).await?;
-    let router = router(provider, config_path, &web_dir, address.ip().is_loopback());
+    let router = router(
+        provider,
+        config_path,
+        &web_dir,
+        address.ip().is_loopback(),
+        trust_local_host,
+    );
     println!("Сервер доступен на http://{}", listener.local_addr()?);
     axum::serve(
         listener,
@@ -88,6 +95,7 @@ fn router(
     config_path: Option<PathBuf>,
     web_dir: &Path,
     loopback: bool,
+    trust_local_host: bool,
 ) -> Router {
     let app = App {
         sessions: Arc::default(),
@@ -99,7 +107,10 @@ fn router(
         .route("/settings/test", post(test_settings))
         .route("/settings/openrouter/models", get(openrouter_models))
         .layer(DefaultBodyLimit::max(16 * 1024))
-        .route_layer(middleware::from_fn(local_settings));
+        .route_layer(middleware::from_fn_with_state(
+            trust_local_host,
+            local_settings,
+        ));
     let api = Router::new()
         .merge(settings)
         .route("/schema", get(|| async { Json(Report::json_schema()) }))
@@ -148,12 +159,17 @@ async fn static_cache(request: Request, next: Next) -> Response {
     response
 }
 
-async fn local_settings(request: Request, next: Next) -> Response {
+async fn local_settings(
+    State(trust_local_host): State<bool>,
+    request: Request,
+    next: Next,
+) -> Response {
     let headers = request.headers();
-    let loopback = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .is_some_and(|ConnectInfo(peer)| peer.ip().to_canonical().is_loopback());
+    let loopback = trust_local_host
+        || request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .is_some_and(|ConnectInfo(peer)| peer.ip().to_canonical().is_loopback());
     let matching_origin = headers.get(header::ORIGIN).is_none_or(|origin| {
         origin
             .to_str()
@@ -171,7 +187,7 @@ async fn local_settings(request: Request, next: Next) -> Response {
     if !(loopback && local_host(headers) && matching_origin) {
         return ApiError(
             StatusCode::FORBIDDEN,
-            "Настройки доступны только при локальном запуске без Docker. В контейнере задайте провайдера через .env",
+            "Настройки доступны только на localhost",
         )
         .into_response();
     }

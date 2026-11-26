@@ -11,10 +11,15 @@ services:
     env_file:
       - path: .env
         required: false
-    command: ["serve", "--listen", "0.0.0.0:3333", "--provider", "${PROVIDER:-mock}"]
+    environment:
+      RS_PROVIDER: ${PROVIDER:-}
+      RS_TRUST_LOCAL_HOST: "1"
+    command: ["serve", "--listen", "0.0.0.0:3333"]
     volumes:
       - llm-cache:/app/.cache
+      - rs-config:/app/config
       - ./reports:/app/reports
 
 volumes:
   llm-cache:
+  rs-config:

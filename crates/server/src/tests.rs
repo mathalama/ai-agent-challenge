@@ -72,6 +72,7 @@ async fn http_session_replays_events_and_serves_the_mock_report() {
         None,
         Path::new("web/dist"),
         true,
+        false,
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::builder()
@@ -181,6 +182,7 @@ async fn index_is_revalidated_while_hashed_assets_are_cached() {
         None,
         web.path(),
         true,
+        false,
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::new();
@@ -251,7 +253,7 @@ async fn localhost_settings_mask_keys_and_change_the_active_factory() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config.json");
     let factory = ProviderFactory::with_settings(None, true, Settings::default());
-    let router = router(factory, Some(config.clone()), directory.path(), true);
+    let router = router(factory, Some(config.clone()), directory.path(), true, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/api", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
@@ -338,4 +340,69 @@ async fn localhost_settings_mask_keys_and_change_the_active_factory() {
     assert_eq!(tested["message"], "Mock готов к работе");
     assert_eq!(Settings::load(&config).unwrap().provider, Provider::Mock);
     task.abort();
+}
+
+#[tokio::test]
+async fn trust_local_host_allows_non_loopback_peer_only_for_local_host_header() {
+    use llm::settings::Settings;
+
+    let peer = SocketAddr::from(([172, 18, 0, 1], 54321));
+    let client = reqwest::Client::new();
+
+    async fn spawn(
+        trust_local_host: bool,
+        peer: SocketAddr,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let app = router(
+            ProviderFactory::with_settings(None, true, Settings::default()),
+            None,
+            Path::new("web/dist"),
+            false,
+            trust_local_host,
+        )
+        .layer(axum::Extension(ConnectInfo(peer)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, task)
+    }
+
+    let (trusted_base, trusted_task) = spawn(true, peer).await;
+    let allowed = client
+        .get(format!("{trusted_base}/settings"))
+        .header(header::HOST, "127.0.0.1:3333")
+        .header(header::ORIGIN, "http://127.0.0.1:3333")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+
+    let foreign_host = client
+        .get(format!("{trusted_base}/settings"))
+        .header(header::HOST, "example.test")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign_host.status(), StatusCode::FORBIDDEN);
+
+    let mismatched_origin = client
+        .get(format!("{trusted_base}/settings"))
+        .header(header::HOST, "127.0.0.1:3333")
+        .header(header::ORIGIN, "http://example.test")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatched_origin.status(), StatusCode::FORBIDDEN);
+    trusted_task.abort();
+
+    let (untrusted_base, untrusted_task) = spawn(false, peer).await;
+    let denied = client
+        .get(format!("{untrusted_base}/settings"))
+        .header(header::HOST, "127.0.0.1:3333")
+        .header(header::ORIGIN, "http://127.0.0.1:3333")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    untrusted_task.abort();
 }

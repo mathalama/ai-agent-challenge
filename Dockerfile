@@ -31,9 +31,10 @@ COPY --from=rust /usr/local/bin/rs /usr/local/bin/rs
 COPY --from=web /app/web/dist web/dist
 COPY samples samples
 COPY eval eval
-RUN mkdir -p .cache reports && chown app:app .cache reports
+RUN mkdir -p .cache reports config && chown app:app .cache reports config
 USER app
 ENV RUST_LOG=warn
+ENV XDG_CONFIG_HOME=/app/config
 EXPOSE 3333
 ENTRYPOINT ["rs"]
 CMD ["serve", "--listen", "0.0.0.0:3333", "--provider", "mock"]
