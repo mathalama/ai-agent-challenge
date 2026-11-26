@@ -499,6 +499,7 @@
       "type": "object",
       "properties": {
         "critical_findings": {
+          "description": "Идентификаторы критичных дефектов: находки критической важности и находки высокой важности по критериям verifiable, consistent, complete и set_complete.",
           "type": "array",
           "items": {
             "type": "string"

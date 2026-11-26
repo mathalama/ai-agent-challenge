@@ -893,8 +893,16 @@ async fn merges_single_requirement_duplicates_and_counts_critical_findings_once(
             agent_version: String::new(),
         },
     );
-    assert_eq!(report.summary.critical_findings, ["requirement_checks-003"]);
+    assert_eq!(
+        report.summary.critical_findings,
+        [
+            "requirement_checks-001",
+            "requirement_checks-002",
+            "requirement_checks-003",
+        ]
+    );
     let markdown = MarkdownRenderer.render(&report).unwrap();
+    assert!(markdown.contains("Критичные дефекты (непроверяемые, противоречивые, неполные) — 3:"));
     assert!(markdown.contains("Подтверждённых критичных дефектов — 1"));
 }
 

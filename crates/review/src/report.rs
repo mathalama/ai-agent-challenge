@@ -9,8 +9,8 @@ use schemars::{JsonSchema, Schema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Finding, FindingId, Question, RelatedId, Requirement, RequirementId, RunContext,
-    RunPassport, Scope, Severity,
+    Answer, Criterion, Finding, FindingId, Question, RelatedId, Requirement, RequirementId,
+    RunContext, RunPassport, Scope, Severity,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -46,6 +46,7 @@ pub struct ReportSummary {
     pub requirement_count: usize,
     pub finding_count: usize,
     pub verified_count: usize,
+    /// Идентификаторы критичных дефектов: находки критической важности и находки высокой важности по критериям verifiable, consistent, complete и set_complete.
     pub critical_findings: Vec<FindingId>,
 }
 
@@ -78,6 +79,20 @@ fn needs_fix(finding: &Finding) -> bool {
     finding.verified && finding.severity >= Severity::Medium
 }
 
+fn is_critical_defect(finding: &Finding) -> bool {
+    finding.severity == Severity::Critical
+        || (finding.severity == Severity::High
+            && finding.all_criteria().into_iter().any(|criterion| {
+                matches!(
+                    criterion,
+                    Criterion::Verifiable
+                        | Criterion::Consistent
+                        | Criterion::Complete
+                        | Criterion::SetComplete
+                )
+            }))
+}
+
 impl Report {
     pub fn json_schema() -> Schema {
         SchemaSettings::draft2020_12()
@@ -106,7 +121,7 @@ impl Report {
             critical_findings: ctx
                 .findings
                 .iter()
-                .filter(|finding| finding.severity == Severity::Critical)
+                .filter(|finding| is_critical_defect(finding))
                 .map(|finding| finding.id.clone())
                 .collect(),
         };
@@ -255,13 +270,29 @@ impl ReportRenderer for MarkdownRenderer {
             .findings
             .iter()
             .enumerate()
+            .filter(|(_, finding)| finding.verified && is_critical_defect(finding))
+            .map(|(index, finding)| format!("[{}](#finding-{})", markdown(&finding.id), index + 1))
+            .collect();
+        let blocking_critical: Vec<_> = report
+            .findings
+            .iter()
+            .enumerate()
             .filter(|(_, finding)| finding.verified && finding.severity == Severity::Critical)
             .map(|(index, finding)| format!("[{}](#finding-{})", markdown(&finding.id), index + 1))
             .collect();
+        let critical_summary = if critical.is_empty() {
+            "Критичные дефекты (непроверяемые, противоречивые, неполные) — нет".to_owned()
+        } else {
+            format!(
+                "Критичные дефекты (непроверяемые, противоречивые, неполные) — {}: {}",
+                critical.len(),
+                critical.join(", ")
+            )
+        };
         writeln!(
             output,
-            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- Подтверждённых критичных дефектов — {}",
-            summary.requirement_count, summary.finding_count, summary.verified_count, critical.len(),
+            "\n## 5. Сводка\n\n- Требований в отчёте — {}\n- Нарушений — {} (с подтверждёнными цитатами — {})\n- {critical_summary}",
+            summary.requirement_count, summary.finding_count, summary.verified_count,
         )
         .expect("запись в строку");
         if !report.finding_answers.is_empty() {
@@ -284,7 +315,7 @@ impl ReportRenderer for MarkdownRenderer {
             }
         });
         if matches!(report.readiness, Readiness::Blocked) {
-            write_blocking_reason(&mut output, &report.findings, &critical);
+            write_blocking_reason(&mut output, &report.findings, &blocking_critical);
         }
         if !report.incomplete_stages.is_empty() {
             let stages = report
@@ -953,7 +984,9 @@ mod tests {
         let markdown = MarkdownRenderer.render(&report).unwrap();
         let (before_verdict, summary) = markdown.split_once("## 6. Итог").unwrap();
         let (_, overview) = before_verdict.split_once("## 5. Сводка").unwrap();
-        assert!(overview.contains("Подтверждённых критичных дефектов — 1"));
+        assert!(overview.contains(
+            "Критичные дефекты (непроверяемые, противоречивые, неполные) — 3: [high-single](#finding-1), [high-multiple](#finding-3), [critical](#finding-4)"
+        ));
         let (summary, _) = summary.split_once("## 7.").unwrap();
         assert!(summary.contains("**Не готово.**"));
         assert!(
@@ -992,6 +1025,71 @@ mod tests {
         assert!(
             markdown
                 .contains("**Не готово.**\n\nПодтверждённых дефектов средней важности и выше — 8.")
+        );
+    }
+
+    #[test]
+    fn critical_defects_summary_follows_severity_and_criterion_rules() {
+        let document = doc::ParserRegistry::default()
+            .parse(std::path::Path::new("test.md"), "# Требования".as_bytes())
+            .unwrap();
+        let checks = crate::CheckRegistry::default();
+        let mut ctx = RunContext::new(document, &llm::MockProvider, &checks);
+
+        let mut high_consistent = finding("high-consistent", Severity::High, true);
+        high_consistent.criterion = Criterion::Consistent;
+
+        let mut high_ranked = finding("high-ranked", Severity::High, true);
+        high_ranked.criterion = Criterion::Ranked;
+
+        let mut critical_ranked = finding("critical-ranked", Severity::Critical, true);
+        critical_ranked.criterion = Criterion::Ranked;
+
+        let mut unverified_high = finding("unverified-high", Severity::High, false);
+        unverified_high.criterion = Criterion::Verifiable;
+
+        let mut unverified_critical = finding("unverified-critical", Severity::Critical, false);
+        unverified_critical.criterion = Criterion::Appropriate;
+
+        ctx.findings = vec![
+            high_consistent,
+            high_ranked,
+            critical_ranked,
+            unverified_high,
+            unverified_critical,
+        ];
+        let passport = RunPassport {
+            document_title: "Требования".into(),
+            date: String::new(),
+            model: "test".into(),
+            agent_version: String::new(),
+        };
+        let report = Report::from_run(ctx, passport);
+
+        assert_eq!(
+            report.summary.critical_findings,
+            [
+                "high-consistent",
+                "critical-ranked",
+                "unverified-high",
+                "unverified-critical",
+            ]
+        );
+        let markdown = MarkdownRenderer.render(&report).unwrap();
+        let (before_verdict, _) = markdown.split_once("## 6. Итог").unwrap();
+        let (_, overview) = before_verdict.split_once("## 5. Сводка").unwrap();
+        assert!(overview.contains(
+            "Критичные дефекты (непроверяемые, противоречивые, неполные) — 2: [high-consistent](#finding-1), [critical-ranked](#finding-3)"
+        ));
+        assert!(!overview.contains("high-ranked"));
+        assert!(!overview.contains("unverified-high"));
+        assert!(!overview.contains("unverified-critical"));
+
+        let mut empty_report = report;
+        empty_report.findings.retain(|f| f.id == "high-ranked");
+        let empty_md = MarkdownRenderer.render(&empty_report).unwrap();
+        assert!(
+            empty_md.contains("Критичные дефекты (непроверяемые, противоречивые, неполные) — нет")
         );
     }
 }
