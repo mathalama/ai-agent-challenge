@@ -1,13 +1,17 @@
 use std::{
+    borrow::Cow,
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
 use lopdf::{Document as LoDocument, Object as LoObject, content::Content};
 use pdfsink_rs::{
-    BBox, Char, Page, PdfDocument, Point, Table, TableSettings, TableStrategy, TextOptions,
-    extract_text_lines,
+    BBox, Char, Page, PdfDocument, Point, Table, TableSettings, TableStrategy, TextLine,
+    TextOptions, extract_text, extract_text_lines,
 };
+
+use unicode_script::{Script, UnicodeScript};
 
 use crate::{
     Block, BlockContent, BlockId, Document, DocumentError, DocumentParser, Result, SourceSpan,
@@ -42,9 +46,11 @@ impl DocumentParser for PdfParser {
         let draw_styles = extract_pdf_text_draw_styles(bytes, &page_heights);
 
         let mut pages_data = Vec::with_capacity(pdf.pages.len());
-        for (index, page) in pdf.pages.iter().enumerate() {
+        for (index, mut page) in pdf.pages.into_iter().enumerate() {
             let page_draws = draw_styles.get(index).map_or(&[][..], Vec::as_slice);
-            pages_data.push(extract_page_data(page, index + 1, page_draws)?);
+            // Убираем наклонные водяные знаки до выделения строк и ячеек.
+            page.chars.retain(|ch| !is_oblique(ch.matrix));
+            pages_data.push(extract_page_data(&page, index + 1, page_draws)?);
         }
 
         strip_headers_footers_and_page_numbers(&mut pages_data);
@@ -80,6 +86,7 @@ impl DocumentParser for PdfParser {
 struct PageData {
     page_number: usize,
     height: f64,
+    gutter: Option<f64>,
     tables: Vec<ExtractedTable>,
     lines: Vec<ExtractedLine>,
 }
@@ -89,15 +96,16 @@ struct ExtractedTable {
     rows: Vec<Vec<String>>,
 }
 
-#[derive(Clone)]
 struct ExtractedLine {
     text: String,
     x0: f64,
+    x1: f64,
     top: f64,
     bottom: f64,
     font_size: f64,
     is_bold: bool,
     is_mono: bool,
+    has_drawn_bullet: bool,
 }
 
 fn page_text_options(page: &Page) -> TextOptions {
@@ -118,6 +126,7 @@ struct FontStyle {
 
 #[derive(Clone, Copy)]
 struct TextDrawStyle {
+    x: f64,
     y_from_top: f64,
     style: FontStyle,
     weight: usize,
@@ -129,7 +138,7 @@ fn extract_page_data(
     page_draws: &[TextDrawStyle],
 ) -> Result<PageData> {
     let text_options = page_text_options(page);
-    let tables = extract_page_tables(page, &text_options)?;
+    let mut tables = extract_page_tables(page, &text_options)?;
 
     let non_table_chars: Vec<Char> = page
         .chars
@@ -143,24 +152,68 @@ fn extract_page_data(
         .cloned()
         .collect();
 
-    let raw_lines = extract_text_lines(&non_table_chars, &text_options, true, true);
+    let mut raw_lines = extract_text_lines(&non_table_chars, &text_options, true, true);
+    raw_lines.sort_by(|a, b| a.top.total_cmp(&b.top));
+    let gutter = find_column_gutter(&raw_lines, page.bbox);
+    tables.extend(extract_aligned_tables(
+        &mut raw_lines,
+        &text_options,
+        page_draws,
+        gutter,
+    ));
+    let raw_lines = if let Some(gutter) = gutter {
+        raw_lines
+            .into_iter()
+            .flat_map(|line| {
+                let chars = line.chars.as_deref().unwrap_or_default();
+                let runs = horizontal_runs(chars, 18.0);
+                if runs
+                    .iter()
+                    .any(|&(left, right)| left < gutter && right > gutter)
+                    || line.x0 >= gutter
+                    || line.x1 <= gutter
+                {
+                    return vec![line];
+                }
+                let (left, right): (Vec<_>, Vec<_>) = line
+                    .chars
+                    .unwrap_or_default()
+                    .into_iter()
+                    .partition(|ch| ch.x0 < gutter);
+                let mut split = extract_text_lines(&left, &text_options, true, true);
+                split.extend(extract_text_lines(&right, &text_options, true, true));
+                split
+            })
+            .collect()
+    } else {
+        raw_lines
+    };
     let mut lines = Vec::with_capacity(raw_lines.len());
     for line in raw_lines {
-        let text = normalize_line_text(&line.text);
+        let text = normalize_extracted_line(&line);
         if text.is_empty() {
             continue;
         }
         let chars = line.chars.as_deref().unwrap_or(&[]);
-        let (font_size, is_bold, is_mono) =
-            analyze_line_style(chars, line.top, line.bottom, page_draws);
+        let (font_size, is_bold, is_mono) = analyze_line_style(chars, line_bbox(&line), page_draws);
         lines.push(ExtractedLine {
             text,
             x0: line.x0,
+            x1: line.x1,
             top: line.top,
             bottom: line.bottom,
             font_size,
             is_bold,
             is_mono,
+            has_drawn_bullet: page.curves.iter().any(|curve| {
+                let gap = line.x0 - curve.x1;
+                (1.5..=5.0).contains(&curve.width)
+                    && (curve.width - curve.height).abs() <= 1.0
+                    && gap >= font_size * 0.4
+                    && gap <= font_size * 1.4
+                    && (line.top + font_size * 0.25..=line.bottom - font_size * 0.15)
+                        .contains(&((curve.top + curve.bottom) / 2.0))
+            }),
         });
     }
     lines.sort_by(|a, b| a.top.total_cmp(&b.top).then_with(|| a.x0.total_cmp(&b.x0)));
@@ -168,9 +221,191 @@ fn extract_page_data(
     Ok(PageData {
         page_number,
         height: page.height.max(1.0),
+        gutter,
         tables,
         lines,
     })
+}
+
+fn is_oblique([a, b, ..]: [f64; 6]) -> bool {
+    a.abs().min(b.abs()) > a.abs().max(b.abs()) * 0.1
+}
+
+fn horizontal_runs(chars: &[Char], gap: f64) -> Vec<(f64, f64)> {
+    let mut spans: Vec<_> = chars
+        .iter()
+        .filter(|ch| !ch.text.trim().is_empty())
+        .map(|ch| (ch.x0, ch.x1))
+        .collect();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut runs: Vec<(f64, f64)> = Vec::new();
+    for (left, right) in spans {
+        if let Some(last) = runs.last_mut()
+            && left - last.1 < gap
+        {
+            last.1 = last.1.max(right);
+        } else {
+            runs.push((left, right));
+        }
+    }
+    runs
+}
+
+fn find_column_gutter(lines: &[TextLine], bbox: BBox) -> Option<f64> {
+    let runs: Vec<_> = lines
+        .iter()
+        .map(|line| horizontal_runs(line.chars.as_deref().unwrap_or_default(), 18.0))
+        .collect();
+    let width = bbox.width();
+    // Широкие строки с обеих сторон подтверждают просвет. Редкие строки
+    // поперёк просвета могут быть общими заголовками.
+    (30_i32..=70)
+        .filter_map(|percent| {
+            let cut = bbox.x0 + width * f64::from(percent) / 100.0;
+            let mut left = ColumnEvidence::default();
+            let mut right = ColumnEvidence::default();
+            let mut crossing = 0;
+            for (line, row) in lines.iter().zip(&runs) {
+                if row.iter().any(|&(x0, x1)| x0 < cut + 9.0 && x1 > cut - 9.0) {
+                    crossing += 1;
+                    continue;
+                }
+                if row
+                    .iter()
+                    .any(|&(x0, x1)| x1 <= cut - 9.0 && x1 - x0 >= width * 0.18)
+                {
+                    left.record(line.top);
+                }
+                if row
+                    .iter()
+                    .any(|&(x0, x1)| x0 >= cut + 9.0 && x1 - x0 >= width * 0.18)
+                {
+                    right.record(line.top);
+                }
+            }
+            let shared_rows = left.count.min(right.count);
+            if shared_rows < 2
+                || crossing > (lines.len() / 12).max(1)
+                || left.end.min(right.end) <= left.start.max(right.start)
+            {
+                return None;
+            }
+            Some((
+                (
+                    shared_rows,
+                    Reverse(crossing),
+                    Reverse((percent - 50).abs()),
+                ),
+                cut,
+            ))
+        })
+        .max_by_key(|&(score, _)| score)
+        .map(|(_, cut)| cut)
+}
+
+#[derive(Default)]
+struct ColumnEvidence {
+    count: usize,
+    start: f64,
+    end: f64,
+}
+
+impl ColumnEvidence {
+    fn record(&mut self, top: f64) {
+        if self.count == 0 {
+            self.start = top;
+        }
+        self.end = top;
+        self.count += 1;
+    }
+}
+
+fn extract_aligned_tables(
+    lines: &mut Vec<TextLine>,
+    options: &TextOptions,
+    page_draws: &[TextDrawStyle],
+    gutter: Option<f64>,
+) -> Vec<ExtractedTable> {
+    let mut tables = Vec::new();
+    let mut non_table_lines = Vec::with_capacity(lines.len());
+    let mut remaining = std::mem::take(lines).into_iter();
+    while let Some(header) = remaining.next() {
+        if gutter.is_some_and(|x| header.x0 < x && header.x1 > x) {
+            non_table_lines.push(header);
+            continue;
+        }
+        let chars = header.chars.as_deref().unwrap_or_default();
+        let (size, bold, mono) = analyze_line_style(chars, line_bbox(&header), page_draws);
+        if !bold || mono {
+            non_table_lines.push(header);
+            continue;
+        }
+        let columns = horizontal_runs(chars, 12.0);
+        if columns.len() < 2 {
+            non_table_lines.push(header);
+            continue;
+        }
+
+        let mut rows = vec![(header, columns)];
+        while let Some(next) = remaining.as_slice().first() {
+            let (prev, _) = rows.last().unwrap();
+            let dy = next.top - prev.top;
+            let cells = horizontal_runs(next.chars.as_deref().unwrap_or_default(), 12.0);
+            if dy < size * 0.9
+                || dy > size * 2.3
+                || cells.len() != rows[0].1.len()
+                || cells
+                    .iter()
+                    .zip(&rows[0].1)
+                    .any(|(cell, col)| (cell.0 - col.0).abs() > 2.0)
+            {
+                break;
+            }
+            rows.push((remaining.next().unwrap(), cells));
+        }
+        // Шапка и хотя бы две выровненные строки защищают от ложных таблиц
+        // из коротких подписей и строк обычного текста.
+        if rows.len() < 3 {
+            non_table_lines.extend(rows.into_iter().map(|(line, _)| line));
+            continue;
+        }
+        let bbox = rows
+            .iter()
+            .map(|(line, _)| line_bbox(line))
+            .reduce(|a, b| {
+                BBox::new(
+                    a.x0.min(b.x0),
+                    a.top.min(b.top),
+                    a.x1.max(b.x1),
+                    a.bottom.max(b.bottom),
+                )
+            })
+            .unwrap();
+        let rows = rows
+            .into_iter()
+            .map(|(line, cells)| {
+                let chars = line.chars.unwrap_or_default();
+                cells
+                    .into_iter()
+                    .map(|(left, right)| {
+                        let cell: Vec<_> = chars
+                            .iter()
+                            .filter(|ch| ch.x0 >= left && ch.x1 <= right)
+                            .cloned()
+                            .collect();
+                        normalize_cell_text(&extract_text(&cell, options))
+                    })
+                    .collect()
+            })
+            .collect();
+        tables.push(ExtractedTable { bbox, rows });
+    }
+    *lines = non_table_lines;
+    tables
+}
+
+fn line_bbox(line: &TextLine) -> BBox {
+    BBox::new(line.x0, line.top, line.x1, line.bottom)
 }
 
 fn extract_page_tables(page: &Page, text_options: &TextOptions) -> Result<Vec<ExtractedTable>> {
@@ -271,8 +506,7 @@ fn clean_table(
 
 fn analyze_line_style(
     chars: &[Char],
-    line_top: f64,
-    line_bottom: f64,
+    bbox: BBox,
     page_draws: &[TextDrawStyle],
 ) -> (f64, bool, bool) {
     let mut sizes = Vec::new();
@@ -300,7 +534,7 @@ fn analyze_line_style(
     }
 
     let font_size = if sizes.is_empty() {
-        (line_bottom - line_top).max(1.0)
+        bbox.height().max(1.0)
     } else {
         sizes.sort_by(f64::total_cmp);
         sizes[sizes.len() / 2]
@@ -310,7 +544,7 @@ fn analyze_line_style(
         return (
             font_size,
             bold_count * 2 > known_font_alpha,
-            mono_count * 2 > known_font_alpha,
+            mono_count == known_font_alpha,
         );
     }
 
@@ -320,7 +554,11 @@ fn analyze_line_style(
     let mut draw_bold = 0usize;
     let mut draw_mono = 0usize;
     for draw in page_draws {
-        if draw.y_from_top >= line_top - 3.0 && draw.y_from_top <= line_bottom + 3.0 {
+        if draw.y_from_top >= bbox.top - 3.0
+            && draw.y_from_top <= bbox.bottom + 3.0
+            && draw.x >= bbox.x0 - 3.0
+            && draw.x <= bbox.x1 + 3.0
+        {
             draw_total += draw.weight;
             if draw.style.is_bold {
                 draw_bold += draw.weight;
@@ -331,7 +569,7 @@ fn analyze_line_style(
         }
     }
     let is_bold = draw_total > 0 && draw_bold * 2 > draw_total;
-    let is_mono = draw_total > 0 && draw_mono * 2 > draw_total;
+    let is_mono = draw_total > 0 && draw_mono == draw_total;
     (font_size, is_bold, is_mono)
 }
 
@@ -423,9 +661,10 @@ fn extract_pdf_text_draw_styles(bytes: &[u8], page_heights: &[f64]) -> Vec<Vec<T
                             tm = tlm;
                         }
                         let weight = draw_text_weight(op, style.is_composite);
-                        if weight > 0 {
-                            let combined = mul_matrix(ctm, tm);
+                        let combined = mul_matrix(ctm, tm);
+                        if weight > 0 && !is_oblique(combined) {
                             draws.push(TextDrawStyle {
+                                x: combined[4],
                                 y_from_top: page_height - combined[5],
                                 style,
                                 weight,
@@ -735,7 +974,7 @@ fn is_page_number(text: &str) -> bool {
 fn compute_body_font_size(pages: &[PageData]) -> f64 {
     let mut histogram: HashMap<i64, usize> = HashMap::new();
     for page in pages {
-        for line in &page.lines {
+        for line in page.lines.iter().filter(|line| !line.is_mono) {
             let bucket = (line.font_size * 2.0).round() as i64;
             let weight = line.text.chars().count().max(1);
             *histogram.entry(bucket).or_default() += weight;
@@ -743,7 +982,7 @@ fn compute_body_font_size(pages: &[PageData]) -> f64 {
     }
     histogram
         .into_iter()
-        .max_by_key(|&(_, weight)| weight)
+        .max_by_key(|&(bucket, weight)| (weight, bucket))
         .map_or(11.0, |(bucket, _)| (bucket as f64) / 2.0)
 }
 
@@ -752,7 +991,7 @@ fn compute_heading_tiers(pages: &[PageData], body_font_size: f64) -> Vec<f64> {
     let mut buckets: Vec<i64> = pages
         .iter()
         .flat_map(|page| page.lines.iter())
-        .filter(|line| line.font_size >= threshold)
+        .filter(|line| !line.is_mono && line.font_size >= threshold)
         .map(|line| (line.font_size * 2.0).round() as i64)
         .collect();
     buckets.sort_unstable();
@@ -771,7 +1010,7 @@ fn is_tight_bold_continuation(upper: &ExtractedLine, lower: &ExtractedLine) -> b
 }
 
 fn tier_heading_level_for_line(line: &ExtractedLine, heading_tiers: &[f64]) -> Option<u8> {
-    if line.is_mono || strip_bullet(&line.text).is_some() {
+    if line.is_mono || line.has_drawn_bullet || strip_bullet(&line.text).is_some() {
         return None;
     }
     let rounded = (line.font_size * 2.0).round() / 2.0;
@@ -790,6 +1029,7 @@ fn bold_subheading_run_end(
     let first = &lines[start];
     if !first.is_bold
         || first.is_mono
+        || first.has_drawn_bullet
         || strip_bullet(&first.text).is_some()
         || first.font_size < body_font_size * 0.98
         || tier_heading_level_for_line(first, heading_tiers).is_some()
@@ -817,6 +1057,7 @@ fn bold_subheading_run_end(
     while end + 1 < lines.len() {
         let next = &lines[end + 1];
         if !next.is_mono
+            && !next.has_drawn_bullet
             && strip_bullet(&next.text).is_none()
             && tier_heading_level_for_line(next, heading_tiers).is_none()
             && is_tight_bold_continuation(&lines[end], next)
@@ -846,8 +1087,18 @@ fn bold_subheading_run_end(
     Some((end, level))
 }
 
-enum PositionedContent {
-    Block { top: f64, content: BlockContent },
+enum PageItem {
+    Line(ExtractedLine),
+    Table(ExtractedTable),
+}
+
+impl PageItem {
+    fn position(&self) -> (f64, f64, f64) {
+        match self {
+            Self::Line(line) => (line.x0, line.x1, line.top),
+            Self::Table(table) => (table.bbox.x0, table.bbox.x1, table.bbox.top),
+        }
+    }
 }
 
 fn build_page_blocks(
@@ -856,54 +1107,62 @@ fn build_page_blocks(
     heading_tiers: &[f64],
     blocks: &mut Vec<Block>,
 ) {
-    let mut items: Vec<PositionedContent> = Vec::new();
-    let table_ranges: Vec<(f64, f64)> = page
-        .tables
-        .iter()
-        .map(|table| (table.bbox.top, table.bbox.bottom))
+    let mut page_items: Vec<_> = page
+        .lines
+        .into_iter()
+        .map(PageItem::Line)
+        .chain(page.tables.into_iter().map(PageItem::Table))
         .collect();
-
-    for table in page.tables {
-        items.push(PositionedContent::Block {
-            top: table.bbox.top,
-            content: BlockContent::Table {
+    let mut barriers = Vec::new();
+    if let Some(gutter) = page.gutter {
+        barriers.extend(page_items.iter().filter_map(|item| {
+            let (x0, x1, top) = item.position();
+            (x0 < gutter && x1 > gutter).then_some(top)
+        }));
+        barriers.sort_by(f64::total_cmp);
+    }
+    // Между общими заголовками и таблицами сначала читаем левую колонку.
+    let region = |item: &PageItem| {
+        let (x0, x1, top) = item.position();
+        page.gutter.map_or((0, 0), |gutter| {
+            let band = barriers.partition_point(|&y| y < top);
+            let column = if x1 <= gutter {
+                0
+            } else if x0 >= gutter {
+                1
+            } else {
+                2
+            };
+            (band, column)
+        })
+    };
+    page_items.sort_by(|a, b| {
+        region(a)
+            .cmp(&region(b))
+            .then_with(|| a.position().2.total_cmp(&b.position().2))
+    });
+    let mut items = Vec::new();
+    let mut lines = Vec::new();
+    let mut prev_region = (0, 0);
+    for item in page_items {
+        let next_region = region(&item);
+        if next_region != prev_region || matches!(item, PageItem::Table(_)) {
+            group_segment_lines(&lines, body_font_size, heading_tiers, &mut items);
+            lines.clear();
+        }
+        match item {
+            PageItem::Line(line) => lines.push(line),
+            PageItem::Table(table) => items.push(BlockContent::Table {
                 rows: table.rows,
                 row_lines: Vec::new(),
-            },
-        });
-    }
-
-    // Разделяем текстовые строки по границам таблиц, чтобы абзацы не склеивались через таблицу.
-    let mut segment_start = 0usize;
-    let mut segments: Vec<&[ExtractedLine]> = Vec::new();
-    for (index, line) in page.lines.iter().enumerate() {
-        if index > segment_start {
-            let prev = &page.lines[index - 1];
-            let separated_by_table = table_ranges
-                .iter()
-                .any(|&(t_top, t_bottom)| prev.bottom <= t_top + 2.0 && line.top >= t_bottom - 2.0);
-            if separated_by_table {
-                segments.push(&page.lines[segment_start..index]);
-                segment_start = index;
-            }
+            }),
         }
+        prev_region = next_region;
     }
-    if segment_start < page.lines.len() {
-        segments.push(&page.lines[segment_start..]);
-    }
-
-    for segment in segments {
-        group_segment_lines(segment, body_font_size, heading_tiers, &mut items);
-    }
-
-    items.sort_by(|a, b| match (a, b) {
-        (PositionedContent::Block { top: a, .. }, PositionedContent::Block { top: b, .. }) => {
-            a.total_cmp(b)
-        }
-    });
+    group_segment_lines(&lines, body_font_size, heading_tiers, &mut items);
 
     let mut page_line = 1usize;
-    for PositionedContent::Block { mut content, .. } in items {
+    for mut content in items {
         let (start_line, end_line) = match &mut content {
             BlockContent::Table { rows, row_lines } => {
                 let start = page_line;
@@ -943,7 +1202,7 @@ fn group_segment_lines(
     lines: &[ExtractedLine],
     body_font_size: f64,
     heading_tiers: &[f64],
-    out: &mut Vec<PositionedContent>,
+    out: &mut Vec<BlockContent>,
 ) {
     let starts_heading = |idx: usize| {
         tier_heading_level_for_line(&lines[idx], heading_tiers).is_some()
@@ -956,7 +1215,6 @@ fn group_segment_lines(
 
         // 1a. Заголовок увеличенного кегля
         if let Some(level) = tier_heading_level_for_line(line, heading_tiers) {
-            let start_top = line.top;
             let mut parts = vec![line.text.as_str()];
             let mut prev = line;
             index += 1;
@@ -973,12 +1231,9 @@ fn group_segment_lines(
                     break;
                 }
             }
-            out.push(PositionedContent::Block {
-                top: start_top,
-                content: BlockContent::Heading {
-                    level,
-                    text: join_pdf_lines(&parts),
-                },
+            out.push(BlockContent::Heading {
+                level,
+                text: join_pdf_lines(&parts),
             });
             continue;
         }
@@ -991,12 +1246,9 @@ fn group_segment_lines(
                 .iter()
                 .map(|item| item.text.as_str())
                 .collect();
-            out.push(PositionedContent::Block {
-                top: line.top,
-                content: BlockContent::Heading {
-                    level,
-                    text: join_pdf_lines(&parts),
-                },
+            out.push(BlockContent::Heading {
+                level,
+                text: join_pdf_lines(&parts),
             });
             index = end + 1;
             continue;
@@ -1004,7 +1256,6 @@ fn group_segment_lines(
 
         // 2. Блок кода (моноширинный шрифт)
         if line.is_mono {
-            let start_top = line.top;
             let mut code_lines = vec![line.text.as_str()];
             let mut prev = line;
             index += 1;
@@ -1019,25 +1270,21 @@ fn group_segment_lines(
                     break;
                 }
             }
-            out.push(PositionedContent::Block {
-                top: start_top,
-                content: BlockContent::Code {
-                    language: None,
-                    text: code_lines.join("\n"),
-                },
+            out.push(BlockContent::Code {
+                language: None,
+                text: code_lines.join("\n"),
             });
             continue;
         }
 
         // 3. Элемент списка
-        if let Some(first_text) = strip_bullet(&line.text) {
-            let start_top = line.top;
+        if let Some(first_text) = list_item_text(lines, index, heading_tiers) {
             let mut parts = vec![first_text];
             let mut prev = line;
             index += 1;
             while let Some(candidate) = lines.get(index) {
                 if candidate.is_mono
-                    || strip_bullet(&candidate.text).is_some()
+                    || list_item_text(lines, index, heading_tiers).is_some()
                     || starts_heading(index)
                 {
                     break;
@@ -1052,22 +1299,20 @@ fn group_segment_lines(
                     break;
                 }
             }
-            out.push(PositionedContent::Block {
-                top: start_top,
-                content: BlockContent::ListItem {
-                    text: join_pdf_lines(&parts),
-                },
+            out.push(BlockContent::ListItem {
+                text: join_pdf_lines(&parts),
             });
             continue;
         }
 
         // 4. Абзац
-        let start_top = line.top;
         let mut parts = vec![line.text.as_str()];
         let mut prev = line;
         index += 1;
         while let Some(candidate) = lines.get(index) {
-            if candidate.is_mono || strip_bullet(&candidate.text).is_some() || starts_heading(index)
+            if candidate.is_mono
+                || list_item_text(lines, index, heading_tiers).is_some()
+                || starts_heading(index)
             {
                 break;
             }
@@ -1075,7 +1320,8 @@ fn group_segment_lines(
             let line_height = (prev.bottom - prev.top).max(prev.font_size);
             let new_paragraph_indent =
                 candidate.x0 - prev.x0 > body_font_size * 1.5 && prev.text.ends_with('.');
-            if gap <= line_height * 0.85 && !new_paragraph_indent {
+            let paragraph_break = gap > line_height * 0.7 && prev.text.ends_with(['.', '!', '?']);
+            if gap <= line_height * 0.85 && !new_paragraph_indent && !paragraph_break {
                 parts.push(candidate.text.as_str());
                 prev = candidate;
                 index += 1;
@@ -1083,20 +1329,77 @@ fn group_segment_lines(
                 break;
             }
         }
-        out.push(PositionedContent::Block {
-            top: start_top,
-            content: BlockContent::Paragraph {
-                text: join_pdf_lines(&parts),
-            },
+        out.push(BlockContent::Paragraph {
+            text: join_pdf_lines(&parts),
         });
     }
+}
+
+fn list_item_text<'a>(
+    lines: &'a [ExtractedLine],
+    index: usize,
+    heading_tiers: &[f64],
+) -> Option<&'a str> {
+    let line = &lines[index];
+    if line.is_mono || tier_heading_level_for_line(line, heading_tiers).is_some() {
+        return None;
+    }
+    if line.has_drawn_bullet {
+        return Some(&line.text);
+    }
+    if let Some(text) = strip_bullet(&line.text).or_else(|| strip_ordered_marker(&line.text)) {
+        return Some(text);
+    }
+    // Тире в начале переноса остаётся частью абзаца. Считаем его маркером
+    // рядом с явно размеченным, выровненным пунктом списка.
+    let rest = line
+        .text
+        .strip_prefix("– ")
+        .or_else(|| line.text.strip_prefix("— "))?;
+    let next = lines.get(index + 1);
+    let prev = index.checked_sub(1).and_then(|i| lines.get(i));
+    [prev, next]
+        .into_iter()
+        .flatten()
+        .any(|neighbor| {
+            (neighbor.x0 - line.x0).abs() <= 2.0
+                && (neighbor.top - line.top).abs() <= line.font_size * 1.7
+                && (neighbor.has_drawn_bullet
+                    || strip_bullet(&neighbor.text).is_some()
+                    || strip_ordered_marker(&neighbor.text).is_some())
+        })
+        .then_some(rest)
+}
+
+fn strip_ordered_marker(text: &str) -> Option<&str> {
+    let (marker, rest) = text.split_once(' ')?;
+    let prefix = marker.strip_suffix(['.', ')'])?;
+    if !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(rest);
+    }
+    // «т. п.» на новой строке может быть продолжением предыдущего предложения.
+    if marker.ends_with('.')
+        && rest
+            .split_whitespace()
+            .next()
+            .and_then(|word| word.strip_suffix('.'))
+            .is_some_and(is_single_letter)
+    {
+        return None;
+    }
+    is_single_letter(prefix).then_some(rest)
+}
+
+fn is_single_letter(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(char::is_alphabetic) && chars.next().is_none()
 }
 
 fn strip_bullet(text: &str) -> Option<&str> {
     let trimmed = text.trim_start();
     let first = trimmed.chars().next()?;
     // Тире (`–`, `—`, `-`) не считаем маркером списка, чтобы не разрывать абзац при переносе строки с тире.
-    if matches!(first, '•' | '●' | '○' | '▪' | '▫' | '■' | '*') {
+    if matches!(first, '•' | '●' | '○' | '▪' | '▫' | '■' | '*' | '✓') {
         let after = &trimmed[first.len_utf8()..];
         if after.chars().next().is_some_and(char::is_whitespace) {
             let rest = after.trim_start();
@@ -1108,8 +1411,25 @@ fn strip_bullet(text: &str) -> Option<&str> {
     None
 }
 
+fn normalize_extracted_line(line: &TextLine) -> String {
+    let mut text = normalize_line_text(&line.text);
+    if let Some((prefix, hyphen)) = text.rsplit_once(' ')
+        && matches!(hyphen, "-" | "‐")
+        && let [.., left, last] = line.chars.as_deref().unwrap_or_default()
+        && last.text == hyphen
+        && left.text.ends_with(char::is_alphabetic)
+        && (last.x0 - left.x1).abs() <= 0.25
+        && (last.matrix[5] - left.matrix[5]).abs() <= 0.25
+    {
+        // Разборщик может вставить пробел перед глифом переноса, хотя он примыкает к слову.
+        text.remove(prefix.len());
+    }
+    text
+}
+
 fn normalize_line_text(text: &str) -> String {
-    text.replace('\u{00A0}', " ")
+    normalize_schwa(text)
+        .replace('\u{00A0}', " ")
         .replace('\u{00AD}', "")
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -1117,12 +1437,33 @@ fn normalize_line_text(text: &str) -> String {
 }
 
 fn normalize_cell_text(text: &str) -> String {
-    dehyphenate_multiline(text)
-        .replace('\u{00A0}', " ")
-        .replace('\u{00AD}', "")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    normalize_line_text(&dehyphenate_multiline(text))
+}
+
+fn normalize_schwa(text: &str) -> Cow<'_, str> {
+    if !text.contains(['ə', 'Ə']) {
+        return text.into();
+    }
+
+    let has_kazakh_letters = text.contains([
+        'ғ', 'қ', 'ң', 'ө', 'ұ', 'ү', 'һ', 'і', 'Ғ', 'Қ', 'Ң', 'Ө', 'Ұ', 'Ү', 'Һ', 'І',
+    ]);
+    // В латинских словах и фонетических обозначениях сохраняем оригинальную букву.
+    text.split_inclusive(|ch: char| !ch.is_alphabetic())
+        .map(|word| {
+            let cyrillic = word.chars().any(|ch| ch.script() == Script::Cyrillic);
+            let isolated = matches!(
+                word.trim_end_matches(|ch: char| !ch.is_alphabetic()),
+                "ə" | "Ə"
+            );
+            if cyrillic || (isolated && has_kazakh_letters) {
+                word.replace('ə', "ә").replace('Ə', "Ә").into()
+            } else {
+                Cow::Borrowed(word)
+            }
+        })
+        .collect::<String>()
+        .into()
 }
 
 fn join_pdf_lines(lines: &[&str]) -> String {
@@ -1217,22 +1558,26 @@ mod tests {
         let line = ExtractedLine {
             text: "Заголовок".into(),
             x0: 50.0,
+            x1: 100.0,
             top: 100.0,
             bottom: 112.0,
             font_size: 12.0,
             is_bold: true,
             is_mono: false,
+            has_drawn_bullet: false,
         };
         assert_eq!(tier_heading_level_for_line(&line, &tiers), Some(6));
 
         let bold_body = ExtractedLine {
             text: "Подзаголовок".into(),
             x0: 50.0,
+            x1: 100.0,
             top: 100.0,
             bottom: 110.0,
             font_size: 10.0,
             is_bold: true,
             is_mono: false,
+            has_drawn_bullet: false,
         };
         assert_eq!(
             bold_subheading_run_end(&[bold_body], 0, 10.0, &tiers),

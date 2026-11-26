@@ -519,3 +519,208 @@ fn pdf_scan_without_text_layer_and_corrupted_pdf_return_typed_errors() {
         Err(DocumentError::InvalidPdf(_))
     ));
 }
+#[test]
+fn pdf_reads_two_columns_in_section_order() {
+    let doc = parse_sample_pdf("05-two-columns.pdf");
+    let headings: Vec<_> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.content {
+            BlockContent::Heading { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "Сервис «Копилка»: требования",
+            "1. Назначение",
+            "2. Подключение",
+            "3. Расчёт округления",
+            "4. Списание в копилку",
+            "5. Отключение",
+            "6. Ограничения",
+            "7. Отчётность",
+            "8. Открытые вопросы",
+        ]
+    );
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Paragraph { text } if text.starts_with("Сервис «Копилка» позволяет")
+            && text.contains("каждой покупки по карте"))));
+}
+
+#[test]
+fn pdf_keeps_inline_code_in_prose_and_preserves_code_blocks() {
+    let doc = parse_sample_pdf("07-api-spec-code-blocks.pdf");
+    let headings: Vec<_> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.content {
+            BlockContent::Heading { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "API сервиса переводов по номеру телефона",
+            "1. Общие сведения",
+            "2. Создание перевода",
+            "Пример запроса",
+            "Пример ответа",
+            "3. Статусы перевода",
+            "4. Ошибки",
+        ]
+    );
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Paragraph { text } if text.contains("Authorization: Bearer <token>"))));
+    for status in ["PENDING", "SUCCESS", "FAILED"] {
+        assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+            BlockContent::ListItem { text } if text.starts_with(status))));
+    }
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Code { text, .. } if text.starts_with("POST /transfers HTTP/1.1")
+            && text.contains("Idempotency-Key"))));
+}
+
+#[test]
+fn pdf_discards_rotated_watermark_before_extracting_text_and_cells() {
+    let doc = parse_sample_pdf("13-form-footnotes-watermark.pdf");
+    let headings: Vec<_> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.content {
+            BlockContent::Heading { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "Изменение лимитов снятия наличных",
+            "Лист согласования",
+            "Замечания"
+        ]
+    );
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Table { rows, .. }
+            if rows[0].get(2).is_some_and(|cell| cell == "Решение")
+                && rows[2].get(2).is_some_and(|cell| cell == "☐ Согласовано ☑ С замечаниями"))));
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Paragraph { text } if text.contains("[Вставить ссылку на решение кредитного комитета]"))));
+    assert!(
+        doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Paragraph { text } if text.contains("Текущий лимит в сторонних банкоматах")))
+    );
+}
+
+#[test]
+fn pdf_extracts_tables_with_horizontal_rules_or_aligned_cells() {
+    let doc = parse_sample_pdf("03-borderless-tables.pdf");
+    let tables: Vec<_> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.content {
+            BlockContent::Table { rows, .. } => Some(rows),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tables.len(), 2);
+    assert_eq!(tables[0].len(), 6);
+    assert_eq!(
+        tables[0][0],
+        ["Тип перевода", "Комиссия", "Минимум", "Лимит в сутки"]
+    );
+    assert_eq!(
+        tables[0][3],
+        ["На карту другого банка РК", "0,95%", "200 ₸", "500 000 ₸"]
+    );
+    assert_eq!(tables[1].len(), 5);
+    assert_eq!(tables[1][0], ["Параметр", "Значение"]);
+    assert_eq!(
+        tables[1][4],
+        ["Возврат при ошибке", "В течение нескольких рабочих дней"]
+    );
+}
+
+#[test]
+fn pdf_separates_requirements_and_numbered_items() {
+    let doc = parse_sample_pdf("01-classic-numbered-headings.pdf");
+    for id in ["FR-6.", "FR-7."] {
+        assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+            BlockContent::Paragraph { text } if text.starts_with(id)
+                && !(text.contains("FR-6.") && text.contains("FR-7.")))));
+    }
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::ListItem { text } if text == "Не более трёх срабатываний автоплатежа на один номер в сутки.")));
+}
+
+#[test]
+fn pdf_extracts_nested_and_mixed_list_items() {
+    let doc = parse_sample_pdf("06-bold-headings-nested-lists.pdf");
+    let items: Vec<_> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.content {
+            BlockContent::ListItem { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        &items[..7],
+        [
+            "Клиент прошёл биометрическую идентификацию.",
+            "Биометрия не старше 12 месяцев.",
+            "Документ, удостоверяющий личность, действителен.",
+            "У клиента нет просроченной задолженности.",
+            "Количество активных виртуальных карт — не более 5.",
+            "Закрытые и заблокированные карты не учитываются.",
+            "Карты в статусе «Выпускается» учитываются.",
+        ]
+    );
+    assert!(items.contains(&"Срок действия — 3 года."));
+    assert!(items.contains(&"Пополнение возможно с любой карты банка."));
+    assert!(items.contains(&"Закрыть карту можно только при нулевом балансе."));
+}
+
+#[test]
+fn pdf_corrects_schwa_in_kazakh_text() {
+    let doc = parse_sample_pdf("08-mixed-languages-symbols.pdf");
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Paragraph { text }
+            if text.contains("Әрбір операция журналға жазылады: ә, ғ, қ, ң, ө, ұ, ү, һ, і."))));
+}
+
+#[test]
+fn pdf_keeps_compound_hyphen_in_landscape_table() {
+    let doc = parse_sample_pdf("04-landscape-wide-table.pdf");
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Table { rows, .. } if rows[0].iter().any(|cell| cell == "Тест-кейс"))));
+}
+
+#[test]
+fn pdf_joins_soft_wraps_and_keeps_compound_hyphens_in_narrow_column() {
+    let doc = parse_sample_pdf("09-narrow-hyphenation.pdf");
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Paragraph { text } if text.contains("Высокопроизводительная антифрод-система")
+            && text.contains("транзакционной активности держателей"))));
+}
+
+#[test]
+fn pdf_keeps_abbreviations_at_the_start_of_wrapped_lines() {
+    let path = Path::new("qr-payments.pdf");
+    let doc = ParserRegistry::default()
+        .parse(path, include_bytes!("../../../samples/qr-payments.pdf"))
+        .unwrap();
+    assert!(doc.blocks.iter().any(|block| matches!(&block.content,
+        BlockContent::Paragraph { text } if text.starts_with("ER-3.") && text.ends_with("и т. п."))));
+}
+
+fn parse_sample_pdf(name: &str) -> doc::Document {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../samples/pdf")
+        .join(name);
+    ParserRegistry::default()
+        .parse(&path, &std::fs::read(&path).unwrap())
+        .unwrap()
+}
