@@ -1,7 +1,8 @@
 """Генератор тестовых PDF с разной структурой для проверки разбора документов.
 
 Только стандартная библиотека Python + установленный Chrome или Edge
-(печать HTML в PDF в headless-режиме). Запуск из корня репозитория:
+(печать HTML в PDF в headless-режиме). По умолчанию файлы пишутся в samples/pdf
+относительно корня репозитория. Пример запуска из корня:
 
     python scripts/gen_test_pdfs.py [--out samples/pdf]
 """
@@ -450,11 +451,11 @@ def doc_multilang() -> str:
     return page("Мультивалютный счёт", body)
 
 
-# 09. Узкая колонка с выключкой и автопереносами: проверка склейки переносов.
+# 09. Узкая колонка с явным мягким переносом и дефисами в составных словах.
 def doc_hyphenation() -> str:
-    css = "body { width: 75mm; } p { hyphens: auto; text-align: justify; } "
+    css = "body { width: 75mm; } p { hyphens: manual; text-align: justify; } "
     text = ("Высокопроизводительная антифрод-система осуществляет многоуровневую верификацию "
-            "транзакционной активности держателей платёжных карт, включая трансграничные операции, "
+            "транзакционной ак&shy;тивности держателей платёжных карт, включая трансграничные операции, "
             "кредитно-депозитные продукты и онлайн-платежи. Нижеперечисленные интернет-магазины "
             "подключаются к системе в индивидуально-договорном порядке. Ответственность за "
             "несанкционированные операции распределяется согласно правилам международных платёжных систем. ")
@@ -608,19 +609,23 @@ def find_browser() -> str:
 
 
 def print_pdf(browser: str, html_path: Path, pdf_path: Path, profile: Path) -> None:
-    subprocess.run(
-        [browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
-         f"--user-data-dir={profile}", "--virtual-time-budget=2000",
-         f"--print-to-pdf={pdf_path}", html_path.resolve().as_uri()],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
-    )
-    if not pdf_path.exists() or pdf_path.stat().st_size == 0:
-        sys.exit(f"Браузер не создал {pdf_path}")
+    # Новый файл проверяется до замены предыдущего результата.
+    with tempfile.TemporaryDirectory(dir=pdf_path.parent) as tmp:
+        fresh_pdf = Path(tmp) / pdf_path.name
+        subprocess.run(
+            [browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+             f"--user-data-dir={profile}", "--virtual-time-budget=2000",
+             f"--print-to-pdf={fresh_pdf}", html_path.resolve().as_uri()],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
+        )
+        if not fresh_pdf.is_file() or fresh_pdf.stat().st_size == 0:
+            sys.exit(f"Браузер не создал {pdf_path}")
+        fresh_pdf.replace(pdf_path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", type=Path, default=Path("samples/pdf"))
+    parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "samples" / "pdf")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     browser = find_browser()

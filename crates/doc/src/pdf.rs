@@ -190,7 +190,7 @@ fn extract_page_data(
     };
     let mut lines = Vec::with_capacity(raw_lines.len());
     for line in raw_lines {
-        let text = normalize_line_text(&line.text);
+        let text = normalize_extracted_line(&line);
         if text.is_empty() {
             continue;
         }
@@ -1409,6 +1409,22 @@ fn strip_bullet(text: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn normalize_extracted_line(line: &TextLine) -> String {
+    let mut text = normalize_line_text(&line.text);
+    if let Some((prefix, hyphen)) = text.rsplit_once(' ')
+        && matches!(hyphen, "-" | "‐")
+        && let [.., left, last] = line.chars.as_deref().unwrap_or_default()
+        && last.text == hyphen
+        && left.text.ends_with(char::is_alphabetic)
+        && (last.x0 - left.x1).abs() <= 0.25
+        && (last.matrix[5] - left.matrix[5]).abs() <= 0.25
+    {
+        // Разборщик может вставить пробел перед глифом переноса, хотя он примыкает к слову.
+        text.remove(prefix.len());
+    }
+    text
 }
 
 fn normalize_line_text(text: &str) -> String {

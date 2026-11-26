@@ -699,10 +699,11 @@ fn pdf_keeps_compound_hyphen_in_landscape_table() {
 }
 
 #[test]
-fn pdf_keeps_compound_hyphen_in_narrow_column() {
+fn pdf_joins_soft_wraps_and_keeps_compound_hyphens_in_narrow_column() {
     let doc = parse_sample_pdf("09-narrow-hyphenation.pdf");
     assert!(doc.blocks.iter().any(|block| matches!(&block.content,
-        BlockContent::Paragraph { text } if text.contains("Высокопроизводительная антифрод-система"))));
+        BlockContent::Paragraph { text } if text.contains("Высокопроизводительная антифрод-система")
+            && text.contains("транзакционной активности держателей"))));
 }
 
 #[test]
