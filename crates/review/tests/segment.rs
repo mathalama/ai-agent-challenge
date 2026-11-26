@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use doc::{ParserRegistry, SourceSpan};
+use doc::{Block, BlockContent, BlockId, Document, ParserRegistry, SourceSpan};
 use llm::{LlmProvider, LlmRequest, LlmResponse, Usage};
 use review::{
     CheckRegistry, MarkdownRenderer, Pipeline, Report, ReportRenderer, RunContext, RunPassport,
@@ -640,4 +640,57 @@ async fn business_status_prose_stays_in_requirements_while_http_statuses_are_con
             "Для чужой заявки возвращается 404.",
         ]
     );
+}
+
+fn pdf_table(id: usize, page: usize, rows: &[&[&str]]) -> Block {
+    Block {
+        id: BlockId(id),
+        location: SourceSpan {
+            start_line: 1,
+            end_line: rows.len(),
+            page: Some(page),
+        },
+        content: BlockContent::Table {
+            rows: rows
+                .iter()
+                .map(|row| row.iter().map(ToString::to_string).collect())
+                .collect(),
+            row_lines: (1..=rows.len()).collect(),
+        },
+    }
+}
+
+#[test]
+fn passport_split_across_pdf_pages_keeps_its_description_out_of_generic_rows() {
+    let header: &[&str] = &["Поле", "Значение"];
+    let document = |first: Block, second: Block| Document {
+        title: String::new(),
+        source_path: Default::default(),
+        blocks: vec![first, second],
+    };
+    let split = document(
+        pdf_table(1, 4, &[header, &["Description", "Сохранение порога."]]),
+        pdf_table(
+            2,
+            5,
+            &[header, &["REST type", "POST"], &["Controller", "Alerts"]],
+        ),
+    );
+    let requirements = extract_table_requirements(&split);
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].text, "Сохранение порога.");
+    assert_eq!(requirements[0].location.page, Some(4));
+
+    // Если вторая таблица не продолжение (другая шапка или не соседняя страница), строка остаётся обычной.
+    let unrelated = document(
+        pdf_table(1, 4, &[header, &["Description", "Сохранение порога."]]),
+        pdf_table(
+            2,
+            6,
+            &[header, &["REST type", "POST"], &["Controller", "Alerts"]],
+        ),
+    );
+    let requirements = extract_table_requirements(&unrelated);
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].text, "Description: Сохранение порога.");
 }
