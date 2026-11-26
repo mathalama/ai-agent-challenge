@@ -6,6 +6,9 @@ use crate::{
     StageResult,
 };
 
+mod api_fields;
+pub(crate) use api_fields::ApiFieldTypes;
+
 fn has_headings(ctx: &RunContext<'_>) -> bool {
     ctx.document
         .blocks

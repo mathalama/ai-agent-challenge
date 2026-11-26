@@ -257,6 +257,7 @@ impl CheckRegistry {
         registry.register(crate::rules::ReviewChecklist);
         registry.register(crate::rules::AcceptanceCriteria);
         registry.register(crate::rules::RequiredTableFields);
+        registry.register(crate::rules::ApiFieldTypes);
         registry.register(crate::vague::VagueTermsCheck::default());
         registry
     }
