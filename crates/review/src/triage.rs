@@ -167,10 +167,12 @@ fn has_requirement_markers(document: &Document) -> bool {
             BlockContent::Table { rows, .. } => {
                 let mut table_has_modal_subject = false;
                 for row in rows {
-                    let row_text = row.join(" ");
-                    if collect_requirement_ids(&row_text, &mut id_series, MIN_ID_SERIES) {
+                    if let Some(first_cell) = row.iter().find(|cell| !cell.trim().is_empty())
+                        && collect_requirement_ids(first_cell, &mut id_series, MIN_ID_SERIES)
+                    {
                         return true;
                     }
+                    let row_text = row.join(" ");
                     if text_has_modal_with_subject(&row_text) {
                         table_has_modal_subject = true;
                     }
@@ -192,7 +194,10 @@ fn collect_requirement_ids(
     series: &mut HashMap<String, HashSet<String>>,
     threshold: usize,
 ) -> bool {
-    for raw in text.split_whitespace() {
+    for line in text.lines() {
+        let Some(raw) = line.split_whitespace().next() else {
+            continue;
+        };
         let token = raw.trim_matches(|ch: char| !ch.is_alphanumeric());
         let Some((prefix, number)) = parse_requirement_id(token) else {
             continue;
