@@ -69,13 +69,17 @@ Gemini и кэшированные ответы передают его посл
 
 Настройки сохраняются в `%APPDATA%/rs/config.json` на Windows и
 `$XDG_CONFIG_HOME/rs/config.json` или `~/.config/rs/config.json` на Linux и macOS.
-Флаг `--provider` перекрывает `RS_PROVIDER` и `PROVIDER`. Переменные окружения и `.env`
+Флаг `--provider` перекрывает `RS_PROVIDER`. Переменные окружения и `.env`
 имеют приоритет над файлом настроек. В чате `/provider` и `/model` меняют параметры текущей сессии.
 
 Пресет OpenRouter загружает каталог текстовых моделей и предлагает фильтр «Только бесплатные».
 Формат JSON выбирается по возможностям модели. Проверка соединения запрашивает статус ключа
-и остаток дневной квоты через `/key`. Если `OPENAI_API_KEY` пуст, используется
-`OPENROUTER_API_KEY`. [Документация OpenRouter](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key)
+и остаток дневной квоты через `/key`. Для OpenRouter укажите `OPENROUTER_API_KEY` либо задайте
+`OPENAI_API_KEY` вместе с `OPENAI_BASE_URL=https://openrouter.ai/api/v1`. [Документация OpenRouter](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key)
+
+Ключ из профиля используется только с сохранённым адресом API. При смене адреса введите новый ключ.
+Ключи `OPENAI_API_KEY` и `GEMINI_API_KEY` привязаны к адресу из соответствующей переменной
+`*_BASE_URL` или к адресу по умолчанию.
 
 ### Запуск в Docker
 
@@ -94,6 +98,7 @@ docker compose up --build
 или строку `PROVIDER=openai` в `.env`. Порт открыт только для localhost, другой порт задаётся
 переменной `PORT`, например `PORT=8080 docker compose up`. Отчёты пишутся в `reports/`,
 кэш ответов модели хранится в томе `llm-cache`.
+В Compose провайдер задаётся через `PROVIDER`. Окно настроек доступно при прямом запуске сервера на localhost.
 
 Чат в терминале и разовые команды запускаются в том же образе. Примеры из `samples/` и разметка `eval/` уже внутри.
 

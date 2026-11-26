@@ -14,6 +14,14 @@ const FORMATS = [
   { id: 'none', label: 'Без JSON-режима' },
 ] as const;
 
+function apiAddress(url: string) {
+  try {
+    return new URL(url.trim()).href.replace(/\/+$/, '');
+  } catch {
+    return url.trim().replace(/\/+$/, '');
+  }
+}
+
 function draftFrom(view: SettingsView, provider: Provider): Draft {
   const profile = provider === 'mock' ? undefined : view[provider];
   return {
@@ -33,6 +41,7 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
 }) {
   const [view, setView] = useState<SettingsView>();
   const [draft, setDraft] = useState<Draft>();
+  const [dirty, setDirty] = useState<Set<keyof Draft>>(() => new Set());
   const [catalog, setCatalog] = useState<RouterModel[]>();
   const [catalogError, setCatalogError] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>();
@@ -47,6 +56,7 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
     void getSettings(request.signal).then((settings) => {
       setView(settings);
       setDraft(draftFrom(settings, settings.provider));
+      setDirty(new Set());
     }).catch((error: Error) => {
       if (!request.signal.aborted) setFeedback({ message: error.message, error: true });
     });
@@ -68,6 +78,11 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
 
   function update(patch: Partial<Draft>) {
     setDraft((current) => current && { ...current, ...patch });
+    setDirty((current) => {
+      const next = new Set(current);
+      for (const key of Object.keys(patch) as (keyof Draft)[]) next.add(key);
+      return next;
+    });
     setFeedback(undefined);
   }
 
@@ -79,12 +94,24 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
   async function submit(action: 'test' | 'save') {
     if (!draft || pending) return;
     const { api_key, ...values } = draft;
-    const patch: SettingsPatch = draft.provider === 'mock' ? { provider: draft.provider } : {
-      ...values,
-      ...(api_key.trim() && { api_key }),
-    };
+    let patch: SettingsPatch;
+    if (draft.provider === 'mock') {
+      patch = { provider: draft.provider };
+    } else if (action === 'test') {
+      patch = {
+        ...values,
+        ...(api_key.trim() && { api_key }),
+      };
+    } else {
+      patch = { provider: draft.provider };
+      if (dirty.has('model')) patch.model = draft.model;
+      if (dirty.has('base_url')) patch.base_url = draft.base_url;
+      if (dirty.has('response_format')) patch.response_format = draft.response_format;
+      if (dirty.has('free_only')) patch.free_only = draft.free_only;
+      if (api_key.trim()) patch.api_key = api_key;
+    }
     const match = openrouter && catalog?.find((entry) => entry.id === draft.model);
-    if (match) patch.response_format = match.response_format;
+    if (match && (action === 'test' || dirty.has('model'))) patch.response_format = match.response_format;
     setPending(action);
     setFeedback(undefined);
     try {
@@ -94,10 +121,17 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
         const settings = await putSettings(patch);
         setView(settings);
         setDraft(draftFrom(settings, settings.provider));
+        setDirty(new Set());
         onProvider(providerName(settings));
-        setFeedback({ message: settings.effective_provider === settings.provider
-          ? 'Настройки сохранены.'
-          : `Настройки сохранены. Сейчас используется ${providerName(settings)} из флага или переменной окружения.` });
+        const activeOverrides = settings.provider === 'mock' ? [] : settings[settings.provider].env_overrides;
+        const notes: string[] = [];
+        if (settings.effective_provider !== settings.provider) {
+          notes.push(`Сейчас используется ${providerName(settings)} из флага или переменной окружения.`);
+        }
+        if (activeOverrides.length > 0) {
+          notes.push(`Переменные окружения (.env) перекрывают поля: ${activeOverrides.join(', ')}.`);
+        }
+        setFeedback({ message: notes.length > 0 ? `Настройки сохранены. ${notes.join(' ')}` : 'Настройки сохранены.' });
       }
     } catch (error) {
       setFeedback({ message: error instanceof Error ? error.message : 'Не удалось выполнить запрос.', error: true });
@@ -113,6 +147,7 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
 
   const profile = view && draft && draft.provider !== 'mock' ? view[draft.provider] : undefined;
   const selected = openrouter && catalog?.find((model) => model.id === draft?.model);
+  const matchesProfileAddress = Boolean(profile && draft && apiAddress(profile.base_url) === apiAddress(draft.base_url));
   const format = selected ? selected.response_format : draft?.response_format;
   return (
     <>
@@ -124,6 +159,7 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
         <label>Провайдер
           <select value={draft.provider} disabled={Boolean(pending)} onChange={(event) => {
             setDraft(draftFrom(view, event.target.value as Provider));
+            setDirty(new Set());
             setFeedback(undefined);
           }}>
             <option value="mock">Mock</option>
@@ -131,6 +167,9 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
             <option value="openai">OpenAI-совместимый</option>
           </select>
         </label>
+        {profile && profile.env_overrides.length > 0 && <p className="settings-warning">
+          Переменные окружения (.env) перекрывают поля: {profile.env_overrides.join(', ')}. Удалите их из .env, чтобы действовали сохранённые значения.
+        </p>}
         {openai && <label>Пресет
           <select value={preset?.id ?? 'custom'} disabled={Boolean(pending)} onChange={(event) => {
             const next = PRESETS.find(({ id }) => id === event.target.value);
@@ -142,11 +181,14 @@ export function ProviderSettings({ onClose, onProvider, fallback }: {
         </label>}
         {draft.provider !== 'mock' && <>
           <label>Адрес API
-            <input type="url" value={draft.base_url} disabled={Boolean(pending)} onChange={(event) => update({ base_url: event.target.value })} />
+            <input type="url" value={draft.base_url} disabled={Boolean(pending)} onChange={(event) => {
+              const address = event.target.value;
+              update({ base_url: address, ...(apiAddress(address) !== apiAddress(draft.base_url) && { api_key: '' }) });
+            }} />
           </label>
           <label>API-ключ
             <input type="password" value={draft.api_key} disabled={Boolean(pending)} autoComplete="new-password"
-              placeholder={profile?.api_key_mask ?? 'Введите ключ'} onChange={(event) => update({ api_key: event.target.value })} />
+              placeholder={(matchesProfileAddress ? profile?.api_key_mask : null) ?? 'Введите ключ для этого адреса'} onChange={(event) => update({ api_key: event.target.value })} />
           </label>
           {openrouter && <>
             <label className="settings-checkbox"><input type="checkbox" checked={freeOnly} disabled={Boolean(pending)}

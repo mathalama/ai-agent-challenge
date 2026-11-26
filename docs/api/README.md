@@ -157,5 +157,6 @@ cargo run -p cli -- check samples/requirements.md --provider gemini --format jso
 
 PUT и POST принимают JSON с необязательными полями `provider`, `model`, `base_url`, `api_key`,
 `response_format` и `free_only`. Для смены ключа передайте `api_key`. Пустая строка очищает
-сохранённый ключ. Ошибки настроек возвращаются с полем `error`. Провайдер может быть
+сохранённый ключ. Изменение `base_url` сбрасывает сохранённый ключ, если новый ключ не передан.
+Ошибки настроек возвращаются с полем `error`. Провайдер может быть
 `mock`, `gemini` или `openai`. Допустимые форматы ответа OpenAI — `json_schema`, `json_object` и `none`.

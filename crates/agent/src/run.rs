@@ -105,6 +105,7 @@ impl ProviderFactory {
 
     pub fn reload(&self, settings: Settings) {
         let mut state = self.state.lock().expect("блокировка провайдера");
+        state.provider = Some(settings.provider);
         state.settings = settings;
         state.model = None;
         state.base = None;
@@ -222,5 +223,29 @@ pub fn read_answers(path: &Path) -> Result<Answers> {
         }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Answers::new()),
         Err(error) => Err(format!("Не удалось прочитать «{}»: {error}", path.display()).into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_updates_provider_even_when_overridden_by_flag_or_command() {
+        let factory = ProviderFactory::new(Provider::Mock, true);
+        assert_eq!(factory.resolved().unwrap().provider, Provider::Mock);
+
+        let mut updated = Settings::default();
+        updated
+            .apply(SettingsPatch {
+                provider: Some(Provider::Openai),
+                model: Some("test/model".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        factory.reload(updated);
+        let resolved = factory.resolved().unwrap();
+        assert_eq!(resolved.provider, Provider::Openai);
+        assert_eq!(resolved.model, "test/model");
     }
 }

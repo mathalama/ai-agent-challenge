@@ -95,3 +95,46 @@ fn check_uses_the_saved_mock_provider() {
     assert!(chat.status.success());
     assert!(String::from_utf8(chat.stdout).unwrap().contains("> "));
 }
+
+#[test]
+fn broken_config_does_not_block_mock_or_config_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = directory.path();
+    let config_dir = profile.join("rs");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_file = config_dir.join("config.json");
+    std::fs::write(&config_file, "{not valid json").unwrap();
+
+    let shown = rs(profile, &["config", "show"], "");
+    assert!(!shown.status.success());
+    assert!(String::from_utf8_lossy(&shown.stderr).contains("config.json"));
+
+    let document = profile.join("requirements.md");
+    std::fs::write(&document, include_str!("../../../samples/requirements.md")).unwrap();
+    let checked = rs(
+        profile,
+        &[
+            "check",
+            "requirements.md",
+            "--provider",
+            "mock",
+            "--no-cache",
+            "-o",
+            "report.md",
+        ],
+        "",
+    );
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+
+    let repaired = rs(profile, &["config", "set", "provider", "mock"], "");
+    assert!(
+        repaired.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repaired.stderr)
+    );
+    assert!(rs(profile, &["config", "show"], "").status.success());
+}

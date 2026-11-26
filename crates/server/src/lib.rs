@@ -147,7 +147,7 @@ async fn local_settings(request: Request, next: Next) -> Response {
     if !(loopback && local_host(headers) && matching_origin) {
         return ApiError(
             StatusCode::FORBIDDEN,
-            "Настройки доступны только с localhost",
+            "Настройки доступны только при локальном запуске без Docker. В контейнере задайте провайдера через .env",
         )
         .into_response();
     }

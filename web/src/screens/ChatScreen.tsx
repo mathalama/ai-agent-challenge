@@ -5,9 +5,9 @@ import { Button } from '../components/Button';
 import { formatLocation } from '../components/FindingCard';
 import { ChatApiError, connectChat, sendChatInput, type ChatEvent, type Progress, type SessionState } from '../lib/chat-api';
 import { download } from '../lib/export';
-import { STAGE_BY_ID, isStageId, type StageId } from '../lib/labels';
+import { READINESS, STAGE_BY_ID, isStageId, type StageId } from '../lib/labels';
 import { useReportStore, type StageRecord } from '../lib/report-store';
-import type { Evidence, Question } from '../lib/types';
+import type { Evidence, Question, Report } from '../lib/types';
 import { ReportMessage } from '../components/ReportMessage';
 import { DemoProgressScreen, StageList } from './ProgressScreen';
 import { StartScreen } from './StartScreen';
@@ -31,6 +31,7 @@ type Run = {
 type Item =
   | { kind: 'message'; text: string; user?: boolean; error?: boolean; citations?: Evidence[] }
   | { kind: 'question'; question: Question }
+  | { kind: 'report'; snapshot: Extract<ChatEvent, { event: 'report_ready' }>; runId: string | null }
   | { kind: 'reasoning'; value: Reason }
   | Run;
 
@@ -151,9 +152,13 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
               : [...list, { kind: 'reasoning', value: reasons[reasons.length - 1] }];
           });
           break;
-        case 'report_ready':
+        case 'report_ready': {
+          const { runId } = useReportStore.getState();
+          useReportStore.setState({ status: 'idle' });
+          setItems((list) => [...list, { kind: 'report', snapshot: event, runId }]);
           reportDirty = true;
           break;
+        }
         case 'answers_updated':
           reportDirty = true;
           break;
@@ -267,6 +272,7 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
   }
 
   const disabled = busy || !connected;
+  const latestReportIndex = items.map((item) => item.kind).lastIndexOf('report');
   return (
     <section className="live-chat" onDragOver={(event) => {
       event.preventDefault();
@@ -297,10 +303,12 @@ export function ChatScreen({ sessionKey, onRestart }: { sessionKey: number; onRe
             <summary>Команды чата</summary>
             <p className="mt-2 whitespace-pre-wrap">{items[0].text}</p>
           </details>}
-          {items.slice(1).map((item, index) => (
-            <ChatEntry key={index} item={item} onSend={send} disabled={disabled} />
-          ))}
-          {report && <ReportMessage report={report} />}
+          {items.map((item, index) => {
+            if (index === 0) return null;
+            const activeReport = index === latestReportIndex && item.kind === 'report' && item.runId === runId;
+            return <ChatEntry key={index} item={item} onSend={send} disabled={disabled}
+              report={activeReport && reportStatus === 'ready' ? report : null} />;
+          })}
           {reportStatus === 'error' && <div role="alert" className="space-y-2">
             <p className="text-sev-critical-ink">{reportError}</p>
             <Button variant="secondary" onClick={() => void useReportStore.getState().load()}>Загрузить отчёт снова</Button>
@@ -341,7 +349,12 @@ function Reasoning({ item }: { item: Reason }) {
   );
 }
 
-function ChatEntry({ item, onSend, disabled }: { item: Item; onSend: (value: string) => Promise<void>; disabled: boolean }) {
+function ChatEntry({ item, onSend, disabled, report }: {
+  item: Item;
+  onSend: (value: string) => Promise<void>;
+  disabled: boolean;
+  report: Report | null;
+}) {
   switch (item.kind) {
     case 'message':
       return (
@@ -362,6 +375,20 @@ function ChatEntry({ item, onSend, disabled }: { item: Item; onSend: (value: str
           </div>
         </article>
       );
+    case 'report': {
+      if (report) return <ReportMessage report={report} />;
+      const { readiness, summary } = item.snapshot;
+      return (
+        <article className="chat-report-card">
+          <div className="chat-report-heading"><h2>Отчёт готов</h2></div>
+          <div className="chat-report-stats">
+            <span className={READINESS[readiness].text}>{READINESS[readiness].label}</span>
+            <span>Требований · <b>{summary.requirement_count}</b></span>
+            <span>Находок · <b>{summary.finding_count}</b></span>
+          </div>
+        </article>
+      );
+    }
     case 'run':
       return (
         <details open={item.result === undefined} className="run-details">

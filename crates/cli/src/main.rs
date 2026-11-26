@@ -208,10 +208,15 @@ async fn run(cli: Cli) -> Result<()> {
             .map(|value| value.unwrap_or_default())
     };
     let factory = |provider: Option<Provider>, no_cache| -> Result<ProviderFactory> {
+        let loaded = if matches!(provider, Some(Provider::Mock)) {
+            Settings::default()
+        } else {
+            settings()?
+        };
         Ok(ProviderFactory::with_settings(
             provider.map(Into::into),
             no_cache,
-            settings()?,
+            loaded,
         ))
     };
     match cli.command.unwrap_or(Command::Chat {

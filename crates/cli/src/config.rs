@@ -7,7 +7,7 @@ use agent::Result;
 use clap::Subcommand;
 use llm::{
     openrouter::{self, NO_JSON_WARNING, OPENROUTER_URL},
-    settings::{Provider, ResponseFormat, Settings, SettingsPatch},
+    settings::{Provider, ResponseFormat, Settings, SettingsPatch, same_api_url},
 };
 
 #[derive(Subcommand)]
@@ -23,18 +23,36 @@ pub enum Action {
     Test,
 }
 
+pub fn load_or_recover(path: &Path) -> io::Result<Settings> {
+    match Settings::load(path) {
+        Ok(settings) => Ok(settings),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            eprintln!("Предупреждение: {error}. Файл будет перезаписан.");
+            Ok(Settings::default())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub async fn run(path: &Path, action: Option<Action>) -> Result<()> {
-    let mut settings = Settings::load(path)?;
     match action {
-        Some(Action::Show) => println!("{}", serde_json::to_string_pretty(&settings.view(None)?)?),
+        Some(Action::Show) => {
+            let settings = Settings::load(path)?;
+            println!("{}", serde_json::to_string_pretty(&settings.view(None)?)?);
+        }
         Some(Action::Set { field, value }) => {
+            let mut settings = load_or_recover(path)?;
             let patch = field_patch(&field, value)?;
             settings.apply(patch)?;
             settings.save(path)?;
             println!("Настройки сохранены.");
         }
-        Some(Action::Test) => println!("{}", llm::test_settings(&settings.resolve(None)?).await?),
+        Some(Action::Test) => {
+            let settings = Settings::load(path)?;
+            println!("{}", llm::test_settings(&settings.resolve(None)?).await?);
+        }
         None => {
+            let settings = load_or_recover(path)?;
             wizard(path, settings).await?;
         }
     }
@@ -82,8 +100,13 @@ pub async fn wizard(path: &Path, mut settings: Settings) -> Result<Settings> {
     if provider != Provider::Mock {
         let base_url = prompt("Адрес API", preset.unwrap_or(&profile.base_url))?;
         let use_router = provider == Provider::Openai && openrouter::is_openrouter(&base_url);
+        let key_prompt = if same_api_url(&base_url, &profile.base_url) {
+            "API-ключ (Enter сохраняет текущий): "
+        } else {
+            "API-ключ для нового адреса (Enter оставляет поле пустым): "
+        };
         patch.base_url = Some(base_url);
-        let api_key = rpassword::prompt_password("API-ключ (Enter сохраняет текущий): ")?;
+        let api_key = rpassword::prompt_password(key_prompt)?;
         if !api_key.trim().is_empty() {
             patch.api_key = Some(api_key);
         }
@@ -207,10 +230,7 @@ fn prompt(label: &str, default: &str) -> io::Result<String> {
 }
 
 fn yes(value: &str) -> bool {
-    matches!(
-        value.to_ascii_lowercase().as_str(),
-        "д" | "да" | "y" | "yes"
-    )
+    matches!(value.to_lowercase().as_str(), "д" | "да" | "y" | "yes")
 }
 
 fn format_value(format: ResponseFormat) -> &'static str {
@@ -225,5 +245,17 @@ fn format_label(format: ResponseFormat) -> &'static str {
     match format {
         ResponseFormat::None => NO_JSON_WARNING,
         format => format_value(format),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::yes;
+
+    #[test]
+    fn accepts_uppercase_russian_confirmation() {
+        assert!(yes("Да"));
+        assert!(yes("Д"));
+        assert!(!yes("Нет"));
     }
 }

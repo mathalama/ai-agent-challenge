@@ -125,6 +125,7 @@ pub struct ProfileView {
     pub base_url: String,
     pub response_format: ResponseFormat,
     pub free_only: bool,
+    pub env_overrides: Vec<&'static str>,
 }
 
 impl ResolvedSettings {
@@ -136,7 +137,7 @@ impl ResolvedSettings {
         }
     }
 
-    pub fn masked(&self) -> ProfileView {
+    pub fn masked(&self, env_overrides: Vec<&'static str>) -> ProfileView {
         ProfileView {
             api_key_mask: self.api_key.as_ref().map(|key| {
                 let len = key.chars().count();
@@ -150,6 +151,7 @@ impl ResolvedSettings {
             base_url: self.base_url.clone(),
             response_format: self.response_format,
             free_only: self.free_only,
+            env_overrides,
         }
     }
 
@@ -168,10 +170,15 @@ impl Settings {
     }
 
     /// Проверяет явно введённые значения без изменения сохранённой конфигурации.
-    pub fn preview(
+    pub fn preview(&self, patch: SettingsPatch, provider: Provider) -> Result<ResolvedSettings> {
+        self.preview_with(patch, provider, optional_env)
+    }
+
+    fn preview_with(
         &self,
         mut patch: SettingsPatch,
         provider: Provider,
+        get: impl Fn(&'static str) -> Result<Option<String>>,
     ) -> Result<ResolvedSettings> {
         let explicit_key = patch.api_key.is_some();
         let explicit_url = patch.base_url.is_some();
@@ -180,19 +187,19 @@ impl Settings {
         patch.provider = Some(provider);
         let mut candidate = self.clone();
         candidate.apply(patch)?;
-        candidate.resolve_with(Some(provider), |name| {
+        let address = match provider {
+            Provider::Gemini => candidate.gemini.base_url.as_deref().unwrap_or(GEMINI_URL),
+            Provider::Openai => candidate.openai.base_url.as_deref().unwrap_or(OPENAI_URL),
+            Provider::Mock => "",
+        };
+        candidate.resolve_at(Some(provider), explicit_url.then_some(address), |name| {
             let explicit = match name {
                 "OPENAI_API_KEY" | "OPENROUTER_API_KEY" | "GEMINI_API_KEY" => explicit_key,
-                "OPENAI_BASE_URL" | "GEMINI_BASE_URL" => explicit_url,
                 "OPENAI_MODEL" | "GEMINI_MODEL" => explicit_model,
                 "OPENAI_RESPONSE_FORMAT" => explicit_format,
                 _ => false,
             };
-            if explicit {
-                Ok(None)
-            } else {
-                optional_env(name)
-            }
+            if explicit { Ok(None) } else { get(name) }
         })
     }
 
@@ -201,108 +208,225 @@ impl Settings {
         provider: Option<Provider>,
         get: impl Fn(&'static str) -> Result<Option<String>>,
     ) -> Result<ResolvedSettings> {
+        self.resolve_at(provider, None, get)
+    }
+
+    fn resolve_at(
+        &self,
+        provider: Option<Provider>,
+        address: Option<&str>,
+        get: impl Fn(&'static str) -> Result<Option<String>>,
+    ) -> Result<ResolvedSettings> {
         let provider = match provider {
             Some(provider) => provider,
-            None => match get("RS_PROVIDER")? {
-                Some(value) => value.parse()?,
-                None => match get("PROVIDER")? {
-                    Some(value) => value.parse()?,
-                    None => self.provider,
-                },
-            },
+            None => get("RS_PROVIDER")?
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(self.provider),
         };
-        let gemini = &self.gemini;
-        let openai = &self.openai;
-        let (api_key, model, base_url, response_format) = match provider {
-            Provider::Mock => (None, "mock".into(), String::new(), ResponseFormat::None),
+        let (profile, default_url, url_var, key_var, model_var) = match provider {
             Provider::Gemini => (
-                get("GEMINI_API_KEY")?.or_else(|| gemini.api_key.clone()),
-                get("GEMINI_MODEL")?
-                    .or_else(|| gemini.model.clone())
-                    .unwrap_or_else(|| GEMINI_MODEL.into()),
-                get("GEMINI_BASE_URL")?
-                    .or_else(|| gemini.base_url.clone())
-                    .unwrap_or_else(|| GEMINI_URL.into()),
-                ResponseFormat::JsonSchema,
+                &self.gemini,
+                GEMINI_URL,
+                "GEMINI_BASE_URL",
+                "GEMINI_API_KEY",
+                "GEMINI_MODEL",
             ),
-            Provider::Openai => {
-                let base_url = get("OPENAI_BASE_URL")?
-                    .or_else(|| openai.base_url.clone())
-                    .unwrap_or_else(|| OPENAI_URL.into());
-                let fallback = if is_openrouter(&base_url) {
-                    get("OPENROUTER_API_KEY")?
-                } else {
-                    None
-                };
-                (
-                    get("OPENAI_API_KEY")?
-                        .or(fallback)
-                        .or_else(|| openai.api_key.clone()),
-                    get("OPENAI_MODEL")?
-                        .or_else(|| openai.model.clone())
-                        .unwrap_or_default(),
-                    base_url,
-                    get("OPENAI_RESPONSE_FORMAT")?
-                        .map(|value| value.parse())
-                        .transpose()?
-                        .unwrap_or(openai.response_format),
-                )
+            Provider::Openai => (
+                &self.openai,
+                OPENAI_URL,
+                "OPENAI_BASE_URL",
+                "OPENAI_API_KEY",
+                "OPENAI_MODEL",
+            ),
+            Provider::Mock => {
+                return Ok(ResolvedSettings {
+                    provider,
+                    api_key: None,
+                    model: "mock".into(),
+                    base_url: String::new(),
+                    response_format: ResponseFormat::None,
+                    free_only: false,
+                });
             }
+        };
+        let env_url = get(url_var)?;
+        let saved_url = profile.base_url.as_deref().unwrap_or(default_url);
+        let base_url = address.or(env_url.as_deref()).unwrap_or(saved_url);
+        // Ключи из профиля и окружения принадлежат адресам, заданным в том же источнике.
+        let env_key = if same_api_url(base_url, env_url.as_deref().unwrap_or(default_url)) {
+            get(key_var)?
+        } else {
+            None
+        };
+        let alias = if env_key.is_none() && provider == Provider::Openai && is_openrouter(base_url)
+        {
+            get("OPENROUTER_API_KEY")?
+        } else {
+            None
+        };
+        let saved_key = if same_api_url(base_url, saved_url) {
+            profile.api_key.clone()
+        } else {
+            None
+        };
+        let model = get(model_var)?
+            .or_else(|| profile.model.clone())
+            .unwrap_or_else(|| {
+                if provider == Provider::Gemini {
+                    GEMINI_MODEL.into()
+                } else {
+                    String::new()
+                }
+            });
+        let response_format = if provider == Provider::Openai {
+            get("OPENAI_RESPONSE_FORMAT")?
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(profile.response_format)
+        } else {
+            ResponseFormat::JsonSchema
         };
         Ok(ResolvedSettings {
             provider,
-            api_key,
+            api_key: env_key.or(alias).or(saved_key),
             model,
-            base_url,
+            base_url: base_url.to_owned(),
             response_format,
-            free_only: openai.free_only.unwrap_or(true),
+            free_only: self.openai.free_only.unwrap_or(true),
         })
     }
 
     pub fn view(&self, provider: Option<Provider>) -> Result<SettingsView> {
+        self.view_with(provider, optional_env)
+    }
+
+    fn view_with(
+        &self,
+        provider: Option<Provider>,
+        get: impl Fn(&'static str) -> Result<Option<String>>,
+    ) -> Result<SettingsView> {
+        let effective_provider = self.resolve_with(provider, &get)?.provider;
+        let gemini_resolved = self.resolve_with(Some(Provider::Gemini), &get)?;
+        let gemini_env =
+            self.env_overrides_for(Provider::Gemini, &gemini_resolved.base_url, &get)?;
+        let openai_resolved = self.resolve_with(Some(Provider::Openai), &get)?;
+        let openai_env =
+            self.env_overrides_for(Provider::Openai, &openai_resolved.base_url, &get)?;
         Ok(SettingsView {
             provider: self.provider,
-            effective_provider: self.resolve(provider)?.provider,
-            gemini: self.resolve(Some(Provider::Gemini))?.masked(),
-            openai: self.resolve(Some(Provider::Openai))?.masked(),
+            effective_provider,
+            gemini: gemini_resolved.masked(gemini_env),
+            openai: openai_resolved.masked(openai_env),
         })
+    }
+
+    fn env_overrides_for(
+        &self,
+        provider: Provider,
+        base_url: &str,
+        get: impl Fn(&'static str) -> Result<Option<String>>,
+    ) -> Result<Vec<&'static str>> {
+        let (default_url, url_var, key_var, model_var) = match provider {
+            Provider::Gemini => (
+                GEMINI_URL,
+                "GEMINI_BASE_URL",
+                "GEMINI_API_KEY",
+                "GEMINI_MODEL",
+            ),
+            Provider::Openai => (
+                OPENAI_URL,
+                "OPENAI_BASE_URL",
+                "OPENAI_API_KEY",
+                "OPENAI_MODEL",
+            ),
+            Provider::Mock => return Ok(Vec::new()),
+        };
+        let mut overrides = Vec::new();
+        let env_url = get(url_var)?;
+        if env_url.is_some() {
+            overrides.push(url_var);
+        }
+        let env_key = if same_api_url(base_url, env_url.as_deref().unwrap_or(default_url)) {
+            get(key_var)?
+        } else {
+            None
+        };
+        if env_key.is_some() {
+            overrides.push(key_var);
+        } else if provider == Provider::Openai
+            && is_openrouter(base_url)
+            && get("OPENROUTER_API_KEY")?.is_some()
+        {
+            overrides.push("OPENROUTER_API_KEY");
+        }
+        if get(model_var)?.is_some() {
+            overrides.push(model_var);
+        }
+        if provider == Provider::Openai && get("OPENAI_RESPONSE_FORMAT")?.is_some() {
+            overrides.push("OPENAI_RESPONSE_FORMAT");
+        }
+        Ok(overrides)
     }
 
     pub fn apply(&mut self, patch: SettingsPatch) -> Result<()> {
         let provider = patch.provider.unwrap_or(self.provider);
-        let profile = match provider {
-            Provider::Gemini => Some(&mut self.gemini),
-            Provider::Openai => Some(&mut self.openai),
-            Provider::Mock => None,
+        let (profile, default_url) = match provider {
+            Provider::Gemini => (&mut self.gemini, GEMINI_URL),
+            Provider::Openai => (&mut self.openai, OPENAI_URL),
+            Provider::Mock => {
+                if patch.api_key.is_some()
+                    || patch.model.is_some()
+                    || patch.base_url.is_some()
+                    || patch.response_format.is_some()
+                    || patch.free_only.is_some()
+                {
+                    return Err(LlmError::Settings(
+                        "Для настройки модели, адреса или ключа выберите другой провайдер",
+                    ));
+                }
+                self.provider = provider;
+                return Ok(());
+            }
         };
-        if let Some(profile) = profile {
-            if let Some(key) = patch.api_key {
-                let key = key.trim();
-                if !key.is_empty() && reqwest::header::HeaderValue::from_str(key).is_err() {
-                    return Err(LlmError::Settings("Некорректный API-ключ"));
-                }
-                profile.api_key = (!key.is_empty()).then(|| key.to_owned());
+        let key = patch.api_key.as_deref();
+        let model = patch.model.as_deref().map(str::trim);
+        let url = patch
+            .base_url
+            .as_deref()
+            .map(|url| url.trim().trim_end_matches('/'));
+        if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty())
+            && reqwest::header::HeaderValue::from_str(key).is_err()
+        {
+            return Err(LlmError::Settings("Некорректный API-ключ"));
+        }
+        if let Some(model) = model.filter(|model| !model.is_empty()) {
+            validate_model(provider, model)?;
+        }
+        if let Some(url) = url {
+            let url = (!url.is_empty()).then_some(url);
+            if let Some(url) = url {
+                validate_url(url)?;
             }
-            if let Some(model) = patch.model {
-                let model = model.trim();
-                if !model.is_empty() {
-                    validate_model(provider, model)?;
-                }
-                profile.model = (!model.is_empty()).then(|| model.to_owned());
+            if !same_api_url(
+                profile.base_url.as_deref().unwrap_or(default_url),
+                url.unwrap_or(default_url),
+            ) {
+                profile.api_key = None;
             }
-            if let Some(url) = patch.base_url {
-                let url = url.trim().trim_end_matches('/');
-                if !url.is_empty() {
-                    validate_url(url)?;
-                }
-                profile.base_url = (!url.is_empty()).then(|| url.to_owned());
-            }
-            if let Some(format) = patch.response_format {
-                profile.response_format = format;
-            }
-            if let Some(free_only) = patch.free_only {
-                profile.free_only = Some(free_only);
-            }
+            profile.base_url = url.map(str::to_owned);
+        }
+        if let Some(key) = key.map(str::trim) {
+            profile.api_key = (!key.is_empty()).then(|| key.to_owned());
+        }
+        if let Some(model) = model {
+            profile.model = (!model.is_empty()).then(|| model.to_owned());
+        }
+        if let Some(format) = patch.response_format {
+            profile.response_format = format;
+        }
+        if let Some(free_only) = patch.free_only {
+            profile.free_only = Some(free_only);
         }
         self.provider = provider;
         Ok(())
@@ -311,10 +435,19 @@ impl Settings {
     pub fn load(path: &Path) -> std::result::Result<Self, io::Error> {
         match fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "Некорректный файл настроек rs")
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Некорректный файл настроек «{}»", path.display()),
+                )
             }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error),
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "Не удалось прочитать файл настроек «{}»: {error}",
+                    path.display()
+                ),
+            )),
         }
     }
 
@@ -357,6 +490,11 @@ pub(crate) fn optional_env(name: &'static str) -> Result<Option<String>> {
         Err(env::VarError::NotPresent) => Ok(None),
         Err(_) => Err(LlmError::Config(name)),
     }
+}
+
+pub fn same_api_url(left: &str, right: &str) -> bool {
+    let parse = |url: &str| Url::parse(url.trim().trim_end_matches('/'));
+    matches!((parse(left), parse(right)), (Ok(left), Ok(right)) if left == right)
 }
 
 fn validate_url(value: &str) -> Result<()> {
@@ -405,6 +543,142 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preview_and_save_drop_keys_when_the_api_address_changes() {
+        let old = crate::openrouter::OPENROUTER_URL;
+        let new = "https://api.groq.com/openai/v1";
+        let mut settings = Settings::default();
+        settings
+            .apply(SettingsPatch {
+                provider: Some(Provider::Openai),
+                base_url: Some(old.into()),
+                api_key: Some("stored-router-key".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let change = SettingsPatch {
+            base_url: Some(new.into()),
+            ..Default::default()
+        };
+        assert!(
+            settings
+                .preview_with(change.clone(), Provider::Openai, |_| Ok(None))
+                .unwrap()
+                .api_key
+                .is_none()
+        );
+        assert_eq!(
+            settings
+                .resolve_with(None, |_| Ok(None))
+                .unwrap()
+                .api_key
+                .as_deref(),
+            Some("stored-router-key")
+        );
+        settings.apply(change).unwrap();
+        assert!(
+            settings
+                .resolve_with(None, |_| Ok(None))
+                .unwrap()
+                .api_key
+                .is_none()
+        );
+        assert!(
+            settings
+                .resolve_with(None, |name| Ok(
+                    (name == "OPENAI_BASE_URL").then(|| old.to_owned())
+                ))
+                .unwrap()
+                .api_key
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn environment_and_saved_keys_are_bound_to_their_own_api_addresses() {
+        let mut settings = Settings::default();
+        settings
+            .apply(SettingsPatch {
+                provider: Some(Provider::Openai),
+                base_url: Some("https://api.groq.com/openai/v1".into()),
+                api_key: Some("groq-key".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let resolved = settings
+            .resolve_with(None, |name| {
+                Ok(match name {
+                    "OPENAI_BASE_URL" => Some(OPENAI_URL.into()),
+                    _ => None,
+                })
+            })
+            .unwrap();
+        assert!(resolved.api_key.is_none());
+        let resolved = settings
+            .resolve_with(None, |name| {
+                Ok(match name {
+                    "OPENAI_API_KEY" => Some("openai-key".into()),
+                    "PROVIDER" => Some("mock".into()),
+                    _ => None,
+                })
+            })
+            .unwrap();
+        assert_eq!(resolved.provider, Provider::Openai);
+        assert_eq!(resolved.api_key.as_deref(), Some("groq-key"));
+    }
+
+    #[test]
+    fn draft_uses_only_credentials_for_the_requested_endpoint() {
+        let router = crate::openrouter::OPENROUTER_URL;
+        let settings = Settings::default();
+        let env = |name| {
+            Ok(match name {
+                "OPENAI_BASE_URL" => Some(router.into()),
+                "OPENAI_API_KEY" => Some("env-router-key".into()),
+                _ => None,
+            })
+        };
+        let preview = |url: &str, key: Option<&str>| {
+            settings
+                .preview_with(
+                    SettingsPatch {
+                        base_url: Some(url.into()),
+                        api_key: key.map(str::to_owned),
+                        ..Default::default()
+                    },
+                    Provider::Openai,
+                    env,
+                )
+                .unwrap()
+        };
+        let groq = "https://api.groq.com/openai/v1";
+        assert!(preview(groq, None).api_key.is_none());
+        assert_eq!(
+            preview(groq, Some("new-key")).api_key.as_deref(),
+            Some("new-key")
+        );
+        assert_eq!(
+            preview(&format!("{router}/"), None).api_key.as_deref(),
+            Some("env-router-key")
+        );
+    }
+
+    #[test]
+    fn mock_rejects_profile_fields() {
+        let mut settings = Settings {
+            provider: Provider::Mock,
+            ..Default::default()
+        };
+        assert!(
+            settings
+                .apply(SettingsPatch {
+                    model: Some("different".into()),
+                    ..Default::default()
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
     fn flags_win_over_environment_and_openrouter_alias_wins_over_file() {
         let mut settings = Settings::default();
         settings
@@ -434,14 +708,38 @@ mod tests {
         assert_eq!(config.model, "env/model");
         assert_eq!(config.response_format, ResponseFormat::JsonObject);
         let primary = settings
-            .resolve_with(Some(Provider::Openai), |name| {
-                if name == "OPENAI_API_KEY" {
-                    Ok(Some("primary-key".into()))
-                } else {
-                    get(name)
-                }
+            .resolve_with(Some(Provider::Openai), |name| match name {
+                "OPENAI_API_KEY" => Ok(Some("primary-key".into())),
+                "OPENAI_BASE_URL" => Ok(Some(crate::openrouter::OPENROUTER_URL.into())),
+                _ => get(name),
             })
             .unwrap();
         assert_eq!(primary.api_key.as_deref(), Some("primary-key"));
+    }
+
+    #[test]
+    fn view_reports_env_overrides_and_load_includes_path_on_error() {
+        let settings = Settings::default();
+        let view = settings
+            .view_with(None, |name| {
+                Ok(match name {
+                    "OPENAI_BASE_URL" => Some("https://api.deepseek.com/v1".into()),
+                    "OPENAI_RESPONSE_FORMAT" => Some("json_object".into()),
+                    "GEMINI_MODEL" => Some("gemini-2.5-flash".into()),
+                    _ => None,
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            view.openai.env_overrides,
+            vec!["OPENAI_BASE_URL", "OPENAI_RESPONSE_FORMAT"]
+        );
+        assert_eq!(view.gemini.env_overrides, vec!["GEMINI_MODEL"]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, "{broken").unwrap();
+        let err = Settings::load(&path).err().unwrap();
+        assert!(err.to_string().contains("config.json"));
     }
 }

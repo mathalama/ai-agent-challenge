@@ -7,6 +7,7 @@ export interface Profile {
   base_url: string;
   response_format: ResponseFormat;
   free_only: boolean;
+  env_overrides: string[];
 }
 
 export interface SettingsView {
@@ -63,6 +64,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 function write<T>(path: string, method: 'POST' | 'PUT', patch: SettingsPatch) {
   return request<T>(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+}
+
+export async function settingsAvailable(signal: AbortSignal) {
+  const response = await fetch('/api/settings', { method: 'HEAD', signal });
+  return response.ok && Boolean(response.headers.get('content-type')?.includes('application/json'));
 }
 
 export const getSettings = (signal: AbortSignal) => request<SettingsView>('', { signal });

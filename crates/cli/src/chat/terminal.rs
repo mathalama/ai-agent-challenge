@@ -12,7 +12,6 @@ use crossterm::{
     queue,
     terminal::{self, Clear, ClearType},
 };
-use llm::settings::Settings;
 
 use super::{ConsoleProgress, handle, load, load_path, terminal_text};
 
@@ -140,7 +139,7 @@ pub async fn run(
 
 async fn reconfigure(path: Option<&Path>, factory: &ProviderFactory) -> Result<()> {
     let path = path.ok_or("Каталог профиля недоступен")?;
-    let settings = crate::config::wizard(path, Settings::load(path)?).await?;
+    let settings = crate::config::wizard(path, crate::config::load_or_recover(path)?).await?;
     factory.reload(settings);
     Ok(())
 }
@@ -209,6 +208,11 @@ fn read_boxed(status: &str) -> io::Result<Option<String>> {
                 return Ok(Some(value));
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !input.is_empty() {
+                    input.clear();
+                    cursor = 0;
+                    continue;
+                }
                 queue!(out, Clear(ClearType::FromCursorDown))?;
                 out.flush()?;
                 return Ok(None);
@@ -257,8 +261,10 @@ fn draw_box(
     status: &str,
     matches: &[&str],
 ) -> io::Result<()> {
-    let max_input = (width - 5) / 2;
-    let start = cursor.saturating_sub(max_input);
+    let max_input = width.saturating_sub(5);
+    let start = cursor
+        .saturating_sub(max_input / 2)
+        .min(input.len().saturating_sub(max_input));
     let end = (start + max_input).min(input.len());
     let before: String = input[start..cursor].iter().collect();
     let current = input
@@ -269,7 +275,7 @@ fn draw_box(
     let after: String = input[cursor.saturating_add(1).min(end)..end]
         .iter()
         .collect();
-    let padding = width - 5 - before.chars().count() - after.chars().count();
+    let padding = max_input.saturating_sub(before.chars().count() + after.chars().count());
     queue!(out, MoveToColumn(0), Clear(ClearType::FromCursorDown))?;
     write!(
         out,
@@ -316,5 +322,19 @@ fn display_model(model: &str) -> &str {
         "модель не задана"
     } else {
         model
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::draw_box;
+
+    #[test]
+    fn long_input_shows_the_character_under_the_cursor_and_its_tail() {
+        let input: Vec<_> = "abcdefghijklmnopqrstuvwxyz012345".chars().collect();
+        let mut output = Vec::new();
+        draw_box(&mut output, 25, &input, 10, "", &[]).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("abcdefghij\x1b[7mk\x1b[0mlmnopqrst"));
     }
 }

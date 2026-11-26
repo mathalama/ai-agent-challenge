@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useReportStore } from '../lib/report-store';
+import { settingsAvailable } from '../lib/settings-api';
 import { readHistory, saveHistory, type SavedRun } from '../lib/report-history';
 import { ChatScreen } from '../screens/ChatScreen';
 import { ProviderSettings } from './ProviderSettings';
@@ -64,6 +65,7 @@ export function Layout() {
   const [chatKey, setChatKey] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [canConfigure, setCanConfigure] = useState(false);
   const { mode, report, stageTrace, answers, runId, sourceName, demoPlayed, status, sessionBusy, provider } = useReportStore();
   const tab = TABS.find(({ id }) => id === params.get('tab'));
   const ready = report && (mode !== 'demo' || demoPlayed);
@@ -73,7 +75,7 @@ export function Layout() {
   const providerName = mode === 'demo' ? 'Mock · демо' : provider ?? (mode === 'connecting' ? 'Подключение' : 'Провайдер сервера');
 
   useEffect(() => {
-    if (!ready || !report || !runId || status !== 'ready' || mode === 'archive') return;
+    if (mode !== 'live' || !report || !runId || status !== 'ready') return;
     setHistory(saveHistory({
       id: runId,
       name: sourceName ?? report.passport.document_title,
@@ -82,13 +84,24 @@ export function Layout() {
       stageTrace,
       answers,
     }));
-  }, [ready, report, runId, sourceName, stageTrace, answers, status, mode]);
+  }, [report, runId, sourceName, stageTrace, answers, status, mode]);
 
   useEffect(() => {
     const sync = () => setHistory(readHistory());
     window.addEventListener('storage', sync);
     return () => window.removeEventListener('storage', sync);
   }, []);
+
+  useEffect(() => {
+    if (mode !== 'live') return;
+    const request = new AbortController();
+    void settingsAvailable(request.signal).then((available) => {
+      if (!request.signal.aborted) setCanConfigure(available);
+    }).catch(() => {
+      if (!request.signal.aborted) setCanConfigure(false);
+    });
+    return () => request.abort();
+  }, [mode]);
 
   function reset(run?: SavedRun) {
     if (sessionBusy) return;
@@ -129,7 +142,7 @@ export function Layout() {
       </section>
       <footer className="workspace-sidebar-footer">
         <p><span className="provider-dot" aria-hidden />{providerName}</p>
-        <button type="button" onClick={() => { setHistoryOpen(false); setSettingsOpen(true); }}><span aria-hidden>⚙</span> Настройки</button>
+        {canConfigure && mode !== 'demo' && <button type="button" onClick={() => { setHistoryOpen(false); setSettingsOpen(true); }}><span aria-hidden>⚙</span> Настройки</button>}
       </footer>
     </>
   );

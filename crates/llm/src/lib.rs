@@ -160,20 +160,39 @@ pub async fn generate_typed<T: JsonSchema + DeserializeOwned>(
     Ok(serde_json::from_value(response.json)?)
 }
 
-/// Проверяет OpenRouter по статусу ключа; у остальных провайдеров запрашивает короткий ответ.
+/// Проверяет OpenRouter по статусу ключа и каталогу моделей; у остальных провайдеров запрашивает короткий ответ.
 pub async fn test_settings(config: &settings::ResolvedSettings) -> Result<String> {
     use settings::Provider;
+    if config.provider == Provider::Mock {
+        return Ok("Mock готов к работе".into());
+    }
+    config.validate()?;
     if config.provider == Provider::Openai && openrouter::is_openrouter(&config.base_url) {
         let key = config
             .api_key
             .as_deref()
             .ok_or(LlmError::Settings("Укажите ключ OpenRouter"))?;
-        return Ok(openrouter::key_status(key).await?.summary());
+        let (status, catalog) =
+            tokio::join!(openrouter::key_status(key), openrouter::models(false));
+        let status = status?;
+        if let Ok(models) = catalog
+            && !models.is_empty()
+            && !models.iter().any(|model| model.id == config.model)
+        {
+            return Err(LlmError::Settings(
+                "Модель не найдена в каталоге OpenRouter",
+            ));
+        }
+        return Ok(status.summary());
     }
     let provider: Box<dyn LlmProvider> = match config.provider {
-        Provider::Mock => return Ok("Mock готов к работе".into()),
-        Provider::Gemini => Box::new(GeminiProvider::from_settings(config)?),
-        Provider::Openai => Box::new(OpenAiProvider::from_settings(config)?),
+        Provider::Mock => unreachable!(),
+        Provider::Gemini => {
+            Box::new(GeminiProvider::from_settings(config).map_err(map_test_error)?)
+        }
+        Provider::Openai => {
+            Box::new(OpenAiProvider::from_settings(config).map_err(map_test_error)?)
+        }
     };
     #[derive(Deserialize, JsonSchema)]
     struct Connection {
@@ -190,11 +209,96 @@ pub async fn test_settings(config: &settings::ResolvedSettings) -> Result<String
     )
     .await
     .map_err(|_| LlmError::Settings("Провайдер не ответил за 20 секунд"))?
-    .map_err(|_| {
-        LlmError::Settings("Не удалось проверить провайдер. Проверьте адрес, модель и ключ")
-    })?;
-    if !serde_json::from_value::<Connection>(result.json)?.ok {
+    .map_err(map_test_error)?;
+    if !serde_json::from_value::<Connection>(result.json)
+        .map_err(|_| {
+            LlmError::Settings(
+                "Модель ответила в неожиданном формате. Попробуйте другой формат ответа",
+            )
+        })?
+        .ok
+    {
         return Err(LlmError::Settings("Провайдер вернул неожиданный ответ"));
     }
     Ok("Соединение установлено".into())
+}
+
+fn map_test_error(error: LlmError) -> LlmError {
+    match error {
+        LlmError::Settings(message) => LlmError::Settings(message),
+        LlmError::Config(_) => LlmError::Settings("Укажите API-ключ"),
+        LlmError::OpenRouterDailyLimit => LlmError::Settings(
+            "Исчерпан дневной лимит бесплатных моделей OpenRouter, сброс в 00:00 UTC",
+        ),
+        LlmError::Http {
+            status: 401 | 403, ..
+        } => LlmError::Settings("Неверный API-ключ или нет доступа (HTTP 401/403)"),
+        LlmError::Http { status: 404, .. } => {
+            LlmError::Settings("Модель или адрес API не найдены (HTTP 404)")
+        }
+        LlmError::Http { status: 400, .. } => LlmError::Settings(
+            "Провайдер отклонил запрос (HTTP 400). Проверьте ID модели и формат ответа",
+        ),
+        LlmError::Http { status: 429, .. } => {
+            LlmError::Settings("Превышен лимит запросов провайдера (HTTP 429)")
+        }
+        LlmError::Http {
+            status: 500..=599, ..
+        } => LlmError::Settings("Сервер провайдера временно недоступен (HTTP 5xx)"),
+        LlmError::Transport(_) => {
+            LlmError::Settings("Не удалось подключиться к адресу API. Проверьте URL и сеть")
+        }
+        LlmError::ResponseJson { .. }
+        | LlmError::SchemaMismatch(_)
+        | LlmError::MissingCandidate { .. } => LlmError::Settings(
+            "Модель ответила в неожиданном формате. Попробуйте другой формат ответа",
+        ),
+        _ => LlmError::Settings("Не удалось проверить провайдер. Проверьте адрес, модель и ключ"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_distinguishes_http_and_config_errors() {
+        let msg = |err: LlmError| match map_test_error(err) {
+            LlmError::Settings(text) => text,
+            other => panic!("unexpected error: {other}"),
+        };
+        assert!(msg(LlmError::Config("OPENAI_API_KEY")).contains("API-ключ"));
+        assert!(
+            msg(LlmError::Http {
+                status: 401,
+                message: "Unauthorized".into(),
+                retry_after: None,
+            })
+            .contains("401")
+        );
+        assert!(
+            msg(LlmError::Http {
+                status: 404,
+                message: "Not Found".into(),
+                retry_after: None,
+            })
+            .contains("404")
+        );
+        assert!(
+            msg(LlmError::Http {
+                status: 400,
+                message: "Bad Request".into(),
+                retry_after: None,
+            })
+            .contains("400")
+        );
+        assert!(
+            msg(LlmError::Http {
+                status: 429,
+                message: "Too Many Requests".into(),
+                retry_after: None,
+            })
+            .contains("429")
+        );
+    }
 }
