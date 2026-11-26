@@ -21,8 +21,8 @@ use doc::ParserRegistry;
 use llm::settings::{Settings, config_path};
 use review::{
     AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, ProgressSink, Report,
-    ReportRenderer, RunContext, discover_golden_files, evaluate_document, format_eval_report,
-    load_golden_file,
+    ReportRenderer, RunContext, discover_golden_files, evaluate_document, evaluate_questions,
+    format_eval_report, load_golden_file,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -400,7 +400,9 @@ async fn eval_golden(golden: &Path, factory: &ProviderFactory) -> Result<()> {
         let mut ctx = RunContext::new(document, provider.as_ref(), &checks)
             .with_progress(sink.as_ref(), trace_log.clone());
         pipeline.run(&mut ctx).await?;
-        results.push(evaluate_document(&item, &ctx.requirements, &ctx.findings));
+        let mut result = evaluate_document(&item, &ctx.requirements, &ctx.findings);
+        result.questions = evaluate_questions(&item, &ctx.requirements, &ctx.questions);
+        results.push(result);
     }
 
     print!("{}", format_eval_report(&results));

@@ -16,7 +16,8 @@ pub use dedup::merge_findings;
 pub use domain::*;
 pub use eval::{
     DocumentEval, EvalError, GoldenDefect, GoldenFile, LoadedGolden, MatchedDefect,
-    discover_golden_files, evaluate_document, format_eval_report, load_golden_file,
+    discover_golden_files, evaluate_document, evaluate_questions, format_eval_report,
+    load_golden_file,
 };
 pub use facts::*;
 pub use pipeline::Result as StageResult;

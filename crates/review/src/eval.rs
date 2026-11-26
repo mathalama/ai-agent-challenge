@@ -9,7 +9,7 @@ use doc::SourceSpan;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{Criterion, Finding, Requirement, Scope, Severity};
+use crate::{Criterion, Finding, Question, RelatedId, Requirement, Scope, Severity};
 
 #[derive(Debug, Error)]
 pub enum EvalError {
@@ -38,6 +38,21 @@ pub struct GoldenFile {
     #[serde(default)]
     pub title: Option<String>,
     pub defects: Vec<GoldenDefect>,
+    #[serde(default)]
+    pub questions: Vec<GoldenQuestion>,
+}
+
+/// Вопрос, который аналитик обязан задать автору документа.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoldenQuestion {
+    pub id: String,
+    pub requirement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<usize>,
+    pub lines: Vec<usize>,
+    pub description: String,
+    pub unblocks: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +76,7 @@ pub struct LoadedGolden {
     pub document_path: PathBuf,
     pub title: String,
     pub defects: Vec<GoldenDefect>,
+    pub questions: Vec<GoldenQuestion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +100,27 @@ pub struct DocumentEval {
     pub missed: Vec<GoldenDefect>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub near_matches: Vec<NearMatch>,
+    /// Метрика вопросов. Есть только у документов, где в эталоне задана секция `questions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questions: Option<QuestionEval>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchedQuestion {
+    pub question_id: String,
+    pub agent_question_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionEval {
+    pub total_golden: usize,
+    pub covered: usize,
+    pub coverage: f64,
+    pub agent_questions: usize,
+    /// Вопросы агента без цитат (`evidence`): не привязаны к тексту документа.
+    pub ungrounded: usize,
+    pub matched: Vec<MatchedQuestion>,
+    pub missed: Vec<GoldenQuestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +283,8 @@ pub fn load_golden_file(path: &Path) -> Result<LoadedGolden, EvalError> {
         }
     }
 
+    validate_questions(path, &golden.questions, is_pdf, text_line_count)?;
+
     let title = golden
         .title
         .filter(|title| !title.trim().is_empty())
@@ -262,7 +301,85 @@ pub fn load_golden_file(path: &Path) -> Result<LoadedGolden, EvalError> {
         document_path,
         title,
         defects: golden.defects,
+        questions: golden.questions,
     })
+}
+
+fn validate_questions(
+    path: &Path,
+    questions: &[GoldenQuestion],
+    is_pdf: bool,
+    text_line_count: Option<usize>,
+) -> Result<(), EvalError> {
+    let fail = |message: String| EvalError::Validation {
+        path: path.to_path_buf(),
+        message,
+    };
+    let mut seen_ids = HashSet::new();
+    for (index, question) in questions.iter().enumerate() {
+        let label = if question.id.trim().is_empty() {
+            format!("#{}", index + 1)
+        } else {
+            question.id.clone()
+        };
+        if question.id.trim().is_empty() {
+            return Err(fail(format!(
+                "вопрос {label}: поле «id» не должно быть пустым"
+            )));
+        }
+        if !seen_ids.insert(question.id.clone()) {
+            return Err(fail(format!(
+                "дублирующийся идентификатор вопроса «{}»",
+                question.id
+            )));
+        }
+        for (name, value) in [
+            ("requirement", &question.requirement),
+            ("description", &question.description),
+            ("unblocks", &question.unblocks),
+        ] {
+            if value.trim().is_empty() {
+                return Err(fail(format!(
+                    "вопрос {label}: поле «{name}» не должно быть пустым"
+                )));
+            }
+        }
+        if question.page == Some(0) {
+            return Err(fail(format!(
+                "вопрос {label}: номера страниц начинаются с 1 (указано 0)"
+            )));
+        }
+        if is_pdf && question.page.is_none() {
+            return Err(fail(format!(
+                "вопрос {label}: для PDF-документа необходимо указать номер страницы в поле «page»"
+            )));
+        }
+        if !is_pdf && question.page.is_some() {
+            return Err(fail(format!(
+                "вопрос {label}: поле «page» задаётся только для страничных документов (PDF)"
+            )));
+        }
+        if question.lines.is_empty() {
+            return Err(fail(format!(
+                "вопрос {label}: поле «lines» должно содержать хотя бы одну строку"
+            )));
+        }
+        for &line in &question.lines {
+            if line == 0 {
+                return Err(fail(format!(
+                    "вопрос {label}: номера строк начинаются с 1 (указано 0)"
+                )));
+            }
+            if let Some(max_lines) = text_line_count
+                && line > max_lines
+            {
+                return Err(fail(format!(
+                    "вопрос {label}: строка {line} выходит за пределы документа ({max_lines} строк)"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn resolve_document_path(golden_path: &Path, document: &Path) -> Option<PathBuf> {
@@ -382,7 +499,100 @@ pub fn evaluate_document(
         matched,
         missed,
         near_matches,
+        questions: None,
     }
+}
+
+/// Покрытие эталонных вопросов вопросами агента. `None`, если в эталоне нет секции `questions`.
+///
+/// Сопоставление взаимно-однозначное: вопрос агента подходит эталонному, если цитата вопроса
+/// пересекается с `lines` на той же странице либо вопрос связан с требованием из `requirement`.
+pub fn evaluate_questions(
+    golden: &LoadedGolden,
+    requirements: &[Requirement],
+    questions: &[Question],
+) -> Option<QuestionEval> {
+    if golden.questions.is_empty() {
+        return None;
+    }
+    let edges: Vec<Vec<usize>> = questions
+        .iter()
+        .map(|question| {
+            golden
+                .questions
+                .iter()
+                .enumerate()
+                .filter(|(_, expected)| question_matches(question, expected, requirements))
+                .map(|(index, _)| index)
+                .collect()
+        })
+        .collect();
+
+    let mut golden_match: Vec<Option<usize>> = vec![None; golden.questions.len()];
+    for question_idx in 0..questions.len() {
+        let mut visited = vec![false; golden.questions.len()];
+        let _ = try_augment(question_idx, &edges, &mut visited, &mut golden_match);
+    }
+
+    let mut matched = Vec::new();
+    let mut missed = Vec::new();
+    for (index, expected) in golden.questions.iter().enumerate() {
+        match golden_match[index] {
+            Some(question_idx) => matched.push(MatchedQuestion {
+                question_id: expected.id.clone(),
+                agent_question_id: questions[question_idx].id.clone(),
+            }),
+            None => missed.push(expected.clone()),
+        }
+    }
+    let total_golden = golden.questions.len();
+    Some(QuestionEval {
+        total_golden,
+        covered: matched.len(),
+        coverage: matched.len() as f64 / total_golden as f64,
+        agent_questions: questions.len(),
+        ungrounded: questions
+            .iter()
+            .filter(|question| question.evidence.is_empty())
+            .count(),
+        matched,
+        missed,
+    })
+}
+
+fn question_matches(
+    question: &Question,
+    expected: &GoldenQuestion,
+    requirements: &[Requirement],
+) -> bool {
+    let tokens = defect_requirement_tokens(&expected.requirement);
+    let by_lines = question.evidence.iter().any(|evidence| {
+        let span = evidence.location;
+        span.page == expected.page
+            && expected
+                .lines
+                .iter()
+                .any(|&line| span.start_line <= line && line <= span.end_line)
+    });
+    by_lines
+        || question.related.iter().any(|related| {
+            let RelatedId::Requirement(id) = related else {
+                return false;
+            };
+            requirements
+                .iter()
+                .find(|requirement| requirement.id == *id)
+                .is_some_and(|requirement| {
+                    requirement.location.page == expected.page
+                        && tokens.iter().any(|token| {
+                            token.eq_ignore_ascii_case(&requirement.id)
+                                || requirement
+                                    .source_id
+                                    .as_deref()
+                                    .is_some_and(|source_id| equals_ignore_case(token, source_id))
+                        })
+                })
+        })
 }
 
 fn try_augment(
@@ -553,6 +763,9 @@ pub fn format_eval_report(results: &[DocumentEval]) -> String {
                 }
             }
         }
+        if let Some(questions) = &item.questions {
+            write_question_block(&mut out, questions);
+        }
     }
 
     if results.len() > 1 {
@@ -582,10 +795,63 @@ pub fn format_eval_report(results: &[DocumentEval]) -> String {
         );
     }
 
+    let with_questions: Vec<&QuestionEval> = results
+        .iter()
+        .filter_map(|r| r.questions.as_ref())
+        .collect();
+    if results.len() > 1 && !with_questions.is_empty() {
+        let covered: usize = with_questions.iter().map(|q| q.covered).sum();
+        let total: usize = with_questions.iter().map(|q| q.total_golden).sum();
+        let agent: usize = with_questions.iter().map(|q| q.agent_questions).sum();
+        let ungrounded: usize = with_questions.iter().map(|q| q.ungrounded).sum();
+        let _ = writeln!(
+            out,
+            "Вопросы: покрытие {:.1}% ({covered}/{total}) · вопросов агента: {agent} (без привязки к тексту: {ungrounded})",
+            covered as f64 / total as f64 * 100.0,
+        );
+    }
+
     if !results.is_empty() {
         out.push_str("\nPrecision — нижняя оценка: находки вне эталона снижают метрику, даже если описывают реальные дефекты.\n");
     }
     out
+}
+
+fn write_question_block(out: &mut String, questions: &QuestionEval) {
+    let _ = writeln!(
+        out,
+        "Покрытие вопросов: {}/{} (coverage: {:.1}%)",
+        questions.covered,
+        questions.total_golden,
+        questions.coverage * 100.0
+    );
+    let _ = writeln!(
+        out,
+        "Вопросов агента: {} (без привязки к тексту: {})",
+        questions.agent_questions, questions.ungrounded
+    );
+    if questions.missed.is_empty() {
+        out.push_str("Пропущенные вопросы: нет\n");
+        return;
+    }
+    let _ = writeln!(out, "Пропущенные вопросы ({}):", questions.missed.len());
+    for question in &questions.missed {
+        let lines = question
+            .lines
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let location = match question.page {
+            Some(page) => format!("страница {page}, строки {lines}"),
+            None => format!("строки {lines}"),
+        };
+        let _ = writeln!(
+            out,
+            "  - {} {} ({}): {} Разблокирует: {}",
+            question.id, question.requirement, location, question.description, question.unblocks
+        );
+    }
 }
 
 #[cfg(test)]
@@ -655,6 +921,7 @@ mod tests {
         for file in files {
             let loaded = load_golden_file(&file).unwrap();
             assert!(loaded.defects.len() >= 12);
+            assert!(loaded.questions.len() >= 5);
         }
     }
 
@@ -664,6 +931,7 @@ mod tests {
             golden_path: PathBuf::from("eval/test.golden.json"),
             document_path: PathBuf::from("doc.md"),
             title: "Тест".into(),
+            questions: Vec::new(),
             defects: vec![
                 GoldenDefect {
                     id: "D-01".into(),
@@ -744,6 +1012,7 @@ mod tests {
             golden_path: "test.golden.json".into(),
             document_path: "doc.md".into(),
             title: "Тест".into(),
+            questions: Vec::new(),
             defects: vec![GoldenDefect {
                 id: "D-02".into(),
                 requirement: "Ф-2".into(),
@@ -792,6 +1061,7 @@ mod tests {
             golden_path: PathBuf::from("eval/spec.golden.json"),
             document_path: PathBuf::from("spec.pdf"),
             title: "PDF".into(),
+            questions: Vec::new(),
             defects: vec![GoldenDefect {
                 id: "P-01".into(),
                 requirement: "Ф-1".into(),
@@ -897,5 +1167,230 @@ mod tests {
         assert!(
             matches!(err, EvalError::Validation { ref message, .. } if message.contains("начинаются с 1"))
         );
+    }
+
+    fn sample_question(id: &str, evidence_lines: &[usize], related: Vec<RelatedId>) -> Question {
+        Question {
+            id: id.into(),
+            text: "Вопрос".into(),
+            why: "Причина".into(),
+            topic: Default::default(),
+            options: Vec::new(),
+            evidence: evidence_lines
+                .iter()
+                .map(|&line| Evidence {
+                    quote: "цитата".into(),
+                    location: SourceSpan {
+                        start_line: line,
+                        end_line: line,
+                        page: None,
+                    },
+                })
+                .collect(),
+            priority: Severity::High,
+            related,
+        }
+    }
+
+    fn golden_with_questions(questions: Vec<GoldenQuestion>) -> LoadedGolden {
+        LoadedGolden {
+            golden_path: "test.golden.json".into(),
+            document_path: "doc.md".into(),
+            title: "Тест".into(),
+            defects: Vec::new(),
+            questions,
+        }
+    }
+
+    fn golden_question(id: &str, requirement: &str, lines: &[usize]) -> GoldenQuestion {
+        GoldenQuestion {
+            id: id.into(),
+            requirement: requirement.into(),
+            page: None,
+            lines: lines.to_vec(),
+            description: "Что выяснить".into(),
+            unblocks: "Какое решение".into(),
+        }
+    }
+
+    #[test]
+    fn question_matches_by_evidence_lines() {
+        let golden = golden_with_questions(vec![
+            golden_question("Q-01", "Ф-3, Ф-4", &[39, 40]),
+            golden_question("Q-02", "Ф-2", &[38]),
+        ]);
+        let questions = [sample_question("agent-1", &[40], Vec::new())];
+        let result = evaluate_questions(&golden, &[], &questions).unwrap();
+        assert_eq!(result.covered, 1);
+        assert_eq!(result.total_golden, 2);
+        assert!((result.coverage - 0.5).abs() < 1e-9);
+        assert_eq!(result.matched[0].question_id, "Q-01");
+        assert_eq!(result.matched[0].agent_question_id, "agent-1");
+        assert_eq!(result.missed.len(), 1);
+        assert_eq!(result.missed[0].id, "Q-02");
+        assert_eq!(result.ungrounded, 0);
+    }
+
+    #[test]
+    fn question_matches_by_requirement_when_lines_differ() {
+        let golden = golden_with_questions(vec![golden_question("Q-01", "Ф-3, Ф-4", &[39])]);
+        let requirements = [sample_requirement("R-003", Some("Ф-3"), 90, None)];
+        let by_requirement = sample_question(
+            "agent-1",
+            &[200],
+            vec![RelatedId::Requirement("R-003".into())],
+        );
+        let result = evaluate_questions(&golden, &requirements, &[by_requirement]).unwrap();
+        assert_eq!(result.covered, 1);
+
+        let other = sample_question(
+            "agent-2",
+            &[200],
+            vec![RelatedId::Requirement("R-999".into())],
+        );
+        let result = evaluate_questions(&golden, &requirements, &[other]).unwrap();
+        assert_eq!(result.covered, 0);
+    }
+
+    #[test]
+    fn question_on_another_page_does_not_match() {
+        let mut expected = golden_question("Q-01", "Ф-1", &[5]);
+        expected.page = Some(2);
+        let golden = golden_with_questions(vec![expected]);
+        let mut question = sample_question("agent-1", &[5], Vec::new());
+        question.evidence[0].location.page = Some(1);
+        let result = evaluate_questions(&golden, &[], &[question]).unwrap();
+        assert_eq!(result.covered, 0);
+    }
+
+    #[test]
+    fn counts_agent_questions_without_evidence() {
+        let golden = golden_with_questions(vec![golden_question("Q-01", "Ф-1", &[10])]);
+        let questions = [
+            sample_question("agent-1", &[10], Vec::new()),
+            sample_question("agent-2", &[], Vec::new()),
+        ];
+        let result = evaluate_questions(&golden, &[], &questions).unwrap();
+        assert_eq!(result.agent_questions, 2);
+        assert_eq!(result.ungrounded, 1);
+    }
+
+    #[test]
+    fn one_agent_question_closes_only_one_golden_question() {
+        let golden = golden_with_questions(vec![
+            golden_question("Q-01", "Ф-3", &[39]),
+            golden_question("Q-02", "Ф-4", &[40]),
+        ]);
+        let one_question = [sample_question("agent-1", &[39, 40], Vec::new())];
+        let result = evaluate_questions(&golden, &[], &one_question).unwrap();
+        assert_eq!(result.covered, 1);
+        assert_eq!(result.missed.len(), 1);
+
+        // Два вопроса закрывают оба эталонных, даже если первый подходит обоим.
+        let two_questions = [
+            sample_question("agent-1", &[39, 40], Vec::new()),
+            sample_question("agent-2", &[40], Vec::new()),
+        ];
+        let result = evaluate_questions(&golden, &[], &two_questions).unwrap();
+        assert_eq!(result.covered, 2);
+        assert!(result.missed.is_empty());
+    }
+
+    #[test]
+    fn golden_without_questions_is_valid_and_has_no_question_block() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("doc.md"), "# Заголовок\nСтрока 2\n").unwrap();
+        let path = dir.path().join("old.golden.json");
+        fs::write(
+            &path,
+            r#"{"document":"doc.md","defects":[{"id":"D-1","requirement":"Ф-1","criterion":"consistent","severity":"high","lines":[1],"description":"описание"}]}"#,
+        )
+        .unwrap();
+        let loaded = load_golden_file(&path).unwrap();
+        assert!(loaded.questions.is_empty());
+        assert!(evaluate_questions(&loaded, &[], &[]).is_none());
+        let report = format_eval_report(&[evaluate_document(&loaded, &[], &[])]);
+        assert!(!report.contains("Покрытие вопросов"));
+    }
+
+    #[test]
+    fn report_shows_question_block_and_totals() {
+        let golden = golden_with_questions(vec![
+            golden_question("Q-01", "Ф-3", &[39]),
+            golden_question("Q-02", "Ф-4", &[40]),
+        ]);
+        let questions = [
+            sample_question("agent-1", &[39], Vec::new()),
+            sample_question("agent-2", &[], Vec::new()),
+        ];
+        let mut item = evaluate_document(&golden, &[], &[]);
+        item.questions = evaluate_questions(&golden, &[], &questions);
+        let report = format_eval_report(&[item.clone(), item]);
+        assert!(report.contains("Покрытие вопросов: 1/2 (coverage: 50.0%)"));
+        assert!(report.contains("Вопросов агента: 2 (без привязки к тексту: 1)"));
+        assert!(report.contains("Пропущенные вопросы (1):"));
+        assert!(report.contains("Q-02 Ф-4 (строки 40): Что выяснить Разблокирует: Какое решение"));
+        assert!(report.contains(
+            "Вопросы: покрытие 50.0% (2/4) · вопросов агента: 4 (без привязки к тексту: 2)"
+        ));
+    }
+
+    #[test]
+    fn invalid_golden_questions_return_clear_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("doc.md"), "# Заголовок\nСтрока 2\n").unwrap();
+        let load = |name: &str, questions: &str| {
+            let path = dir.path().join(name);
+            let body = format!(
+                r#"{{"document":"doc.md","defects":[{{"id":"D-1","requirement":"Ф-1","criterion":"consistent","severity":"high","lines":[1],"description":"описание"}}],"questions":[{questions}]}}"#
+            );
+            fs::write(&path, body).unwrap();
+            load_golden_file(&path).unwrap_err()
+        };
+        let q = |id: &str, extra: &str| {
+            format!(
+                r#"{{"id":"{id}","requirement":"Ф-1","lines":[1],"description":"что","unblocks":"решение"{extra}}}"#
+            )
+        };
+        let message = |err: EvalError| match err {
+            EvalError::Validation { message, .. } => message,
+            other => panic!("ожидалась ошибка валидации: {other}"),
+        };
+
+        let err = load(
+            "dup.golden.json",
+            &format!("{},{}", q("Q-1", ""), q("Q-1", "")),
+        );
+        assert!(message(err).contains("дублирующийся идентификатор вопроса"));
+
+        let err = load(
+            "empty_unblocks.golden.json",
+            r#"{"id":"Q-1","requirement":"Ф-1","lines":[1],"description":"что","unblocks":" "}"#,
+        );
+        assert!(message(err).contains("«unblocks»"));
+
+        let err = load(
+            "no_lines.golden.json",
+            r#"{"id":"Q-1","requirement":"Ф-1","lines":[],"description":"что","unblocks":"решение"}"#,
+        );
+        assert!(message(err).contains("«lines»"));
+
+        let err = load(
+            "zero_line.golden.json",
+            r#"{"id":"Q-1","requirement":"Ф-1","lines":[0],"description":"что","unblocks":"решение"}"#,
+        );
+        assert!(message(err).contains("начинаются с 1"));
+
+        let err = load(
+            "oob.golden.json",
+            r#"{"id":"Q-1","requirement":"Ф-1","lines":[99],"description":"что","unblocks":"решение"}"#,
+        );
+        assert!(message(err).contains("выходит за пределы"));
+
+        let err = load("page.golden.json", &q("Q-1", r#","page":1"#));
+        assert!(message(err).contains("«page»"));
+
+        let err = load("unknown.golden.json", &q("Q-1", r#","extra":1"#));
+        assert!(matches!(err, EvalError::Parse { .. }));
     }
 }
