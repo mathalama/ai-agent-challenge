@@ -58,13 +58,14 @@ impl ScaffoldStage {
         match self {
             Self::Segment => include_str!("../../../prompts/segment.md"),
             Self::Facts => include_str!("../../../prompts/facts.md"),
-            Self::Rules => include_str!("../../../prompts/rules.md"),
             Self::RequirementChecks => include_str!("../../../prompts/requirement_checks.md"),
             Self::SetChecks => include_str!("../../../prompts/set_checks.md"),
             Self::Consistency => include_str!("../../../prompts/consistency.md"),
             Self::Ambiguity => include_str!("../../../prompts/ambiguity.md"),
-            Self::Verify => include_str!("../../../prompts/verify.md"),
             Self::Clarify => include_str!("../../../prompts/clarify.md"),
+            Self::Rules | Self::Verify => {
+                unreachable!("стадии rules и verify выполняются кодом без модели")
+            }
         }
     }
 
