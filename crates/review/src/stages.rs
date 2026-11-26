@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use doc::{BlockContent, Document};
+use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use llm::generate_typed;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -16,6 +17,9 @@ use crate::{
 };
 
 const REVIEW_BATCH_SIZE: usize = 12;
+/// Сколько независимых пакетов требований одновременно ждут ответа модели. Темп запросов по-прежнему
+/// ограничивает `LLM_REQUESTS_PER_MINUTE`, параллельность сокращает только ожидание ответов.
+const MODEL_CONCURRENCY: usize = 4;
 const DOMAIN_CONTEXT: &str = include_str!("../../../prompts/domain_context.md");
 
 #[derive(Deserialize, JsonSchema)]
@@ -139,11 +143,24 @@ impl Stage for ScaffoldStage {
                 let findings = ctx.checks.run(CheckPhase::Requirement, ctx).await?;
                 ctx.findings.extend(findings);
                 let before = ctx.findings.len();
-                for start in (0..ctx.requirements.len()).step_by(REVIEW_BATCH_SIZE) {
-                    let end = (start + REVIEW_BATCH_SIZE).min(ctx.requirements.len());
-                    let input = serde_json::to_string(&ctx.requirements[start..end])?;
-                    self.find_with_model(ctx, input, ctx.findings.len() - before)
+                if !ctx.requirements.is_empty() {
+                    // Пакеты независимы: ответы ждём одновременно, а находки добавляем в порядке пакетов,
+                    // чтобы идентификаторы и отчёт совпадали с последовательным прогоном.
+                    let inputs = ctx
+                        .requirements
+                        .chunks(REVIEW_BATCH_SIZE)
+                        .map(serde_json::to_string)
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    let provider = ctx.provider;
+                    let prompt = self.llm_prompt();
+                    let batches: Vec<Vec<FindingDraft>> = stream::iter(inputs)
+                        .map(|input| generate_typed(provider, self.name(), &prompt, input))
+                        .buffered(MODEL_CONCURRENCY)
+                        .try_collect()
                         .await?;
+                    for drafts in batches {
+                        self.push_findings(ctx, drafts, ctx.findings.len() - before);
+                    }
                 }
             }
             Self::SetChecks => {
@@ -225,6 +242,11 @@ impl ScaffoldStage {
         let prompt = self.llm_prompt();
         let findings: Vec<FindingDraft> =
             generate_typed(ctx.provider, self.name(), &prompt, input).await?;
+        self.push_findings(ctx, findings, offset);
+        Ok(())
+    }
+
+    fn push_findings(self, ctx: &mut RunContext<'_>, findings: Vec<FindingDraft>, offset: usize) {
         let accepted = findings.into_iter().filter(|draft| {
             if has_cyrillic(&draft.explanation) {
                 true
@@ -262,7 +284,6 @@ impl ScaffoldStage {
                     verified: false,
                 }
             }));
-        Ok(())
     }
 }
 
