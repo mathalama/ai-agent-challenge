@@ -167,10 +167,10 @@ fn has_requirement_markers(document: &Document) -> bool {
             BlockContent::Table { rows, .. } => {
                 let mut table_has_modal_subject = false;
                 for row in rows {
-                    if let Some(first_cell) = row.iter().find(|cell| !cell.trim().is_empty())
-                        && collect_requirement_ids(first_cell, &mut id_series, MIN_ID_SERIES)
-                    {
-                        return true;
+                    for cell in row.iter().filter(|cell| !cell.trim().is_empty()).take(2) {
+                        if collect_requirement_ids(cell, &mut id_series, MIN_ID_SERIES) {
+                            return true;
+                        }
                     }
                     let row_text = row.join(" ");
                     if text_has_modal_with_subject(&row_text) {
@@ -195,7 +195,7 @@ fn collect_requirement_ids(
     threshold: usize,
 ) -> bool {
     for line in text.lines() {
-        let Some(raw) = line.split_whitespace().next() else {
+        let Some(raw) = first_non_marker_word(line) else {
             continue;
         };
         let token = raw.trim_matches(|ch: char| !ch.is_alphanumeric());
@@ -209,6 +209,40 @@ fn collect_requirement_ids(
         }
     }
     false
+}
+
+fn first_non_marker_word(line: &str) -> Option<&str> {
+    const MAX_LEADING_MARKERS: usize = 2;
+
+    let mut skipped = 0usize;
+    for word in line.split_whitespace() {
+        if skipped < MAX_LEADING_MARKERS && is_list_marker(word) {
+            skipped += 1;
+            continue;
+        }
+        return Some(word);
+    }
+    None
+}
+
+fn is_list_marker(raw: &str) -> bool {
+    if raw
+        .trim_matches(|ch: char| !ch.is_alphanumeric())
+        .is_empty()
+    {
+        return true;
+    }
+    if raw
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '(' | ')'))
+    {
+        return true;
+    }
+    let mut chars = raw.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(')' | '.'), None) if letter.is_alphabetic() && letter.is_lowercase()
+    )
 }
 
 fn parse_requirement_id(token: &str) -> Option<(&str, &str)> {
@@ -274,4 +308,64 @@ fn text_has_modal_with_subject(text: &str) -> bool {
     lower
         .split(|ch: char| !ch.is_alphanumeric())
         .any(|word| word == "api" || SUBJECTS.iter().any(|prefix| word.starts_with(prefix)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use doc::ParserRegistry;
+
+    use super::has_requirement_markers;
+
+    fn parse(name: &str, content: &str) -> doc::Document {
+        ParserRegistry::default()
+            .parse(Path::new(name), content.as_bytes())
+            .unwrap()
+    }
+
+    #[test]
+    fn txt_bullet_list_requirement_ids_trigger_safeguard() {
+        let doc = parse(
+            "x.txt",
+            "- ФТ-1. Система отправляет уведомление.\n- ФТ-2. Система сохраняет историю.\n",
+        );
+        assert!(has_requirement_markers(&doc));
+    }
+
+    #[test]
+    fn txt_numbered_list_requirement_ids_trigger_safeguard() {
+        let doc = parse(
+            "x.txt",
+            "1. КР-1. Заявитель подаёт заявку.\n2. КР-2. Повторная заявка отклоняется.\n",
+        );
+        assert!(has_requirement_markers(&doc));
+    }
+
+    #[test]
+    fn markdown_table_with_index_column_triggers_safeguard() {
+        let doc = parse(
+            "x.md",
+            "| № | ID | Требование |\n| --- | --- | --- |\n| 1 | ФТ-1 | Расчёт выполняется в тенге |\n| 2 | ФТ-2 | Итог округляется до целого |\n",
+        );
+        assert!(has_requirement_markers(&doc));
+    }
+
+    #[test]
+    fn inline_model_codes_in_prose_do_not_trigger_safeguard() {
+        let doc = parse("x.txt", "Формы Т-34 и Т-72, мука по ГОСТ-12345.\n");
+        assert!(!has_requirement_markers(&doc));
+    }
+
+    #[test]
+    fn single_leading_id_without_series_does_not_trigger_safeguard() {
+        let doc = parse("x.txt", "- Т-34 — средний танк\n");
+        assert!(!has_requirement_markers(&doc));
+    }
+
+    #[test]
+    fn numbered_prose_with_modal_but_no_subject_does_not_trigger_safeguard() {
+        let doc = parse("x.txt", "1. Тесто должно подойти.\n");
+        assert!(!has_requirement_markers(&doc));
+    }
 }
