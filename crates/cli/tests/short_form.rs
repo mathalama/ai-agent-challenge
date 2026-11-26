@@ -100,6 +100,16 @@ fn single_argument_asks_for_the_report_path() {
 }
 
 #[test]
+fn single_missing_argument_is_reported_as_unknown_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = rs(dir.path(), &["chek".as_ref()]);
+    assert_eq!(result.status.code(), Some(2));
+    let message = stderr(&result);
+    assert!(message.contains("Неизвестная команда или нет такого файла — chek"));
+    assert!(!message.contains("укажите путь к отчёту"));
+}
+
+#[test]
 fn run_only_flags_need_a_document() {
     let dir = tempfile::tempdir().unwrap();
     let result = rs(dir.path(), &["--reasoning".as_ref()]);

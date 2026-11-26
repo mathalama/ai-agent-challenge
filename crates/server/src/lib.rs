@@ -66,6 +66,16 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Предупреждение, если нет собранного веб-интерфейса: без него страница отвечает 404.
+fn missing_web_warning(web_dir: &Path) -> Option<String> {
+    (!web_dir.join("index.html").is_file()).then(|| {
+        format!(
+            "Предупреждение: в «{}» нет index.html, страница будет отвечать 404. Соберите интерфейс командой `npm --prefix web ci && npm --prefix web run build` или укажите --web-dir.",
+            web_dir.display()
+        )
+    })
+}
+
 pub async fn serve(
     address: SocketAddr,
     provider: ProviderFactory,
@@ -73,6 +83,9 @@ pub async fn serve(
     web_dir: PathBuf,
 ) -> agent::Result<()> {
     let listener = tokio::net::TcpListener::bind(address).await?;
+    if let Some(warning) = missing_web_warning(&web_dir) {
+        eprintln!("{warning}");
+    }
     let router = router(provider, config_path, &web_dir, address.ip().is_loopback());
     println!("Сервер доступен на http://{}", listener.local_addr()?);
     axum::serve(
@@ -496,4 +509,18 @@ async fn report(
         )
     })?;
     Ok(([(header::CONTENT_TYPE, content_type)], content).into_response())
+}
+
+#[cfg(test)]
+mod web_warning_tests {
+    use super::missing_web_warning;
+
+    #[test]
+    fn warns_only_when_index_html_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let warning = missing_web_warning(dir.path()).expect("предупреждение без index.html");
+        assert!(warning.contains("npm --prefix web run build"));
+        std::fs::write(dir.path().join("index.html"), "<!doctype html>").unwrap();
+        assert!(missing_web_warning(dir.path()).is_none());
+    }
 }

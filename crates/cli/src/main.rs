@@ -190,10 +190,18 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if cli.input.is_some() && cli.report.is_none() {
-        eprintln!(
-            "Ошибка: укажите путь к отчёту. Пример: rs <ДОКУМЕНТ> <ОТЧЁТ>. Для справки используйте --help."
-        );
+    if let (Some(input), None) = (&cli.input, &cli.report) {
+        if input.exists() {
+            eprintln!(
+                "Ошибка: укажите путь к отчёту. Пример: rs <ДОКУМЕНТ> <ОТЧЁТ>. Для справки используйте --help."
+            );
+        } else {
+            // Один аргумент, которого нет ни среди подкоманд, ни среди файлов: скорее всего, опечатка.
+            eprintln!(
+                "Ошибка: Неизвестная команда или нет такого файла — {}. Для справки используйте --help.",
+                input.display()
+            );
+        }
         return ExitCode::from(2);
     }
     if cli.input.is_none()
