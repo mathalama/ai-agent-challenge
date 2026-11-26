@@ -7,7 +7,6 @@ import { SeverityBadge } from '../components/SeverityBadge';
 import { Button } from '../components/Button';
 import { CRITERIA, SEVERITY, SEVERITY_ORDER } from '../lib/labels';
 import { buildMarks, siblingsOf } from '../lib/highlight';
-import { useReportStore } from '../lib/report-store';
 import type { Finding, Report } from '../lib/types';
 
 /** Мигает местом находки в тексте. */
@@ -47,11 +46,13 @@ function FindingRow({ finding, onClick }: { finding: Finding; onClick: () => voi
 }
 
 function DocumentView({ report }: { report: Report }) {
-  const selectedId = useReportStore((s) => s.selectedFindingId);
-  const selectFinding = useReportStore((s) => s.selectFinding);
   const [params, setParams] = useSearchParams();
+  const selectedId = params.get('finding');
   const docRef = useRef<HTMLDivElement>(null);
-  const initialised = useRef(false);
+
+  function selectFinding(id: string | null) {
+    setParams(id ? { tab: 'document', finding: id } : { tab: 'document' }, { replace: true });
+  }
 
   const byId = useMemo(() => new Map(report.findings.map((f) => [f.id, f])), [report]);
   const marks = useMemo(() => buildMarks(report), [report]);
@@ -59,24 +60,6 @@ function DocumentView({ report }: { report: Report }) {
     () => [...report.findings].sort((a, b) => SEVERITY[b.severity].rank - SEVERITY[a.severity].rank),
     [report],
   );
-
-  // Ссылка ?finding=<id> выбирает находку при открытии; дальше адрес следует за выбором.
-  useEffect(() => {
-    if (!initialised.current) {
-      initialised.current = true;
-      const fromUrl = params.get('finding');
-      if (fromUrl && byId.has(fromUrl)) {
-        selectFinding(fromUrl);
-        return;
-      }
-    }
-    const current = params.get('finding');
-    if (selectedId && byId.has(selectedId)) {
-      if (current !== selectedId) setParams({ finding: selectedId }, { replace: true });
-    } else if (current) {
-      setParams({}, { replace: true });
-    }
-  }, [selectedId, byId, params, setParams, selectFinding]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -95,7 +78,7 @@ function DocumentView({ report }: { report: Report }) {
   };
 
   return (
-    <div className="space-y-5 xl:ml-[calc((100%+21rem-100vw)/2)] xl:w-[calc(100vw-22rem)] xl:max-w-[80rem]">
+    <div className="space-y-5">
       <header className="space-y-1">
         <h1 className="text-3xl font-semibold tracking-[-0.02em]">Документ с подсветкой</h1>
         <p className="text-ink-2">
@@ -111,7 +94,7 @@ function DocumentView({ report }: { report: Report }) {
         </ul>
       </header>
 
-      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_25rem]">
+      <div className="flex flex-col-reverse gap-5">
         <div ref={docRef} className="min-w-0 rounded-2xl bg-surface px-4 py-4 text-[15px] leading-relaxed ring-1 ring-line">
           {report.blocks.map((block) => (
             <HighlightedBlock key={block.id} block={block} marks={marks.get(block.id) ?? []} ctx={ctx} />
@@ -120,7 +103,7 @@ function DocumentView({ report }: { report: Report }) {
 
         <aside
           aria-label="Находка"
-          className="space-y-3 xl:sticky xl:top-6 xl:max-h-[calc(100dvh-3rem)] xl:overflow-y-auto xl:px-1 xl:py-1"
+          className="space-y-3"
         >
           {selected ? (
             <>

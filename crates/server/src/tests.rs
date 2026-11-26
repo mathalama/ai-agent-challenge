@@ -1,4 +1,5 @@
 use super::*;
+use llm::settings::Provider;
 
 #[tokio::test]
 async fn busy_reports_return_conflict_without_waiting_for_the_lock() {
@@ -58,6 +59,7 @@ fn mock_app() -> App {
     App {
         sessions: Arc::default(),
         provider: Arc::new(ProviderFactory::new(Provider::Mock, true)),
+        config_path: None,
     }
 }
 
@@ -65,7 +67,12 @@ fn mock_app() -> App {
 async fn http_session_replays_events_and_serves_the_mock_report() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/api", listener.local_addr().unwrap());
-    let app = router(Provider::Mock, true, Path::new("web/dist"), true);
+    let app = router(
+        ProviderFactory::new(Provider::Mock, true),
+        None,
+        Path::new("web/dist"),
+        true,
+    );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -86,6 +93,7 @@ async fn http_session_replays_events_and_serves_the_mock_report() {
     assert_eq!(created.status(), StatusCode::CREATED);
     let created: Value = created.json().await.unwrap();
     assert_eq!(created["greeting"]["event"], "message");
+    assert_eq!(created["provider"], "Mock");
     let session = format!("{base}/sessions/{}", created["id"].as_str().unwrap());
 
     let response = client
@@ -178,4 +186,100 @@ async fn read_operation(client: &reqwest::Client, session: &str, cursor: &str) -
         }
     }
     panic!("Поток завершился без события done");
+}
+
+#[tokio::test]
+async fn localhost_settings_mask_keys_and_change_the_active_factory() {
+    use llm::settings::Settings;
+
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.json");
+    let factory = ProviderFactory::with_settings(None, true, Settings::default());
+    let router = router(factory, Some(config.clone()), directory.path(), true);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/api", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    let client = reqwest::Client::new();
+    let response = client
+        .put(format!("{base}/settings"))
+        .header("origin", "https://example.test")
+        .json(&json!({"provider": "mock"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!config.exists());
+
+    let response = client
+        .put(format!("{base}/settings"))
+        .json(&json!({
+            "provider": "openai", "model": "test/model", "api_key": "fake-settings-secret-1a2b"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!response.contains("fake-settings-secret"));
+    let settings: Value = client
+        .get(format!("{base}/settings"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["openai"]["api_key_mask"], "задан ••••1a2b");
+    assert_eq!(settings["effective_provider"], "openai");
+    let first: Value = client
+        .post(format!("{base}/sessions"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["provider"], "OpenAI-совместимый");
+
+    client
+        .put(format!("{base}/settings"))
+        .json(&json!({"provider": "mock"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let second: Value = client
+        .post(format!("{base}/sessions"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["provider"], "Mock");
+    let tested: Value = client
+        .post(format!("{base}/settings/test"))
+        .json(&json!({"provider": "mock"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tested["message"], "Mock готов к работе");
+    assert_eq!(Settings::load(&config).unwrap().provider, Provider::Mock);
+    task.abort();
 }

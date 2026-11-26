@@ -17,8 +17,8 @@ function Reason({ finding }: { finding: Finding }) {
       </div>
       <p className="max-w-[68ch] text-[15px] leading-relaxed">{finding.explanation}</p>
       <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm font-medium">
-        <Link className="text-accent-ink hover:underline" to={`/findings?finding=${encodeURIComponent(finding.id)}`}>Разобрать находку</Link>
-        <Link className="text-accent-ink hover:underline" to={`/document?finding=${encodeURIComponent(finding.id)}`}>Показать в документе</Link>
+        <Link className="text-accent-ink hover:underline" to={`/?tab=findings&finding=${encodeURIComponent(finding.id)}`}>Разобрать находку</Link>
+        <Link className="text-accent-ink hover:underline" to={`/?tab=document&finding=${encodeURIComponent(finding.id)}`}>Показать в документе</Link>
       </div>
     </div>
   );
@@ -31,11 +31,11 @@ function Reason({ finding }: { finding: Finding }) {
   );
 }
 
-function Tile({ title, children }: { title: string; children: React.ReactNode }) {
+function Tile({ title, children, className = "" }: { title: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className="rounded-2xl bg-surface p-5 ring-1 ring-line">
+    <div className={`rounded-xl bg-surface p-3.5 ring-1 ring-line ${className}`}>
       <p className="text-sm text-muted">{title}</p>
-      <div className="mt-2">{children}</div>
+      <div className="mt-1.5">{children}</div>
     </div>
   );
 }
@@ -49,32 +49,22 @@ function Content({ report }: { report: Report }) {
   const { passport } = report;
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-7">
       <section aria-labelledby="verdict" className="space-y-4">
         <p className="text-sm text-muted">{passport.document_title}</p>
-        <h1 id="verdict" className="flex items-center gap-4 text-5xl leading-none font-semibold tracking-[-0.035em] sm:text-6xl">
+        <h1 id="verdict" className="flex items-center gap-4 text-3xl leading-tight font-semibold tracking-[-0.025em]">
           <span aria-hidden className={`mt-1 size-4 shrink-0 rounded-full sm:size-5 ${verdict.dot}`} />
           {verdict.label}
         </h1>
-        <p className="max-w-[56ch] text-lg text-ink-2">{verdict.hint}</p>
+        <p className="max-w-[56ch] text-sm text-ink-2">{verdict.hint}</p>
       </section>
 
-      {reasons.length > 0 && (
-        <section aria-labelledby="reasons" className="space-y-4">
-          <h2 id="reasons" className="text-xl font-semibold tracking-[-0.015em]">Почему такой вердикт</h2>
-          <div className="space-y-4">
-            {reasons.map((f) => (
-              <Reason key={f.id} finding={f} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section aria-label="Итоги проверки" className="grid gap-4 sm:grid-cols-3">
+      <section aria-label="Итоги проверки" className="grid grid-cols-2 gap-3">
         <Tile title="Требований найдено">
           <p className="tabular text-3xl font-semibold tracking-[-0.02em]">{requirement_count}</p>
         </Tile>
-        <Tile title={`Находок: ${finding_count}`}>
+        <Tile title="Находки" className="row-span-2">
+          <p className="tabular mb-2 text-3xl font-semibold tracking-[-0.02em]">{finding_count}</p>
           <ul className="space-y-1">
             {[...SEVERITY_ORDER].reverse().map((sev) => (
               <li key={sev} className="flex items-center justify-between gap-3 text-sm">
@@ -96,6 +86,17 @@ function Content({ report }: { report: Report }) {
         </Tile>
       </section>
 
+      {reasons.length > 0 && (
+        <section aria-labelledby="reasons" className="space-y-4">
+          <h2 id="reasons" className="text-xl font-semibold tracking-[-0.015em]">Почему такой вердикт</h2>
+          <div className="space-y-4">
+            {reasons.map((f) => (
+              <Reason key={f.id} finding={f} />
+            ))}
+          </div>
+        </section>
+      )}
+
       <section aria-labelledby="passport" className="space-y-3">
         <h2 id="passport" className="text-xl font-semibold tracking-[-0.015em]">Паспорт прогона</h2>
         <dl className="grid grid-cols-[max-content_1fr] gap-x-8 gap-y-2 text-sm">
@@ -114,9 +115,9 @@ function Content({ report }: { report: Report }) {
       </section>
 
       <div className="flex flex-wrap gap-3">
-        <ButtonLink to="/findings" variant="primary">Открыть находки</ButtonLink>
-        {report.questions.length > 0 && <ButtonLink to="/questions">Ответить на вопросы ({report.questions.length})</ButtonLink>}
-        <ButtonLink to="/export">Экспорт</ButtonLink>
+        <ButtonLink to="/?tab=findings" variant="primary">Открыть находки</ButtonLink>
+        {report.questions.length > 0 && <ButtonLink to="/?tab=questions">Ответить на вопросы ({report.questions.length})</ButtonLink>}
+        <ButtonLink to="/?tab=export">Экспорт</ButtonLink>
       </div>
     </div>
   );

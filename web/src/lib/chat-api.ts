@@ -23,6 +23,7 @@ export type ChatEvent =
 
 interface ChatConnection {
   id: string;
+  provider?: string;
   greeting: Extract<ChatEvent, { event: 'message' }>;
 }
 
@@ -46,11 +47,11 @@ async function createSession(): Promise<ChatConnection | null> {
 }
 
 // Один запуск при монтировании, в том числе в React Strict Mode.
-let connection: Promise<ChatConnection | null> | undefined;
+let connection: { key: number; result: Promise<ChatConnection | null> } | undefined;
 
-export function connectChat() {
-  connection ??= createSession();
-  return connection;
+export function connectChat(key: number) {
+  if (connection?.key !== key) connection = { key, result: createSession() };
+  return connection.result;
 }
 
 export async function sendChatInput(id: string, value: string | File) {

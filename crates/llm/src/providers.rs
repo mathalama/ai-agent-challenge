@@ -1,7 +1,4 @@
-use std::{
-    env,
-    time::{Duration, SystemTime},
-};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use doc::{Block, BlockContent};
@@ -12,7 +9,10 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{LlmError, LlmProvider, LlmRequest, LlmResponse, Result, Usage};
+use crate::{
+    LlmError, LlmProvider, LlmRequest, LlmResponse, Result, Usage,
+    settings::{Provider, ResolvedSettings, Settings},
+};
 
 pub struct GeminiProvider {
     api_key: HeaderValue,
@@ -23,30 +23,20 @@ pub struct GeminiProvider {
 
 impl GeminiProvider {
     pub fn from_env() -> Result<Self> {
+        Self::from_settings(&Settings::default().resolve(Some(Provider::Gemini))?)
+    }
+
+    pub fn from_settings(config: &ResolvedSettings) -> Result<Self> {
         const KEY: &str = "GEMINI_API_KEY";
-        const MODEL: &str = "GEMINI_MODEL";
-        let key = env::var(KEY).map_err(|_| LlmError::Config(KEY))?;
-        let mut api_key: HeaderValue = key.trim().parse().map_err(|_| LlmError::Config(KEY))?;
-        if api_key.is_empty() {
-            return Err(LlmError::Config(KEY));
-        }
+        config.validate()?;
+        let key = config.api_key.as_deref().ok_or(LlmError::Config(KEY))?;
+        let mut api_key: HeaderValue = key.parse().map_err(|_| LlmError::Config(KEY))?;
         api_key.set_sensitive(true);
-        let configured = match env::var(MODEL) {
-            Ok(value) => value,
-            Err(env::VarError::NotPresent) => String::new(),
-            Err(_) => return Err(LlmError::Config(MODEL)),
-        };
-        let model = match configured.trim() {
-            "" => "gemini-3.1-flash-lite",
-            name => name.strip_prefix("models/").unwrap_or(name),
-        };
-        if model.is_empty()
-            || !model
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
-        {
-            return Err(LlmError::Config(MODEL));
-        }
+        let model = config
+            .model
+            .strip_prefix("models/")
+            .unwrap_or(&config.model);
+        let base_url = config.base_url.trim_end_matches('/');
         Ok(Self {
             api_key,
             model: model.into(),
@@ -54,9 +44,7 @@ impl GeminiProvider {
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(120))
                 .build()?,
-            endpoint: format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            ),
+            endpoint: format!("{base_url}/models/{model}:generateContent"),
         })
     }
 }

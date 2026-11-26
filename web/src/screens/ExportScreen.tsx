@@ -12,13 +12,12 @@ function Content({ report }: { report: Report }) {
   const sessionBusy = useReportStore((s) => s.sessionBusy);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const answered = sessionId
-    ? new Set([
+  const answered = new Set([
+      ...Object.keys(answers),
       ...Object.values(report.finding_answers ?? {}).flat().map((answer) => answer.question_id),
       ...Object.values(report.requirement_answers ?? {}).flat().map((answer) => answer.question_id),
       ...Object.keys(report.standalone_answers ?? {}),
-    ]).size
-    : Object.keys(answers).length;
+  ]).size;
   const stem = `report-${report.passport.date}`;
   const disabled = Boolean(sessionId && sessionBusy) || downloading;
 
