@@ -1,6 +1,7 @@
 use std::{
+    fs,
     io::{self, IsTerminal, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use agent::Result;
@@ -27,7 +28,16 @@ pub fn load_or_recover(path: &Path) -> io::Result<Settings> {
     match Settings::load(path) {
         Ok(settings) => Ok(settings),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-            eprintln!("Предупреждение: {error}. Файл будет перезаписан.");
+            let mut backup_os = path.as_os_str().to_owned();
+            backup_os.push(".bak");
+            let backup = PathBuf::from(backup_os);
+            match fs::copy(path, &backup) {
+                Ok(_) => eprintln!(
+                    "Предупреждение: {error}. Резервная копия сохранена в «{}», файл будет перезаписан.",
+                    backup.display()
+                ),
+                Err(_) => eprintln!("Предупреждение: {error}. Файл будет перезаписан."),
+            }
             Ok(Settings::default())
         }
         Err(error) => Err(error),
@@ -99,8 +109,14 @@ pub async fn wizard(path: &Path, mut settings: Settings) -> Result<Settings> {
     };
     if provider != Provider::Mock {
         let base_url = prompt("Адрес API", preset.unwrap_or(&profile.base_url))?;
+        let same_address = same_api_url(&base_url, &profile.base_url);
+        let default_model = if same_address {
+            profile.model.as_str()
+        } else {
+            ""
+        };
         let use_router = provider == Provider::Openai && openrouter::is_openrouter(&base_url);
-        let key_prompt = if same_api_url(&base_url, &profile.base_url) {
+        let key_prompt = if same_address {
             "API-ключ (Enter сохраняет текущий): "
         } else {
             "API-ключ для нового адреса (Enter оставляет поле пустым): "
@@ -128,7 +144,7 @@ pub async fn wizard(path: &Path, mut settings: Settings) -> Result<Settings> {
                             format_label(model.response_format)
                         );
                     }
-                    let choice = prompt("Введите номер модели или ID", &profile.model)?;
+                    let choice = prompt("Введите номер модели или ID", default_model)?;
                     let matched = choice
                         .parse::<usize>()
                         .ok()
@@ -142,7 +158,7 @@ pub async fn wizard(path: &Path, mut settings: Settings) -> Result<Settings> {
             }
         }
         if patch.model.is_none() {
-            patch.model = Some(prompt("Модель", &profile.model)?);
+            patch.model = Some(prompt("Модель", default_model)?);
         }
         if provider == Provider::Openai {
             let default = if preset.is_some() {

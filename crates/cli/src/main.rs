@@ -208,10 +208,10 @@ async fn run(cli: Cli) -> Result<()> {
             .map(|value| value.unwrap_or_default())
     };
     let factory = |provider: Option<Provider>, no_cache| -> Result<ProviderFactory> {
-        let loaded = if matches!(provider, Some(Provider::Mock)) {
-            Settings::default()
-        } else {
-            settings()?
+        let loaded = match settings() {
+            Ok(settings) => settings,
+            Err(_) if matches!(provider, Some(Provider::Mock)) => Settings::default(),
+            Err(error) => return Err(error.into()),
         };
         Ok(ProviderFactory::with_settings(
             provider.map(Into::into),

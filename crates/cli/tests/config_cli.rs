@@ -136,5 +136,9 @@ fn broken_config_does_not_block_mock_or_config_recovery() {
         "{}",
         String::from_utf8_lossy(&repaired.stderr)
     );
+    assert_eq!(
+        std::fs::read_to_string(config_dir.join("config.json.bak")).unwrap(),
+        "{not valid json"
+    );
     assert!(rs(profile, &["config", "show"], "").status.success());
 }
