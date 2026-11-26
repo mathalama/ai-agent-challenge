@@ -87,12 +87,21 @@ export function buildMarkdown(report: Report, answers: Record<string, string>): 
 
   const r = READINESS[report.readiness];
   out.push('## Итог', '');
-  out.push(
-    `**${r.label}.** ${r.hint}`,
-    '',
-    `Требований: ${summary.requirement_count}. Находок: ${summary.finding_count}, из них с подтверждёнными цитатами: ${summary.verified_count}.`,
-    '',
-  );
+  if (report.readiness === 'not_requirements' && report.triage) {
+    out.push(`**${r.label}.**`, '', `Причина: ${report.triage.reason}`, '', quote(report.triage.evidence), '');
+  } else {
+    out.push(
+      `**${r.label}.** ${r.hint}`,
+      '',
+    );
+    if (report.triage && report.triage.kind === 'stub') {
+      out.push(`В документе нет содержательных требований: ${report.triage.reason}`, '', quote(report.triage.evidence), '');
+    }
+    out.push(
+      `Требований: ${summary.requirement_count}. Находок: ${summary.finding_count}, из них с подтверждёнными цитатами: ${summary.verified_count}.`,
+      '',
+    );
+  }
   return out.join('\n');
 }
 

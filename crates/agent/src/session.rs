@@ -286,32 +286,14 @@ impl Session {
         let result = self.run_check(Arc::clone(&emit)).await.map(|report| {
             let summary = report.summary.clone();
             let readiness = report.readiness;
-            let triage = report.triage.clone();
             self.report = Some(report);
-            (summary, readiness, triage)
+            (summary, readiness)
         });
         emit(AgentEvent::StateChanged {
             state: self.state(),
         });
-        let (summary, readiness, triage) = result?;
+        let (summary, readiness) = result?;
         emit(AgentEvent::ReportReady { summary, readiness });
-        if readiness == Readiness::NotRequirements {
-            let text = match &triage {
-                Some(decision) => format!(
-                    "Документ не является спецификацией требований. {}",
-                    decision.reason
-                ),
-                None => "Документ не является спецификацией требований.".into(),
-            };
-            emit(AgentEvent::Message {
-                role: Role::Assistant,
-                text,
-                citations: triage
-                    .into_iter()
-                    .map(|decision| decision.evidence)
-                    .collect(),
-            });
-        }
         Ok(())
     }
 

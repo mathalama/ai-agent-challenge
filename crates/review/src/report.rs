@@ -140,9 +140,11 @@ impl Report {
                 ctx.findings.iter(),
             )
         };
-        let triage = ctx
-            .triage
-            .filter(|decision| decision.kind != DocumentKind::Requirements);
+        let triage = ctx.triage.filter(|decision| match decision.kind {
+            DocumentKind::Requirements => false,
+            DocumentKind::Stub => ctx.requirements.is_empty(),
+            DocumentKind::NotRequirements => true,
+        });
         let mut report = Self {
             schema_version: ReportSchemaVersion::V1,
             passport,

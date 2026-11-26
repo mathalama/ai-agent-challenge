@@ -575,14 +575,10 @@ impl LlmProvider for DuplicateStagesProvider {
     }
 
     async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
-        if request.stage == "triage" {
-            return MockProvider.generate(request).await;
-        }
-        if request.stage == "segment" {
+        if request.stage == "triage" || request.stage == "segment" {
             return MockProvider.generate(request).await;
         }
         let json = match request.stage.as_str() {
-            "triage" => return MockProvider.generate(request).await,
             "requirement_checks" => serde_json::json!([
                 {
                     "requirement_id": "R-001",

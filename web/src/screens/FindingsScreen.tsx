@@ -161,7 +161,7 @@ function FindingsView({ report }: { report: Report }) {
           ))}
         </Group>
         <Group title="Стадия проверки">
-          {STAGES.map((s) => (
+          {STAGES.filter((s) => s.id !== 'triage').map((s) => (
             <Chip
               key={s.id}
               active={filters.stages.includes(s.id)}

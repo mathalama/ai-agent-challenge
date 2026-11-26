@@ -38,16 +38,16 @@ BCC-HUB x MNU
 
 ---
 
-# Конвейер: девять стадий
+# Конвейер: десять стадий
 
 ```text
-segment → facts → rules → requirement_checks → set_checks
-        → consistency → ambiguity → verify → clarify
+triage → segment → facts → rules → requirement_checks → set_checks
+       → consistency → ambiguity → verify → clarify
 ```
 
 | Стадии с моделью | Стадии кода |
 | --- | --- |
-| `segment`, `facts`, `requirement_checks`, `set_checks`, `ambiguity`, `clarify` | `rules`, `consistency`, `verify` |
+| `triage`, `segment`, `facts`, `requirement_checks`, `set_checks`, `ambiguity`, `clarify` | `rules`, `consistency`, `verify` |
 
 - Документ разбирается в блоки с номерами строк и страниц (Markdown, TXT, PDF, DOCX).
 - Каждая стадия модели возвращает строго типизированный JSON, схема строится из Rust-типа.

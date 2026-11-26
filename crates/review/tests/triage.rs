@@ -213,3 +213,159 @@ async fn real_requirements_document_passes_triage_and_runs_full_pipeline() {
     assert!(!report.requirements.is_empty());
     assert!(!report.findings.is_empty());
 }
+
+#[tokio::test]
+async fn malformed_triage_response_does_not_fail_or_mark_incomplete() {
+    struct BrokenTriageProvider;
+
+    #[async_trait]
+    impl LlmProvider for BrokenTriageProvider {
+        fn model(&self) -> &str {
+            "broken-triage"
+        }
+
+        async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+            if request.stage == "triage" {
+                return Ok(LlmResponse {
+                    json: json!({
+                        "kind": "other",
+                        "reason": "Неожиданный тип ответа"
+                    }),
+                    usage: Usage::default(),
+                    model: self.model().into(),
+                    reasoning: None,
+                });
+            }
+            MockProvider.generate(request).await
+        }
+    }
+
+    let source = "\
+# Спецификация сервиса
+
+- Ф-1. Система должна проверять подпись запроса.
+";
+    let document = ParserRegistry::default()
+        .parse(Path::new("spec.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &BrokenTriageProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert!(ctx.triage.is_none());
+    assert_eq!(ctx.trace.len(), 10);
+    assert_eq!(ctx.requirements.len(), 1);
+    let report = Report::from_run(ctx, passport("Спецификация сервиса"));
+    assert!(report.incomplete_stages.is_empty());
+    assert_ne!(report.readiness, Readiness::NotRequirements);
+}
+
+#[tokio::test]
+async fn false_not_requirements_is_overridden_when_document_has_requirement_markers() {
+    struct FalseNegativeTriageProvider;
+
+    #[async_trait]
+    impl LlmProvider for FalseNegativeTriageProvider {
+        fn model(&self) -> &str {
+            "false-negative-triage"
+        }
+
+        async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+            if request.stage == "triage" {
+                return Ok(LlmResponse {
+                    json: json!({
+                        "kind": "not_requirements",
+                        "reason": "Начало документа похоже на сопроводительное письмо.",
+                        "evidence": {
+                            "quote": "Сопроводительное письмо к пакету документов.",
+                            "location": { "start_line": 3, "end_line": 3, "page": null }
+                        }
+                    }),
+                    usage: Usage::default(),
+                    model: self.model().into(),
+                    reasoning: None,
+                });
+            }
+            MockProvider.generate(request).await
+        }
+    }
+
+    let source = "\
+# Титульный лист
+
+Сопроводительное письмо к пакету документов.
+
+## Согласование
+
+Лист согласования версии 1.0 от 2026-11-26.
+
+## Требования
+
+- ФТ-1. Сервис должен сохранять аудит операций.
+";
+    let document = ParserRegistry::default()
+        .parse(Path::new("cover.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &FalseNegativeTriageProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert!(ctx.triage.is_none());
+    assert_eq!(ctx.trace.len(), 10);
+    assert_eq!(ctx.requirements.len(), 1);
+    let report = Report::from_run(ctx, passport("Титульный лист"));
+    assert_ne!(report.readiness, Readiness::NotRequirements);
+}
+
+#[tokio::test]
+async fn stub_decision_is_discarded_when_requirements_are_extracted() {
+    struct StubWithRequirementsProvider;
+
+    #[async_trait]
+    impl LlmProvider for StubWithRequirementsProvider {
+        fn model(&self) -> &str {
+            "stub-with-reqs"
+        }
+
+        async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+            if request.stage == "triage" {
+                return Ok(LlmResponse {
+                    json: json!({
+                        "kind": "stub",
+                        "reason": "В начале документа стоит пометка TODO.",
+                        "evidence": {
+                            "quote": "TODO: заполнить реквизиты",
+                            "location": { "start_line": 3, "end_line": 3, "page": null }
+                        }
+                    }),
+                    usage: Usage::default(),
+                    model: self.model().into(),
+                    reasoning: None,
+                });
+            }
+            MockProvider.generate(request).await
+        }
+    }
+
+    let source = "\
+# Спецификация платежей
+
+TODO: заполнить реквизиты
+
+## Требования
+
+- Ф-1. Система должна отклонять отрицательную сумму платежа.
+";
+    let document = ParserRegistry::default()
+        .parse(Path::new("mixed.md"), source.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &StubWithRequirementsProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert_eq!(ctx.requirements.len(), 1);
+    let report = Report::from_run(ctx, passport("Спецификация платежей"));
+    assert!(report.triage.is_none());
+    let md = MarkdownRenderer.render(&report).unwrap();
+    assert!(!md.contains("В документе нет содержательных требований"));
+}

@@ -154,7 +154,7 @@ pub(crate) fn triage(input: &str) -> serde_json::Result<Value> {
         && !input.headings.is_empty()
         && input.total_blocks <= input.headings.len();
     let is_placeholder_only = !non_heading_blocks.is_empty()
-        && input.total_blocks <= input.preview_blocks.len()
+        && input.total_blocks <= input.headings.len() + input.preview_blocks.len()
         && non_heading_blocks.iter().all(|block| is_stub_block(block));
 
     let (kind, reason) = if is_headings_only {
