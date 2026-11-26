@@ -20,9 +20,9 @@ use clap::{
 use doc::ParserRegistry;
 use llm::settings::{Settings, config_path};
 use review::{
-    AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, ProgressSink, Report,
-    ReportRenderer, RunContext, discover_golden_files, evaluate_document, evaluate_questions,
-    format_eval_report, load_golden_file,
+    AGENT_VERSION, CheckRegistry, JsonRenderer, MarkdownRenderer, Pipeline, ProgressSink,
+    Readiness, Report, ReportRenderer, RunContext, discover_golden_files, evaluate_document,
+    evaluate_questions, format_eval_report, load_golden_file,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -422,6 +422,15 @@ async fn review(
         write_output(path, &json)?;
     }
     let report = run.report?;
+    if report.readiness == Readiness::NotRequirements {
+        match &report.triage {
+            Some(triage) => eprintln!(
+                "Предупреждение: документ не является спецификацией требований — {}",
+                triage.reason
+            ),
+            None => eprintln!("Предупреждение: документ не является спецификацией требований."),
+        }
+    }
     if !report.unmatched_answers.is_empty() {
         eprintln!(
             "Предупреждение: сохранённые ответы без текущего вопроса — {:?}.",

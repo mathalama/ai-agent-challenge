@@ -56,7 +56,14 @@ function Content({ report }: { report: Report }) {
           <span aria-hidden className={`mt-1 size-4 shrink-0 rounded-full sm:size-5 ${verdict.dot}`} />
           {verdict.label}
         </h1>
-        <p className="max-w-[56ch] text-sm text-ink-2">{verdict.hint}</p>
+        <p className="max-w-[56ch] text-sm text-ink-2">
+          {report.triage ? report.triage.reason : verdict.hint}
+        </p>
+        {report.triage && (
+          <blockquote className="max-w-[68ch] rounded-xl bg-surface p-3.5 text-sm text-ink-2 ring-1 ring-line">
+            «{report.triage.evidence.quote}»
+          </blockquote>
+        )}
       </section>
 
       <section aria-label="Итоги проверки" className="grid grid-cols-2 gap-3">

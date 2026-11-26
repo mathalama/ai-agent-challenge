@@ -10,6 +10,7 @@ mod report;
 mod rules;
 pub mod segment;
 mod stages;
+mod triage;
 mod vague;
 
 pub use dedup::merge_findings;
@@ -30,6 +31,7 @@ pub use report::{
     ReportSummary,
 };
 pub use segment::{extract_source_id, extract_table_requirements};
+pub use triage::{DocumentKind, TriageDecision};
 pub use vague::{VagueDictionary, VagueMatch, VagueTermEntry};
 
 pub const AGENT_VERSION: &str = env!("AGENT_VERSION");

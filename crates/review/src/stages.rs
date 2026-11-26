@@ -13,6 +13,7 @@ use crate::{
     Scope, Severity, Stage, clarify, consistency, facts,
     pipeline::Result,
     segment::{RequirementDraft, merge_requirements, segment_blocks},
+    triage,
 };
 
 const REVIEW_BATCH_SIZE: usize = 12;
@@ -30,6 +31,7 @@ struct FindingDraft {
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScaffoldStage {
+    Triage,
     Segment,
     Facts,
     Rules,
@@ -42,7 +44,8 @@ pub(crate) enum ScaffoldStage {
 }
 
 impl ScaffoldStage {
-    pub(crate) const ORDER: [Self; 9] = [
+    pub(crate) const ORDER: [Self; 10] = [
+        Self::Triage,
         Self::Segment,
         Self::Facts,
         Self::Rules,
@@ -56,6 +59,7 @@ impl ScaffoldStage {
 
     fn prompt(self) -> &'static str {
         match self {
+            Self::Triage => include_str!("../../../prompts/triage.md"),
             Self::Segment => include_str!("../../../prompts/segment.md"),
             Self::Facts => include_str!("../../../prompts/facts.md"),
             Self::RequirementChecks => include_str!("../../../prompts/requirement_checks.md"),
@@ -78,6 +82,7 @@ impl ScaffoldStage {
 impl Stage for ScaffoldStage {
     fn name(&self) -> &'static str {
         match self {
+            Self::Triage => "triage",
             Self::Segment => "segment",
             Self::Facts => "facts",
             Self::Rules => "rules",
@@ -93,6 +98,9 @@ impl Stage for ScaffoldStage {
     async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
         let name = self.name();
         match self {
+            Self::Triage => {
+                triage::run(ctx, &self.llm_prompt()).await?;
+            }
             Self::Segment => {
                 let blocks = segment_blocks(&ctx.document);
                 let drafts = if blocks.iter().any(|block| {

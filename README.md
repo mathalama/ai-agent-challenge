@@ -160,8 +160,8 @@ CLI отправляет разобранный текст документа в
 ## Конвейер
 
 ```text
-segment → facts → rules → requirement_checks → set_checks
-        → consistency → ambiguity → verify → clarify
+triage → segment → facts → rules → requirement_checks → set_checks
+       → consistency → ambiguity → verify → clarify
 ```
 
 | Крейт | Назначение |

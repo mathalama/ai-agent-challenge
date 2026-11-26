@@ -392,3 +392,16 @@ fn docx_rejects_oversized_decompressed_part_and_corrupted_archives() {
         "Неожиданная ошибка: {err}"
     );
 }
+
+#[test]
+fn docx_rejects_empty_document() {
+    let registry = ParserRegistry::default();
+    let empty = build_docx(
+        r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>   </w:t></w:r></w:p></w:body></w:document>"#,
+        None,
+    );
+    assert!(matches!(
+        registry.parse(Path::new("empty.docx"), &empty),
+        Err(DocumentError::EmptyDocument)
+    ));
+}

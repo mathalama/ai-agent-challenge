@@ -70,7 +70,7 @@ fn published_schema_matches_approved_version() {
     let report: Value = serde_json::from_str(MOCK_FIXTURE).unwrap();
     let version = report["schema_version"].as_str().unwrap();
     let approved = match version {
-        "1" => "0de24a03df9dc6660ac3c9e8b403f925d784767f64ee9968d21eb142a014c4fa",
+        "1" => "0063ba481cb2da3323c148404886d5837e0910d21d9d95904f61a12efd96d4d8",
         _ => panic!("Добавьте контрольную сумму для новой версии схемы {version}"),
     };
 

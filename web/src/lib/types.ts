@@ -81,7 +81,8 @@ export type RelatedId =
       id: string;
       kind: "requirement";
     };
-export type Readiness = "blocked" | "checks_incomplete" | "ready";
+export type Readiness = "blocked" | "checks_incomplete" | "ready" | "not_requirements";
+export type DocumentKind = "requirements" | "not_requirements" | "stub";
 export type ReportSchemaVersion = "1";
 
 export interface Report {
@@ -103,9 +104,15 @@ export interface Report {
     [k: string]: string;
   };
   summary: ReportSummary;
+  triage?: TriageDecision | null;
   unmatched_answers?: {
     [k: string]: string;
   };
+}
+export interface TriageDecision {
+  evidence: Evidence;
+  kind: DocumentKind;
+  reason: string;
 }
 export interface SourceSpan {
   end_line: number;

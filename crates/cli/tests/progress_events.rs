@@ -16,8 +16,8 @@ fn check_streams_progress_to_console_and_json_lines() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(result.status.success(), "{stderr}");
-    assert!(stderr.contains("[1/9] segment…"), "{stderr}");
-    assert!(stderr.contains("[9/9] clarify: готово"), "{stderr}");
+    assert!(stderr.contains("[1/10] triage…"), "{stderr}");
+    assert!(stderr.contains("[10/10] clarify: готово"), "{stderr}");
     assert!(stderr.contains("Прогон завершён"), "{stderr}");
 
     let events: Vec<serde_json::Value> = fs::read_to_string(events_path)
@@ -33,9 +33,9 @@ fn check_streams_progress_to_console_and_json_lines() {
         .filter(|event| event["event"] == "stage_finished")
         .map(|event| event["stage"].as_str().unwrap())
         .collect();
-    assert_eq!(finished.len(), 9);
-    assert_eq!(finished[0], "segment");
-    assert_eq!(finished[8], "clarify");
+    assert_eq!(finished.len(), 10);
+    assert_eq!(finished[0], "triage");
+    assert_eq!(finished[9], "clarify");
 }
 
 #[test]

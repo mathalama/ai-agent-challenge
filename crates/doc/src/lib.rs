@@ -24,6 +24,19 @@ pub struct Document {
 }
 
 impl Document {
+    pub fn has_meaningful_text(&self) -> bool {
+        self.blocks.iter().any(|block| match &block.content {
+            BlockContent::Heading { text, .. }
+            | BlockContent::Paragraph { text }
+            | BlockContent::ListItem { text }
+            | BlockContent::Code { text, .. } => text.chars().any(char::is_alphanumeric),
+            BlockContent::Table { rows, .. } => rows
+                .iter()
+                .flatten()
+                .any(|cell| cell.chars().any(char::is_alphanumeric)),
+        })
+    }
+
     pub fn contains_quote(&self, span: SourceSpan, quote: &str) -> bool {
         let quote_plain = normalize_quote(quote);
         let quote_dehyphenated = normalize_quote_dehyphenated(quote);
@@ -366,6 +379,8 @@ pub enum DocumentError {
     EmptyPdfText,
     #[error("Не удалось разобрать DOCX: {0}")]
     InvalidDocx(String),
+    #[error("Документ не содержит значимого текста")]
+    EmptyDocument,
 }
 
 pub type Result<T> = std::result::Result<T, DocumentError>;
@@ -411,6 +426,9 @@ impl ParserRegistry {
                 )
             })?;
         let mut document = parser.parse(bytes)?;
+        if !document.has_meaningful_text() {
+            return Err(DocumentError::EmptyDocument);
+        }
         document.source_path = path.into();
         if document.title.is_empty() {
             document.title = path

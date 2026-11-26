@@ -64,9 +64,17 @@ export const READINESS: Record<
     bg: 'bg-ok-bg',
     dot: 'bg-ok',
   },
+  not_requirements: {
+    label: 'Документ не является спецификацией требований',
+    hint: 'Загруженный файл не похож на спецификацию требований, поэтому проверка остановлена.',
+    text: 'text-sev-medium-ink',
+    bg: 'bg-sev-medium-bg',
+    dot: 'bg-sev-medium',
+  },
 };
 
 export const STAGES = [
+  { id: 'triage', label: 'Проверка типа документа', note: 'Определяем, содержит ли документ требования' },
   { id: 'segment', label: 'Разбор на требования', note: 'Выделяем требования и их источники' },
   { id: 'facts', label: 'Извлечение фактов', note: 'Числа, границы, сущности и сроки' },
   { id: 'rules', label: 'Формальные правила', note: 'Структура, словарь размытых слов' },

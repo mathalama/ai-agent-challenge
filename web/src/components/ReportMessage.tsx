@@ -22,6 +22,9 @@ export function ReportMessage({ report }: { report: Report }) {
         <span>Требований · <b>{requirement_count}</b></span>
         <span>Находок · <b>{finding_count}</b></span>
       </div>
+      {report.triage && report.readiness === 'not_requirements' && (
+        <p className="text-sm text-ink-2">{report.triage.reason}</p>
+      )}
       {reasons.length > 0 && <ul className="chat-finding-links" aria-label="Находки в чате">
         {reasons.map((finding) => <li key={finding.id}>
           <Link to={`/?tab=document&finding=${encodeURIComponent(finding.id)}`}>

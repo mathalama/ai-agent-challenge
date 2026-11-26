@@ -7,8 +7,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    ContextItem, Fact, Finding, ProgressEvent, ProgressSink, Question, Requirement,
-    stages::ScaffoldStage,
+    ContextItem, DocumentKind, Fact, Finding, ProgressEvent, ProgressSink, Question, Requirement,
+    TriageDecision, stages::ScaffoldStage,
 };
 
 #[derive(Debug, Error)]
@@ -19,6 +19,8 @@ pub enum StageError {
         #[source]
         source: Box<StageError>,
     },
+    #[error("Документ не содержит значимого текста")]
+    EmptyDocument,
     #[error(transparent)]
     Llm(#[from] llm::LlmError),
     #[error("Ошибка подготовки данных для стадии: {0}")]
@@ -30,7 +32,7 @@ impl StageError {
         match self {
             Self::Llm(error) => error.is_output_limit(),
             Self::Stage { source, .. } => source.is_output_limit(),
-            Self::Json(_) => false,
+            Self::EmptyDocument | Self::Json(_) => false,
         }
     }
 }
@@ -53,6 +55,7 @@ pub struct RunContext<'a> {
     pub facts: Vec<Fact>,
     pub findings: Vec<Finding>,
     pub questions: Vec<Question>,
+    pub triage: Option<TriageDecision>,
     pub trace: Vec<StageTrace>,
     progress: Option<(&'a dyn ProgressSink, TraceLog)>,
     pub(crate) rules_completed: bool,
@@ -75,6 +78,7 @@ impl<'a> RunContext<'a> {
             facts: Vec::new(),
             findings: Vec::new(),
             questions: Vec::new(),
+            triage: None,
             trace: Vec::new(),
             progress: None,
             rules_completed: false,
@@ -143,6 +147,7 @@ impl Pipeline {
     pub async fn run(&self, ctx: &mut RunContext<'_>) -> Result<()> {
         ctx.rules_completed = false;
         ctx.checks_complete = false;
+        ctx.triage = None;
         ctx.incomplete_stages.clear();
         let run_started = Instant::now();
         let total = self.stages.len();
@@ -204,6 +209,13 @@ impl Pipeline {
                     stage: stage.name(),
                     source: Box::new(source),
                 });
+            }
+            if ctx
+                .triage
+                .as_ref()
+                .is_some_and(|decision| decision.kind == DocumentKind::NotRequirements)
+            {
+                break;
             }
         }
         ctx.checks_complete = self.full_review

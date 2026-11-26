@@ -249,9 +249,16 @@ impl Session {
                 }
             }
             "/verdict" => emit(message(match report.readiness {
-                Readiness::Blocked => "Не готово.",
-                Readiness::ChecksIncomplete => "Проверка завершена не полностью.",
-                Readiness::Ready => "Готово.",
+                Readiness::Blocked => "Не готово.".into(),
+                Readiness::ChecksIncomplete => "Проверка завершена не полностью.".into(),
+                Readiness::Ready => "Готово.".into(),
+                Readiness::NotRequirements => match &report.triage {
+                    Some(triage) => format!(
+                        "Документ не является спецификацией требований. {}",
+                        triage.reason
+                    ),
+                    None => "Документ не является спецификацией требований.".into(),
+                },
             })),
             "/export" => {
                 let (format, content) = match arguments {

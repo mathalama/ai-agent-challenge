@@ -9,8 +9,8 @@ use schemars::{JsonSchema, Schema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Criterion, Finding, FindingId, Question, RelatedId, Requirement, RequirementId,
-    RunContext, RunPassport, Scope, Severity,
+    Answer, Criterion, DocumentKind, Finding, FindingId, Question, RelatedId, Requirement,
+    RequirementId, RunContext, RunPassport, Scope, Severity, TriageDecision,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -22,6 +22,8 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub summary: ReportSummary,
     pub readiness: Readiness,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<TriageDecision>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub incomplete_stages: Vec<String>,
     pub questions: Vec<Question>,
@@ -50,12 +52,13 @@ pub struct ReportSummary {
     pub critical_findings: Vec<FindingId>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Readiness {
     Blocked,
     ChecksIncomplete,
     Ready,
+    NotRequirements,
 }
 
 impl Readiness {
@@ -125,10 +128,23 @@ impl Report {
                 .map(|finding| finding.id.clone())
                 .collect(),
         };
-        let readiness = Readiness::evaluate(
-            ctx.checks_complete && !ctx.requirements.is_empty(),
-            ctx.findings.iter(),
-        );
+        let readiness = if ctx
+            .triage
+            .as_ref()
+            .is_some_and(|decision| decision.kind == DocumentKind::NotRequirements)
+        {
+            Readiness::NotRequirements
+        } else {
+            Readiness::evaluate(
+                ctx.checks_complete && !ctx.requirements.is_empty(),
+                ctx.findings.iter(),
+            )
+        };
+        let triage = ctx.triage.filter(|decision| match decision.kind {
+            DocumentKind::Requirements => false,
+            DocumentKind::Stub => ctx.requirements.is_empty(),
+            DocumentKind::NotRequirements => true,
+        });
         let mut report = Self {
             schema_version: ReportSchemaVersion::V1,
             passport,
@@ -137,6 +153,7 @@ impl Report {
             findings: ctx.findings,
             summary,
             readiness,
+            triage,
             incomplete_stages: ctx.incomplete_stages,
             questions: ctx.questions,
             finding_answers: BTreeMap::new(),
@@ -313,9 +330,36 @@ impl ReportRenderer for MarkdownRenderer {
             Readiness::Ready => {
                 "**Готово.** По результатам проверки можно начинать разработку и тестирование.\n"
             }
+            Readiness::NotRequirements => "**Документ не является спецификацией требований.**\n",
         });
+        if matches!(report.readiness, Readiness::NotRequirements)
+            && let Some(triage) = &report.triage
+        {
+            writeln!(
+                output,
+                "\nПричина — {}\n- «{}» ({})",
+                sentence(&triage.reason),
+                markdown(&triage.evidence.quote),
+                location(triage.evidence.location),
+            )
+            .expect("запись в строку");
+        }
         if matches!(report.readiness, Readiness::Blocked) {
             write_blocking_reason(&mut output, &report.findings, &blocking_critical);
+        }
+        if let Some(triage) = report
+            .triage
+            .as_ref()
+            .filter(|decision| decision.kind == DocumentKind::Stub)
+        {
+            writeln!(
+                output,
+                "\nВ документе нет содержательных требований: {}\n- «{}» ({})",
+                sentence(&triage.reason),
+                markdown(&triage.evidence.quote),
+                location(triage.evidence.location),
+            )
+            .expect("запись в строку");
         }
         if !report.incomplete_stages.is_empty() {
             let stages = report
@@ -779,6 +823,7 @@ mod tests {
                 critical_findings: Vec::new(),
             },
             readiness: Readiness::ChecksIncomplete,
+            triage: None,
             incomplete_stages: Vec::new(),
             questions,
             finding_answers: BTreeMap::new(),
@@ -973,6 +1018,7 @@ mod tests {
                 critical_findings: vec!["critical".into(), "unverified".into()],
             },
             readiness: Readiness::Blocked,
+            triage: None,
             incomplete_stages: Vec::new(),
             questions: Vec::new(),
             finding_answers: BTreeMap::new(),
