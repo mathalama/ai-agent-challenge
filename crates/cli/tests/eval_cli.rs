@@ -32,16 +32,18 @@ fn eval_command_reports_metrics_for_each_golden_and_is_reproducible_with_cache()
     assert!(first.contains("recall:"));
     assert!(first.contains("precision:"));
     assert!(first.contains("Пропущенные дефекты"));
-    // Для requirements.md встроенные правила + сценарный mock находят D-01, D-02, D-08, D-09 и D-10
-    assert!(first.contains("Найдено дефектов: 5/14"));
+    // Для requirements.md встроенные правила + сценарный mock находят D-01, D-02, D-07, D-08, D-09 и D-10
+    assert!(first.contains("Найдено дефектов: 6/14"));
+    assert!(!first.contains("  - D-07 "));
     assert!(!first.contains("  - D-01 "));
     assert!(!first.contains("  - D-02 "));
     assert!(!first.contains("  - D-08 "));
     assert!(!first.contains("  - D-09 "));
     assert!(!first.contains("  - D-10 "));
     assert!(first.contains("  - D-03 "));
-    // Для credit_application.md встроенные правила находят C-08, C-09, C-10 и C-11
-    assert!(first.contains("Найдено дефектов: 4/13"));
+    // Для credit_application.md встроенные правила находят C-07, C-08, C-09, C-10 и C-11
+    assert!(first.contains("Найдено дефектов: 5/13"));
+    assert!(!first.contains("  - C-07 "));
     assert!(!first.contains("  - C-08 "));
     assert!(!first.contains("  - C-09 "));
     assert!(!first.contains("  - C-10 "));
