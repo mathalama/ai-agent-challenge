@@ -1,16 +1,35 @@
 # Архитектура
 
+## Зависимости крейтов
+
 ```mermaid
 flowchart LR
-    doc --> llm
-    doc --> review
-    llm --> review
-    review --> agent
-    agent --> cli
-    agent --> server
-    server --> cli
-    server --> web[web/dist]
+    llm --> doc
+    review --> doc
+    review --> llm
+    agent --> doc
+    agent --> llm
+    agent --> review
+    server --> agent
+    server --> llm
+    server --> review
+    cli --> agent
+    cli --> server
+    cli --> llm
+    cli --> review
+    cli --> doc
+    web -->|REST, SSE| server
 ```
+
+- `doc` — разбирает Markdown, TXT, PDF и DOCX в единый список блоков с координатами строк и страниц; не зависит от других крейтов workspace.
+- `llm` — реализует провайдеры (Gemini, OpenAI-совместимые, mock), настройки, кэш, повторы, ограничитель запросов и валидацию по JSON Schema; использует типы блоков `doc` в mock-провайдере.
+- `review` — содержит конвейер стадий проверки, доменные типы, детерминированные правила, дедупликацию, генерацию отчётов и `eval`.
+- `agent` — собирает цепочку провайдеров, запускает проверку с учётом сохранённых ответов и реализует общее ядро интерактивной сессии для CLI и HTTP.
+- `server` — поднимает локальный HTTP-сервер на Axum, хранит сессии в памяти, отдаёт события прогресса и рассуждений по SSE и раздаёт сборку `web/dist`.
+- `cli` — точка входа `rs`, связывающая консольные команды (`check`, `ask`, `eval`, `chat`, `serve`, `config`, `schema`) с остальными крейтами.
+- `web` — клиентский интерфейс на React/Vite, взаимодействующий с `server` по REST и SSE.
+
+## Конвейер проверки
 
 ```mermaid
 flowchart TD
