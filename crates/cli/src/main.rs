@@ -201,23 +201,8 @@ async fn run(cli: Cli) -> Result<()> {
         .init();
 
     let path = config_path();
-    let settings = || {
-        path.as_deref()
-            .map(Settings::load)
-            .transpose()
-            .map(|value| value.unwrap_or_default())
-    };
     let factory = |provider: Option<Provider>, no_cache| -> Result<ProviderFactory> {
-        let loaded = match settings() {
-            Ok(settings) => settings,
-            Err(_) if matches!(provider, Some(Provider::Mock)) => Settings::default(),
-            Err(error) => return Err(error.into()),
-        };
-        Ok(ProviderFactory::with_settings(
-            provider.map(Into::into),
-            no_cache,
-            loaded,
-        ))
+        build_factory(path.as_deref(), provider, no_cache)
     };
     match cli.command.unwrap_or(Command::Chat {
         input: None,
@@ -473,6 +458,27 @@ fn same_path(left: &Path, right: &Path) -> io::Result<bool> {
     }
 }
 
+fn build_factory(
+    path: Option<&Path>,
+    provider: Option<Provider>,
+    no_cache: bool,
+) -> Result<ProviderFactory> {
+    let loaded = match path
+        .map(Settings::load)
+        .transpose()
+        .map(|value| value.unwrap_or_default())
+    {
+        Ok(settings) => settings,
+        Err(_) if matches!(provider, Some(Provider::Mock)) => Settings::default(),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(ProviderFactory::with_settings(
+        provider.map(Into::into),
+        no_cache,
+        loaded,
+    ))
+}
+
 fn write_output(path: &Path, content: &str) -> Result<()> {
     let write = || -> io::Result<()> {
         let directory = path
@@ -486,4 +492,41 @@ fn write_output(path: &Path, content: &str) -> Result<()> {
         Ok(())
     };
     write().map_err(|error| format!("Не удалось записать «{}»: {error}", path.display()).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use llm::settings::{Provider as LlmProvider, SettingsPatch};
+
+    use super::*;
+
+    #[test]
+    fn mock_flag_keeps_saved_profiles_and_falls_back_only_on_corrupt_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut settings = Settings::default();
+        settings
+            .apply(SettingsPatch {
+                provider: Some(LlmProvider::Openai),
+                model: Some("saved/model".into()),
+                api_key: Some("saved-secret-1234".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        settings.save(&path).unwrap();
+
+        let factory = build_factory(Some(&path), Some(Provider::Mock), true).unwrap();
+        assert_eq!(factory.resolved().unwrap().provider, LlmProvider::Mock);
+        let view = factory.view().unwrap();
+        assert_eq!(view.openai.model, "saved/model");
+        assert_eq!(view.openai.api_key_mask.as_deref(), Some("задан ••••1234"));
+        factory.switch_provider(LlmProvider::Openai).unwrap();
+        let switched = factory.resolved().unwrap();
+        assert_eq!(switched.model, "saved/model");
+        assert_eq!(switched.api_key.as_deref(), Some("saved-secret-1234"));
+
+        fs::write(&path, "{broken").unwrap();
+        assert!(build_factory(Some(&path), Some(Provider::Mock), true).is_ok());
+        assert!(build_factory(Some(&path), None, true).is_err());
+    }
 }
