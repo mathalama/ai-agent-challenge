@@ -281,10 +281,10 @@ impl ReportRenderer for MarkdownRenderer {
             .map(|(index, finding)| format!("[{}](#finding-{})", markdown(&finding.id), index + 1))
             .collect();
         let critical_summary = if critical.is_empty() {
-            "Критичные дефекты (непроверяемые, противоречивые, неполные) — нет".to_owned()
+            "Критичные дефекты (критическая важность; высокая — непроверяемые, противоречивые, неполные) — нет".to_owned()
         } else {
             format!(
-                "Критичные дефекты (непроверяемые, противоречивые, неполные) — {}: {}",
+                "Критичные дефекты (критическая важность; высокая — непроверяемые, противоречивые, неполные) — {}: {}",
                 critical.len(),
                 critical.join(", ")
             )
@@ -985,7 +985,7 @@ mod tests {
         let (before_verdict, summary) = markdown.split_once("## 6. Итог").unwrap();
         let (_, overview) = before_verdict.split_once("## 5. Сводка").unwrap();
         assert!(overview.contains(
-            "Критичные дефекты (непроверяемые, противоречивые, неполные) — 3: [high-single](#finding-1), [high-multiple](#finding-3), [critical](#finding-4)"
+            "Критичные дефекты (критическая важность; высокая — непроверяемые, противоречивые, неполные) — 3: [high-single](#finding-1), [high-multiple](#finding-3), [critical](#finding-4)"
         ));
         let (summary, _) = summary.split_once("## 7.").unwrap();
         assert!(summary.contains("**Не готово.**"));
@@ -1079,7 +1079,7 @@ mod tests {
         let (before_verdict, _) = markdown.split_once("## 6. Итог").unwrap();
         let (_, overview) = before_verdict.split_once("## 5. Сводка").unwrap();
         assert!(overview.contains(
-            "Критичные дефекты (непроверяемые, противоречивые, неполные) — 2: [high-consistent](#finding-1), [critical-ranked](#finding-3)"
+            "Критичные дефекты (критическая важность; высокая — непроверяемые, противоречивые, неполные) — 2: [high-consistent](#finding-1), [critical-ranked](#finding-3)"
         ));
         assert!(!overview.contains("high-ranked"));
         assert!(!overview.contains("unverified-high"));
@@ -1088,8 +1088,8 @@ mod tests {
         let mut empty_report = report;
         empty_report.findings.retain(|f| f.id == "high-ranked");
         let empty_md = MarkdownRenderer.render(&empty_report).unwrap();
-        assert!(
-            empty_md.contains("Критичные дефекты (непроверяемые, противоречивые, неполные) — нет")
-        );
+        assert!(empty_md.contains(
+            "Критичные дефекты (критическая важность; высокая — непроверяемые, противоречивые, неполные) — нет"
+        ));
     }
 }

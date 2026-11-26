@@ -2,9 +2,9 @@
   "schema_version": "1",
   "passport": {
     "document_title": "Уведомление о расходах по карте",
-    "date": "2026-11-26",
+    "date": "2026-11-25",
     "model": "mock",
-    "agent_version": "ff873cb"
+    "agent_version": "d6020da"
   },
   "blocks": [
     {
