@@ -144,18 +144,12 @@ pub(crate) fn triage(input: &str) -> serde_json::Result<Value> {
             )
         });
 
-    let non_heading_blocks: Vec<_> = input
-        .preview_blocks
-        .iter()
-        .filter(|block| !matches!(block.content, BlockContent::Heading { .. }))
-        .collect();
-
-    let is_headings_only = non_heading_blocks.is_empty()
+    let is_headings_only = input.preview_blocks.is_empty()
         && !input.headings.is_empty()
         && input.total_blocks <= input.headings.len();
-    let is_placeholder_only = !non_heading_blocks.is_empty()
+    let is_placeholder_only = !input.preview_blocks.is_empty()
         && input.total_blocks <= input.headings.len() + input.preview_blocks.len()
-        && non_heading_blocks.iter().all(|block| is_stub_block(block));
+        && input.preview_blocks.iter().all(is_stub_block);
 
     let (kind, reason) = if is_headings_only {
         (
@@ -206,10 +200,10 @@ fn block_quote(block: &Block) -> Option<(String, SourceSpan)> {
 
 fn is_stub_block(block: &Block) -> bool {
     let text = match &block.content {
-        BlockContent::Paragraph { text }
+        BlockContent::Heading { text, .. }
+        | BlockContent::Paragraph { text }
         | BlockContent::ListItem { text }
         | BlockContent::Code { text, .. } => text.trim().to_lowercase(),
-        BlockContent::Heading { .. } => return true,
         BlockContent::Table { rows, .. } => rows
             .iter()
             .flatten()

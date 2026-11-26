@@ -162,10 +162,18 @@ fn print_event(event: AgentEvent, path: Option<&Path>, progress: &ConsoleProgres
                 );
             }
         }
-        AgentEvent::ReportReady { summary, .. } => println!(
-            "Отчёт готов. Требований — {}, находок — {}. Доступны /verdict, /findings, /questions и /export md|json.",
-            summary.requirement_count, summary.finding_count,
-        ),
+        AgentEvent::ReportReady { summary, readiness } => {
+            if readiness == review::Readiness::NotRequirements {
+                println!(
+                    "Документ не является спецификацией требований. Подробности: /verdict, экспорт: /export md|json."
+                );
+            } else {
+                println!(
+                    "Отчёт готов. Требований — {}, находок — {}. Доступны /verdict, /findings, /questions и /export md|json.",
+                    summary.requirement_count, summary.finding_count,
+                );
+            }
+        }
         AgentEvent::Question { question } => {
             println!("{} — {}", question.id, terminal_text(&question.text));
             for option in question.options {

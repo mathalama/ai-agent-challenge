@@ -369,3 +369,56 @@ TODO: заполнить реквизиты
     let md = MarkdownRenderer.render(&report).unwrap();
     assert!(!md.contains("В документе нет содержательных требований"));
 }
+
+#[tokio::test]
+async fn prose_with_modal_words_and_standard_codes_keeps_not_requirements() {
+    struct RecipeTriageProvider;
+
+    #[async_trait]
+    impl LlmProvider for RecipeTriageProvider {
+        fn model(&self) -> &str {
+            "recipe-triage"
+        }
+
+        async fn generate(&self, request: &LlmRequest) -> llm::Result<LlmResponse> {
+            if request.stage == "triage" {
+                return Ok(LlmResponse {
+                    json: json!({
+                        "kind": "not_requirements",
+                        "reason": "Документ описывает кулинарный рецепт, а не требования к системе.",
+                        "evidence": {
+                            "quote": "Тесто должно подойти в тёплом месте 40 минут.",
+                            "location": { "start_line": 5, "end_line": 5, "page": null }
+                        }
+                    }),
+                    usage: Usage::default(),
+                    model: self.model().into(),
+                    reasoning: None,
+                });
+            }
+            MockProvider.generate(request).await
+        }
+    }
+
+    let recipe = "\
+# Пирог с капустой
+
+Ингредиенты по ГОСТ-12345 и мука сорта ISO-9001.
+
+Тесто должно подойти в тёплом месте 40 минут.
+
+Свёкла должна сохранить цвет при тушении.
+";
+    let document = ParserRegistry::default()
+        .parse(Path::new("pie.md"), recipe.as_bytes())
+        .unwrap();
+    let checks = CheckRegistry::with_builtin_rules();
+    let mut ctx = RunContext::new(document, &RecipeTriageProvider, &checks);
+    Pipeline::default().run(&mut ctx).await.unwrap();
+
+    assert_eq!(ctx.trace.len(), 1);
+    assert!(ctx.findings.is_empty());
+    let report = Report::from_run(ctx, passport("Пирог с капустой"));
+    assert_eq!(report.readiness, Readiness::NotRequirements);
+    assert!(report.triage.is_some());
+}

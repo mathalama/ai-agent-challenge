@@ -144,53 +144,92 @@ fn verify_decision(document: &Document, decision: &TriageDecision) -> bool {
 }
 
 fn has_requirement_markers(document: &Document) -> bool {
-    document.blocks.iter().any(|block| match &block.content {
-        BlockContent::Heading { text, .. }
-        | BlockContent::Paragraph { text }
-        | BlockContent::ListItem { text }
-        | BlockContent::Code { text, .. } => text_has_requirement_marker(text),
-        BlockContent::Table { rows, .. } => rows
-            .iter()
-            .flatten()
-            .any(|cell| text_has_requirement_marker(cell)),
+    const MIN_MODAL_SUBJECT_BLOCKS: usize = 2;
+
+    let mut modal_subject_blocks = 0usize;
+    for block in &document.blocks {
+        let has_id = match &block.content {
+            BlockContent::Heading { text, .. }
+            | BlockContent::Paragraph { text }
+            | BlockContent::ListItem { text }
+            | BlockContent::Code { text, .. } => text_has_requirement_id(text),
+            BlockContent::Table { rows, .. } => rows
+                .iter()
+                .flatten()
+                .any(|cell| text_has_requirement_id(cell)),
+        };
+        if has_id {
+            return true;
+        }
+        let has_modal_subject = match &block.content {
+            BlockContent::Heading { text, .. }
+            | BlockContent::Paragraph { text }
+            | BlockContent::ListItem { text }
+            | BlockContent::Code { text, .. } => text_has_modal_with_subject(text),
+            BlockContent::Table { rows, .. } => rows
+                .iter()
+                .flatten()
+                .any(|cell| text_has_modal_with_subject(cell)),
+        };
+        if has_modal_subject {
+            modal_subject_blocks += 1;
+            if modal_subject_blocks >= MIN_MODAL_SUBJECT_BLOCKS {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn text_has_requirement_id(text: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "Ф", "ФТ", "НФ", "НФТ", "БТ", "Т", "R", "REQ", "FR", "NFR", "US", "UC", "BR", "SR", "AC",
+    ];
+    text.split(|ch: char| {
+        ch.is_whitespace() || matches!(ch, '.' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '|')
+    })
+    .any(|token| {
+        let Some((prefix, number)) = token.split_once('-') else {
+            return false;
+        };
+        PREFIXES.contains(&prefix)
+            && !number.is_empty()
+            && number.bytes().all(|byte| byte.is_ascii_digit())
     })
 }
 
-fn text_has_requirement_marker(text: &str) -> bool {
-    let has_id = text
-        .split(|ch: char| {
-            ch.is_whitespace() || matches!(ch, '.' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '|')
-        })
-        .any(|token| {
-            let Some((prefix, number)) = token.split_once('-') else {
-                return false;
-            };
-            !prefix.is_empty()
-                && prefix.chars().count() <= 4
-                && prefix
-                    .chars()
-                    .all(|ch| ch.is_alphabetic() && ch.is_uppercase())
-                && !number.is_empty()
-                && number.bytes().all(|byte| byte.is_ascii_digit())
-        });
-    if has_id {
-        return true;
+fn text_has_modal_with_subject(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let has_modal = lower.split(|ch: char| !ch.is_alphanumeric()).any(|word| {
+        matches!(
+            word,
+            "должен"
+                | "должна"
+                | "должно"
+                | "должны"
+                | "обязан"
+                | "обязана"
+                | "обязано"
+                | "обязаны"
+                | "shall"
+                | "must"
+        )
+    });
+    if !has_modal {
+        return false;
     }
-    text.to_lowercase()
+    const SUBJECTS: &[&str] = &[
+        "систем",
+        "сервис",
+        "приложен",
+        "пользовател",
+        "модул",
+        "system",
+        "service",
+        "application",
+        "user",
+    ];
+    lower
         .split(|ch: char| !ch.is_alphanumeric())
-        .any(|word| {
-            matches!(
-                word,
-                "должен"
-                    | "должна"
-                    | "должно"
-                    | "должны"
-                    | "обязан"
-                    | "обязана"
-                    | "обязано"
-                    | "обязаны"
-                    | "shall"
-                    | "must"
-            )
-        })
+        .any(|word| word == "api" || SUBJECTS.iter().any(|prefix| word.starts_with(prefix)))
 }
