@@ -76,6 +76,38 @@ fn short_form_picks_json_by_extension_in_any_case() {
 }
 
 #[test]
+fn check_picks_format_by_output_extension_unless_format_is_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = sample();
+    let check = |name: &str, format: Option<&str>| {
+        let path = dir.path().join(name);
+        let mut args: Vec<&std::ffi::OsStr> = vec![
+            "check".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            path.as_os_str(),
+            "--provider".as_ref(),
+            "mock".as_ref(),
+            "--no-cache".as_ref(),
+        ];
+        if let Some(format) = format {
+            args.extend::<[&std::ffi::OsStr; 2]>(["--format".as_ref(), format.as_ref()]);
+        }
+        let result = rs(dir.path(), &args);
+        assert!(result.status.success(), "{}", stderr(&result));
+        fs::read_to_string(path).unwrap()
+    };
+
+    let json: serde_json::Value = serde_json::from_str(&check("auto.json", None)).unwrap();
+    assert_eq!(json["schema_version"], "1");
+    assert!(check("forced.json", Some("md")).starts_with("# Отчёт о проверке требований"));
+    assert!(check("auto.md", None).starts_with("# Отчёт о проверке требований"));
+    let forced: serde_json::Value =
+        serde_json::from_str(&check("forced.md", Some("json"))).unwrap();
+    assert_eq!(forced["schema_version"], "1");
+}
+
+#[test]
 fn short_form_writes_markdown_for_other_extensions() {
     let dir = tempfile::tempdir().unwrap();
     for name in ["report.md", "report.txt", "report"] {

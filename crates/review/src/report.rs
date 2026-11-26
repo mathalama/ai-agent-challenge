@@ -345,7 +345,12 @@ impl ReportRenderer for MarkdownRenderer {
             .expect("запись в строку");
         }
         if matches!(report.readiness, Readiness::Blocked) {
-            write_blocking_reason(&mut output, &report.findings, &blocking_critical);
+            write_blocking_reason(
+                &mut output,
+                &report.findings,
+                &blocking_critical,
+                critical.len(),
+            );
         }
         if let Some(triage) = report
             .triage
@@ -488,19 +493,31 @@ fn write_question(output: &mut String, report: &Report, question: &Question) {
     }
 }
 
-fn write_blocking_reason(output: &mut String, findings: &[Finding], critical: &[String]) {
-    if critical.is_empty() {
+/// Пишет причину вердикта «Не готово». Счётчик критичных дефектов совпадает со сводкой,
+/// дефекты критической важности перечисляются отдельно.
+fn write_blocking_reason(
+    output: &mut String,
+    findings: &[Finding],
+    blocking: &[String],
+    critical_count: usize,
+) {
+    if critical_count == 0 {
         let count = findings.iter().filter(|finding| needs_fix(finding)).count();
         writeln!(
             output,
             "Подтверждённых дефектов средней важности и выше — {count}."
         )
+    } else if blocking.is_empty() {
+        writeln!(
+            output,
+            "Подтверждённых критичных дефектов — {critical_count}, все высокой важности. Список — в разделе 5."
+        )
     } else {
         writeln!(
             output,
-            "Подтверждённых критичных дефектов — {} ({}).",
-            critical.len(),
-            critical.join(", ")
+            "Подтверждённых критичных дефектов — {critical_count}, из них критической важности — {}: {}. Полный список — в разделе 5.",
+            blocking.len(),
+            blocking.join(", ")
         )
     }
     .expect("запись в строку");
@@ -526,13 +543,17 @@ fn write_priority_fixes(output: &mut String, report: &Report) {
     }
     let total = fixes.len();
     for (index, finding, affected) in fixes.into_iter().take(PRIORITY_LIMIT) {
+        let affected = if affected == 0 {
+            String::new()
+        } else {
+            format!(", затронуто требований — {affected}")
+        };
         writeln!(
             output,
-            "- [{}](#finding-{}) — {} важность, затронуто требований — {}. {}",
+            "- [{}](#finding-{}) — {} важность{affected}. {}",
             markdown(&finding.id),
             index + 1,
             finding.severity.russian_name(),
-            affected,
             markdown(
                 finding
                     .suggestion
@@ -1035,9 +1056,9 @@ mod tests {
         ));
         let (summary, _) = summary.split_once("## 7.").unwrap();
         assert!(summary.contains("**Не готово.**"));
-        assert!(
-            summary.contains("Подтверждённых критичных дефектов — 1 ([critical](#finding-4)).")
-        );
+        assert!(summary.contains(
+            "Подтверждённых критичных дефектов — 3, из них критической важности — 1: [critical](#finding-4). Полный список — в разделе 5."
+        ));
         assert!(!summary.contains("unverified"));
         assert!(summary.contains(
             "Показано 7 из 8 подтверждённых дефектов средней важности и выше. Полный список — в разделах [3](#requirement-findings) и [4](#set-findings)."
@@ -1052,13 +1073,13 @@ mod tests {
                 .filter(|line| line.starts_with("- "))
                 .collect::<Vec<_>>(),
             [
-                "- [critical](#finding-4) — критическая важность, затронуто требований — 0. Описание critical",
+                "- [critical](#finding-4) — критическая важность. Описание critical",
                 "- [high-multiple](#finding-3) — высокая важность, затронуто требований — 2. Устранить противоречие",
                 "- [high-single](#finding-1) — высокая важность, затронуто требований — 1. Описание high-single",
-                "- [medium](#finding-2) — средняя важность, затронуто требований — 0. Описание medium",
-                "- [orphan](#finding-7) — средняя важность, затронуто требований — 0. Описание orphan",
-                "- [extra-1](#finding-8) — средняя важность, затронуто требований — 0. Описание extra-1",
-                "- [extra-2](#finding-9) — средняя важность, затронуто требований — 0. Описание extra-2",
+                "- [medium](#finding-2) — средняя важность. Описание medium",
+                "- [orphan](#finding-7) — средняя важность. Описание orphan",
+                "- [extra-1](#finding-8) — средняя важность. Описание extra-1",
+                "- [extra-2](#finding-9) — средняя важность. Описание extra-2",
             ]
         );
         for index in 1..=10 {
@@ -1068,9 +1089,16 @@ mod tests {
         let mut report = report;
         report.findings[3].severity = Severity::High;
         let markdown = MarkdownRenderer.render(&report).unwrap();
+        assert!(markdown.contains("**Не готово.**\n\nПодтверждённых критичных дефектов — "));
+        assert!(markdown.contains(", все высокой важности. Список — в разделе 5."));
+
+        for finding in &mut report.findings {
+            finding.severity = Severity::Medium;
+        }
+        let markdown = MarkdownRenderer.render(&report).unwrap();
         assert!(
             markdown
-                .contains("**Не готово.**\n\nПодтверждённых дефектов средней важности и выше — 8.")
+                .contains("**Не готово.**\n\nПодтверждённых дефектов средней важности и выше — 9.")
         );
     }
 
