@@ -1710,6 +1710,72 @@
       "verified": true
     },
     {
+      "id": "api-field-type-C-014",
+      "scope": {
+        "kind": "set"
+      },
+      "criterion": "consistent",
+      "severity": "high",
+      "evidence": [
+        {
+          "quote": "amount | integer | 32 bit | Да | 1 000–1 000 000 | Порог в тенге | limit_kzt",
+          "location": {
+            "start_line": 143,
+            "end_line": 143,
+            "page": null
+          }
+        },
+        {
+          "quote": "amount | string | При успехе | Порог в тенге | limit_kzt",
+          "location": {
+            "start_line": 156,
+            "end_line": 156,
+            "page": null
+          }
+        }
+      ],
+      "explanation": "Поле «amount» имеет тип integer в запросе и string в ответе.",
+      "suggestion": "Согласовать тип поля в контракте или явно описать его преобразование.",
+      "detector": {
+        "kind": "rule",
+        "source": "field_type_mismatch"
+      },
+      "verified": true
+    },
+    {
+      "id": "api-field-type-C-015",
+      "scope": {
+        "kind": "set"
+      },
+      "criterion": "consistent",
+      "severity": "high",
+      "evidence": [
+        {
+          "quote": "enabled | integer | 1 знак | Да | 0 или 1 | Признак включения | enabled",
+          "location": {
+            "start_line": 144,
+            "end_line": 144,
+            "page": null
+          }
+        },
+        {
+          "quote": "enabled | string | «0» или «1» | Признак включения | enabled",
+          "location": {
+            "start_line": 157,
+            "end_line": 157,
+            "page": null
+          }
+        }
+      ],
+      "explanation": "Поле «enabled» имеет тип integer в запросе и string в ответе.",
+      "suggestion": "Согласовать тип поля в контракте или явно описать его преобразование.",
+      "detector": {
+        "kind": "rule",
+        "source": "field_type_mismatch"
+      },
+      "verified": true
+    },
+    {
       "id": "set_checks-001",
       "scope": {
         "kind": "set"
@@ -1803,9 +1869,14 @@
   ],
   "summary": {
     "requirement_count": 22,
-    "finding_count": 10,
-    "verified_count": 10,
-    "critical_findings": []
+    "finding_count": 12,
+    "verified_count": 12,
+    "critical_findings": [
+      "api-field-type-C-014",
+      "api-field-type-C-015",
+      "set_checks-001",
+      "set_checks-002"
+    ]
   },
   "readiness": "blocked",
   "questions": [
