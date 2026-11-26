@@ -362,7 +362,7 @@ fn extract_tables(
     let mut requirements = Vec::new();
     let mut items = Vec::new();
     let mut table_index = 0;
-    for (block, context) in document.blocks.iter().zip(contexts) {
+    for (position, (block, context)) in document.blocks.iter().zip(contexts).enumerate() {
         let BlockContent::Table { rows, row_lines } = &block.content else {
             continue;
         };
@@ -371,7 +371,8 @@ fn extract_tables(
             continue;
         }
         let headers = &rows[0];
-        let passport = is_api_passport(headers, &rows[1..]);
+        let passport = is_api_passport(headers, &rows[1..])
+            || continues_api_passport(document, position, rows);
         let kind = if passport {
             Some(ContextKind::ApiPassport)
         } else if is_api_parameter_table(context, headers) {
@@ -925,6 +926,29 @@ fn is_non_requirement_table(
             .iter()
             .any(|h| h.contains("изменен") || h.contains("описан"));
     is_changelog_heading || is_changelog_headers
+}
+
+/// Паспорт метода, разорванный границей страницы PDF: в первой части ключей паспорта может не быть
+/// (например, одна строка Description), а вторая часть начинается с повторённой шапки.
+fn continues_api_passport(document: &Document, position: usize, rows: &[Vec<String>]) -> bool {
+    let (Some(block), Some(next)) = (
+        document.blocks.get(position),
+        document.blocks.get(position + 1),
+    ) else {
+        return false;
+    };
+    let BlockContent::Table {
+        rows: next_rows, ..
+    } = &next.content
+    else {
+        return false;
+    };
+    matches!(
+        (block.location.page, next.location.page),
+        (Some(page), Some(next_page)) if next_page == page + 1
+    ) && next_rows.len() > 1
+        && next_rows[0] == rows[0]
+        && is_api_passport(&next_rows[0], &next_rows[1..])
 }
 
 fn is_api_passport(headers: &[String], rows: &[Vec<String>]) -> bool {
